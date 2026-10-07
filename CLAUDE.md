@@ -1220,6 +1220,10 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
   塞がず、run 後に blocks.csv の **`to` / `valueWei` 列**（末尾に追加。tx 自身のフィールド）で ETH、run 窓の
   Transfer ログで ERC-20、レジストリの**参加者が作った**エントリと SimpleLending の position イベントで
   「同じコントラクト / 同じ貸出市場で対向した」経路（contract / lending / liquidation）を拾う。
+  eth / erc20 の両端は登録アドレス**か、その agent の derived sender のうち EOA（コードの無いアドレス）**で読む
+  （以前は登録アドレスとしか照合せず、A → 第 2 EOA X → B の 2 hop が ERC-20 では見えなかった）。自分の集合内の移動は数えない。
+  **コントラクトは agent のアドレスにしない** — derived ledger は agent が最初に token を送ったプールも derive するので、
+  そのまま使うと以後そのプールを通る全員の swap が agent 間の送金になる。
   **同一 `participant` の 2 体は額に関係なく flag**、異参加者間は `run.rosterTransferFlagBps`（既定 100 = 対の
   小さい方の V_0 の 1%）超で flag。判定ではなく報告で **P は変えない**: summary.json の `rosterTransfers`
   （全件）と agent ごとの `rosterTransfers`（flag 分。両側に載る）、events.jsonl の `roster_value_transfers`、

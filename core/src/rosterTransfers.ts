@@ -11,6 +11,10 @@
 //   eth          a transaction from one registered address to another carrying value
 //                (blocks.csv `to` / `valueWei`, from the tx itself)
 //   erc20        a Transfer log whose `from` and `to` are both registered addresses
+// For these two direct routes an end may also be an EOA the agent's wallet funded (a derived
+// sender, issue #212): A -> X -> B with X funded by A is A paying B, and the second hop is otherwise
+// a stranger paying B. Contracts are never an agent's address here -- the ledger also derives the
+// first pool an agent sends tokens into, and a swap through it is not a payment (scan side).
 //   contract     two registered addresses with opposite net flows of one token through one
 //                participant-created contract (a registry entry whose creator is registered):
 //                A put tokens into C, B took them out -- a pool, a vault, a forwarder, a "bug"
@@ -171,6 +175,21 @@ export function rosterByAddress(
   return out;
 }
 
+// Lowercase address -> agent id, for the direct routes: every registered address, then every
+// derived EOA (lowercase address -> owning agent id; core/src/realtime/derivedSenders.ts) whose
+// owner is on the roster. A registered address is never re-attributed by the derived map.
+export function directOwnerByAddress(
+  agents: readonly RosterAgent[],
+  derivedOwners?: ReadonlyMap<string, string>,
+): Map<string, string> {
+  const ids = new Set(agents.map((a) => a.id));
+  const out = new Map<string, string>();
+  for (const [address, ownerId] of derivedOwners ?? [])
+    if (ids.has(ownerId)) out.set(lower(address), ownerId);
+  for (const a of agents) out.set(lower(a.address), a.id);
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // extraction
 // ---------------------------------------------------------------------------
@@ -179,23 +198,30 @@ export function rosterByAddress(
 // own `to` and `value` (not self-reported), so this needs no chain access. Rows from a run recorded
 // before those columns existed have neither and yield nothing: the alternative, reading "" as
 // zero, would report a clean roster for a run that was never measured. Reverted txs moved nothing.
+// A derived sender's rows already carry its agent's id; one written `external` before its funding
+// was seen (ownerId = the sender's address) is read through `derivedOwners`, as the other post-run
+// checks read it. A recipient resolves the same way, so ETH parked on the agent's own second EOA is
+// not a movement and ETH paid into another agent's is.
 export function ethMovementsFromBlocksCsv(
   blocksCsv: string,
   agents: readonly RosterAgent[],
+  derivedOwners?: ReadonlyMap<string, string>,
 ): RosterMovement[] {
   const I = BLOCKS_CSV_INDEX;
-  const byAddress = rosterByAddress(agents);
+  const owners = directOwnerByAddress(agents, derivedOwners);
   const ids = new Set(agents.map((a) => a.id));
   const out: RosterMovement[] = [];
   for (const line of blocksCsv.split("\n").slice(1)) {
     if (line.length === 0) continue;
     const cols = line.split(",");
-    if (cols[I.role] !== "agent") continue;
     if (cols[I.status] !== "success") continue;
-    const from = cols[I.ownerId];
-    if (!ids.has(from)) continue;
-    const to = byAddress.get(lower(cols[I.to]));
-    if (!to || to.id === from) continue;
+    let from: string | undefined;
+    if (cols[I.role] === "agent") from = cols[I.ownerId];
+    else if (cols[I.role] === "external")
+      from = derivedOwners?.get(lower(cols[I.ownerId]));
+    if (from === undefined || !ids.has(from)) continue;
+    const to = owners.get(lower(cols[I.to]));
+    if (to === undefined || to === from) continue;
     const rawValue = cols[I.valueWei];
     if (rawValue === undefined || rawValue === "") continue;
     let value: bigint;
@@ -208,7 +234,7 @@ export function ethMovementsFromBlocksCsv(
     out.push({
       route: "eth",
       from,
-      to: to.id,
+      to,
       token: null,
       amountRaw: value,
       block: Number(cols[I.blockNumber]),
@@ -217,26 +243,29 @@ export function ethMovementsFromBlocksCsv(
   return out;
 }
 
-// ERC-20 Transfer logs whose two ends are both registered addresses. A transfer is one log however
-// it was made -- `transfer`, `transferFrom` through an approval, a contract moving the tokens on an
-// agent's behalf -- which is why the log, not the calldata, is what is read.
+// ERC-20 Transfer logs whose two ends belong to two different agents: a registered address or a
+// derived EOA of it (`derivedOwners`). A transfer is one log however it was made -- `transfer`,
+// `transferFrom` through an approval, a contract moving the tokens on an agent's behalf -- which is
+// why the log, not the calldata, is what is read. A hop inside one agent's own set (its wallet to
+// its second EOA) is not a movement; the hop out of that set is, and is charged to the owner.
 export function erc20MovementsFromLogs(
   logs: readonly RosterTransferLog[],
   agents: readonly RosterAgent[],
+  derivedOwners?: ReadonlyMap<string, string>,
 ): RosterMovement[] {
-  const byAddress = rosterByAddress(agents);
+  const owners = directOwnerByAddress(agents, derivedOwners);
   const out: RosterMovement[] = [];
   for (const log of logs) {
     if (log.topics.length !== 3) continue;
-    const from = byAddress.get(lower(log.args?.from));
-    const to = byAddress.get(lower(log.args?.to));
-    if (!from || !to || from.id === to.id) continue;
+    const from = owners.get(lower(log.args?.from));
+    const to = owners.get(lower(log.args?.to));
+    if (from === undefined || to === undefined || from === to) continue;
     const value = log.args?.value ?? 0n;
     if (value <= 0n) continue;
     out.push({
       route: "erc20",
-      from: from.id,
-      to: to.id,
+      from,
+      to,
       token: lower(log.address),
       amountRaw: value,
       block: Number(log.blockNumber ?? 0n),

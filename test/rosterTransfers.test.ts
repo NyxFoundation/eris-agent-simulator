@@ -18,6 +18,11 @@ import {
   type RosterPricing,
   type RosterTransferLog,
 } from "../core/src/rosterTransfers.js";
+import { scanRosterTransfers } from "../core/src/realtime/rosterTransferScan.js";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { PublicClient } from "viem";
 import {
   scoresFromSummary,
   type RunSummary,
@@ -117,6 +122,108 @@ test("an ERC-20 Transfer log is a movement only with a registered address at bot
     [moves[0].route, moves[0].from, moves[0].to, moves[0].token, moves[0].amountRaw, moves[0].block],
     ["erc20", "team-x-a", "team-x-b", USDC, 5_000_000_000n, 20],
   );
+});
+
+// Issue #212's derived senders on the direct routes: X is an EOA team-x-a's wallet funded.
+const X = "0x0000000000000000000000000000000000000a01";
+const Y = "0x0000000000000000000000000000000000000c01"; // an EOA solo's wallet funded
+
+test("ERC-20 through an EOA the sender funded: A -> X -> B is A paying B; A -> X alone is nothing", () => {
+  const derived = new Map([[X, "team-x-a"], [Y, "solo"]]);
+  const twoHop = erc20MovementsFromLogs(
+    [transfer(USDC, A, X, 5_000_000_000n, 40), transfer(USDC, X, B, 5_000_000_000n, 41)],
+    agents,
+    derived,
+  );
+  assert.deepEqual(
+    twoHop.map((m) => [m.route, m.from, m.to, m.amountRaw, m.block]),
+    [["erc20", "team-x-a", "team-x-b", 5_000_000_000n, 41]],
+  );
+  // Within one agent's own set: not a movement.
+  assert.deepEqual(erc20MovementsFromLogs([transfer(USDC, A, X, 1n)], agents, derived), []);
+  // Between two derived EOAs of different agents.
+  const between = erc20MovementsFromLogs([transfer(USDC, X, Y, 9n, 42)], agents, derived);
+  assert.deepEqual(between.map((m) => [m.from, m.to]), [["team-x-a", "solo"]]);
+  // Without the map the same logs are invisible (the gap this closes).
+  assert.deepEqual(
+    erc20MovementsFromLogs([transfer(USDC, X, B, 5n)], agents),
+    [],
+  );
+  // A derived entry can never re-attribute a registered address.
+  assert.deepEqual(
+    erc20MovementsFromLogs([transfer(USDC, A, B, 3n)], agents, new Map([[B, "team-x-a"]]))
+      .map((m) => [m.from, m.to]),
+    [["team-x-a", "team-x-b"]],
+  );
+});
+
+test("ETH through an EOA the sender funded: the derived hop's recipient and an early external row resolve", () => {
+  const derived = new Map([[X, "team-x-a"]]);
+  const rows = csv([
+    // A -> X: parking on its own second EOA.
+    { role: "agent", status: "success", ownerId: "team-x-a", blockNumber: "50", hash: "0x1", to: X, valueWei: "5" },
+    // X (already derived, written under the agent) -> B.
+    { role: "agent", status: "success", ownerId: "team-x-a", blockNumber: "51", hash: "0x2", to: B, valueWei: "5" },
+    // X sent before its funding was seen: written external, ownerId = its address.
+    { role: "external", status: "success", ownerId: X, blockNumber: "52", hash: "0x3", to: C, valueWei: "4" },
+    // solo pays into X: solo -> team-x-a.
+    { role: "agent", status: "success", ownerId: "solo", blockNumber: "53", hash: "0x4", to: X, valueWei: "3" },
+  ]);
+  assert.deepEqual(
+    ethMovementsFromBlocksCsv(rows, agents, derived).map((m) => [m.from, m.to, m.amountRaw, m.block]),
+    [
+      ["team-x-a", "team-x-b", 5n, 51],
+      ["team-x-a", "solo", 4n, 52],
+      ["solo", "team-x-a", 3n, 53],
+    ],
+  );
+});
+
+test("the scan reads derived EOAs only: a pool the ledger attributed to an agent does not make swaps payments", async () => {
+  // DerivedSenderLedger derives the first pool team-x-a sends tokens into (VENUE, which has code)
+  // as well as its second EOA X (no code).
+  const derived = new Map([[VENUE, "team-x-a"], [X, "team-x-a"]]);
+  const logs = [
+    transfer(USDC, A, VENUE, 7_000_000_000n, 60), // A's swap that derived the pool
+    transfer(USDC, B, VENUE, 7_000_000_000n, 61), // B swaps through the same pool
+    transfer(WETH, VENUE, B, 2_000_000_000_000_000_000n, 61),
+    transfer(USDC, VENUE, C, 1_000_000_000n, 62), // and solo
+    transfer(USDC, A, X, 4_000_000_000n, 63),
+    transfer(USDC, X, B, 4_000_000_000n, 64),
+  ].map((l, i) => ({ ...l, transactionHash: `0x${i}`, logIndex: 0 }));
+  const touches = (l: RosterTransferLog, set: readonly string[] | undefined, end: "from" | "to") =>
+    (set ?? []).some((a) => a.toLowerCase() === l.args?.[end]?.toLowerCase());
+  const client = {
+    getCode: async ({ address }: { address: string }) =>
+      address.toLowerCase() === VENUE ? "0x6080" : undefined,
+    getLogs: async ({ args }: { args: { from?: string[]; to?: string[] } }) =>
+      logs.filter((l) => touches(l, args.from, "from") || touches(l, args.to, "to")),
+  } as unknown as PublicClient;
+  const runDir = mkdtempSync(join(tmpdir(), "roster-derived-"));
+  writeFileSync(
+    join(runDir, "blocks.csv"),
+    csv([
+      // ETH into the pool's router-like address from B: not a payment to team-x-a.
+      { role: "agent", status: "success", ownerId: "team-x-b", blockNumber: "65", hash: "0x9", to: VENUE, valueWei: "1" },
+    ]),
+  );
+  const scan = await scanRosterTransfers({
+    publicClient: client,
+    agents,
+    runDir,
+    fromBlock: 1,
+    toBlock: 100,
+    scanLogs: true,
+    pricing,
+    thresholdBps: 100,
+    derivedOwners: derived,
+  });
+  assert.deepEqual(scan.errors, []);
+  assert.deepEqual(
+    scan.transfers.map((t) => [t.route, t.from, t.to, t.token, t.amountRaw]),
+    [["erc20", "team-x-a", "team-x-b", "USDC", "4000000000"]],
+  );
+  assert.equal(scan.transfers[0].flagged, true); // same unit, any size
 });
 
 test("opposite net flows of one token through a participant-created contract pair the putter with the taker", () => {

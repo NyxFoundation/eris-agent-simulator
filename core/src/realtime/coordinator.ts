@@ -4922,6 +4922,7 @@ export async function runRealtimeSimulation(
           scanLogs: sweepFits,
           pricing: rosterPricingFromMarks(finalFairPrices, finalStablePrices),
           thresholdBps: config.rosterTransferFlagBps,
+          derivedOwners,
           ...(marketRegistry
             ? {
                 ...(marketRegistry.lending

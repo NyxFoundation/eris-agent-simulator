@@ -70,6 +70,10 @@ export async function scanRosterTransfers(opts: {
   // The lending singleton and the registry, when the run deployed them (agentMarkets.enabled).
   lending?: Address;
   marketRegistry?: Address;
+  // Addresses the agents' wallets funded (DerivedSenderLedger.ownerByAddress(), issue #212): lowercase
+  // address -> agent id. Only the EOAs among them count as an agent's address for the direct routes
+  // (derivedEoaOwners).
+  derivedOwners?: ReadonlyMap<string, string>;
 }): Promise<RosterTransferScan> {
   const { publicClient, agents, fromBlock, toBlock } = opts;
   const errors: string[] = [];
@@ -81,11 +85,20 @@ export async function scanRosterTransfers(opts: {
   };
   const movements: RosterMovement[] = [];
 
+  let derived = new Map<string, string>();
+  if (opts.derivedOwners && opts.derivedOwners.size > 0) {
+    try {
+      derived = await derivedEoaOwners(publicClient, opts.derivedOwners);
+    } catch (err) {
+      errors.push(`derived senders: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   const csvPath = join(opts.runDir, "blocks.csv");
   if (existsSync(csvPath)) {
     sources.blocksCsv = true;
     movements.push(
-      ...ethMovementsFromBlocksCsv(readFileSync(csvPath, "utf8"), agents),
+      ...ethMovementsFromBlocksCsv(readFileSync(csvPath, "utf8"), agents, derived),
     );
   }
 
@@ -128,12 +141,17 @@ export async function scanRosterTransfers(opts: {
     try {
       const logs = await fetchRosterTransferLogs(
         publicClient,
-        agents.map((a) => a.address as Address),
+        [
+          ...agents.map((a) => a.address as Address),
+          ...[...derived.keys()].map((a) => a as Address),
+        ],
         BigInt(fromBlock),
         BigInt(toBlock),
       );
       sources.transferLogs = true;
-      movements.push(...erc20MovementsFromLogs(logs, agents));
+      // A participant-created contract is the contract route's, never an agent's own address.
+      for (const address of Object.keys(contracts)) derived.delete(address);
+      movements.push(...erc20MovementsFromLogs(logs, agents, derived));
       if (Object.keys(contracts).length > 0)
         movements.push(...contractMovementsFromLogs(logs, agents, contracts));
     } catch (err) {
@@ -171,7 +189,31 @@ export async function scanRosterTransfers(opts: {
   };
 }
 
-// Every ERC-20 Transfer with a registered address at either end, each log once. A log from one
+// The derived addresses that are EOAs, by agent. DerivedSenderLedger derives every recipient of an
+// agent's value the run does not otherwise know, and that includes contracts: the first venue pool
+// an agent swaps into, the router its ETH paid an execution fee to, a contract it created. Read as
+// the agent's own address, the pool would turn every later swap through it into a payment between
+// agents, so a recipient with code is left out: a contract the agents share is a venue (not a route
+// here) or a participant-created contract (the contract route's). Code is read at the node's head,
+// after the run; an EIP-7702 delegation designator is still an EOA.
+export async function derivedEoaOwners(
+  publicClient: Pick<PublicClient, "getCode">,
+  derivedOwners: ReadonlyMap<string, string>,
+): Promise<Map<string, string>> {
+  const entries = [...derivedOwners];
+  const codes = await Promise.all(
+    entries.map(([address]) => publicClient.getCode({ address: address as Address })),
+  );
+  const out = new Map<string, string>();
+  entries.forEach(([address, ownerId], i) => {
+    const code = codes[i];
+    if (code === undefined || code === "0x" || code.toLowerCase().startsWith("0xef0100"))
+      out.set(address.toLowerCase(), ownerId);
+  });
+  return out;
+}
+
+// Every ERC-20 Transfer with a registered address (or a derived EOA) at either end, each log once. A log from one
 // registered address to another is returned by both the `from` and the `to` query (and by two
 // chunks when the ends fall in different ones), so the dedup is what keeps a sibling transfer from
 // counting twice.
