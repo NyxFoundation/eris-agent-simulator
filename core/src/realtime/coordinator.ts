@@ -199,8 +199,7 @@ import {
   LIVE_WEEK_OVERRIDE,
   LiveWeekRefusal,
   liveWeekRefusals,
-  publicAccountRefusal,
-} from "./liveWeek.js";
+  publicAccountRefusal, probeInferenceProxy } from "./liveWeek.js";
 import type { RealtimeConfig } from "../config.js";
 import {
   diffRegistrations,
@@ -573,10 +572,10 @@ const SEGMENT_ADVISORY_BLOCKS = 20_000;
 
 export { LIVE_WEEK_OVERRIDE, isLiveWeekRefusal } from "./liveWeek.js";
 
-function assertLiveWeekPosture(
+async function assertLiveWeekPosture(
   config: RealtimeConfig,
   agents: AgentSpec[],
-): void {
+): Promise<void> {
   const reasons = liveWeekRefusals({
     keys: {
       admin: config.privateKeys.admin,
@@ -590,6 +589,9 @@ function assertLiveWeekPosture(
     agents,
     env: process.env,
   });
+  // The proxy's mode is only visible from the proxy itself (liveWeek.ts).
+  const proxy = await probeInferenceProxy(process.env);
+  if (proxy) reasons.push(proxy);
   if (reasons.length > 0) throw new LiveWeekRefusal(reasons);
 }
 
@@ -598,12 +600,12 @@ function assertLiveWeekPosture(
  * the first epoch: with --follow-schedule that start can be hours away, and a week that cannot start
  * should say so when the operator launches it, not when the first epoch is due.
  */
-export function preflightLiveWeek(
+export async function preflightLiveWeek(
   overrides: Record<string, string | number | boolean>,
   argv: string[],
-): void {
+): Promise<void> {
   const { config, agents } = resolveRunInputs(argv, overrides);
-  assertLiveWeekPosture(config, agents);
+  await assertLiveWeekPosture(config, agents);
 }
 
 export async function runRealtimeSimulation(
@@ -694,7 +696,7 @@ export async function runRealtimeSimulation(
   // run is one epoch of the plan under the secret key. Here, before anything touches the chain, as a
   // second line behind the runner's own preflight.
   if (overrides[LIVE_WEEK_OVERRIDE] === "1") {
-    assertLiveWeekPosture(config, agentSpecs);
+    await assertLiveWeekPosture(config, agentSpecs);
     console.error(
       "[live-week] posture checked: environment keys private, every agent in an isolated container",
     );

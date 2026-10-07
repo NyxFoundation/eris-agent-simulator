@@ -60,6 +60,39 @@ streamed or not. The participant pays for the tokens (rules §2.5). The record s
 The operator caps neither input nor output tokens: the body is forwarded as written, so the limits are
 the model's and the service's, plus whatever the agent's client asks for.
 
+## Participant credentials (rules §2.5, issue #260)
+
+The rules say the organizer's orchestrator calls the inference service **with the credential the
+participant submitted**, and that the participant pays for the tokens. The live week therefore runs
+the proxy with `--keys`:
+
+```yaml
+# ~/.eris-secrets/inference-keys.yaml -- chmod 600, never in the repository, deleted after the event
+participants:
+  team-kappa:            # the agent id = the roster id = the participant unit
+    openai: sk-...        # one key per provider the participant may use
+  team-lambda:
+    anthropic: sk-ant-...
+```
+
+```bash
+npm run inference-proxy -- --models models.yaml --keys ~/.eris-secrets/inference-keys.yaml \
+    --listen 0.0.0.0:8790 --record runs/<competition>/inference
+```
+
+| with `--keys` | |
+|---|---|
+| a call from agent `a` for a model of provider `p` | forwarded with `participants.a.p`; the model list's `apiKeyEnv` is **not** consulted |
+| no key on file for `a` / `p` | **403** `no <p> credential on file for <a>`, before the rate limit and the call count: nothing is forwarded, nothing is charged to anyone, the record's numbering does not move. One stderr line per agent and provider; the count is `credentials.refused` on `GET /admin/recording` |
+| a local Ollama entry (no `apiKeyEnv`) | takes no key at all, with or without `--keys` |
+| `GET /healthz` | `{"ok":true,"credentials":"participant"}` (`"operator"` without `--keys`). The matrix runner refuses to start a live week unless the proxy at `ERIS_INFERENCE_BASE_URL` (or `ERIS_INFERENCE_PROBE_URL`, when the agents' URL is a container-network name this host cannot resolve) answers `participant` |
+| the file's mode | refused unless readable by this user only (`chmod 600`) |
+
+Build the file from the credential form's answers (one row per participant unit), keep it off the
+repository, and delete it after the event (rules §2.5: the organizer uses it only to run that
+participant's agent and deletes it promptly after the competition). The record never contains a
+key: upstream headers are not recorded, only the request body and the response.
+
 ## Recording and replay (rules §2.4)
 
 One JSON line per call under `<record>/<agentId>.jsonl`: `seq` (per agent, retries included), path,

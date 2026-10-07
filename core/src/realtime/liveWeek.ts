@@ -90,6 +90,15 @@ export function liveWeekRefusals(opts: {
         "host, outside the rules §2.3 caps and the network isolation (infra/docker-agent/run-agent.sh)",
     );
 
+  // Rules §2.5: every agent revises through the operator's proxy, on the participant's own
+  // credential. Without the URL the agents have no model at all (an isolated container has no
+  // other way out), and the week would run sixty epochs of unrevised strategies and say nothing.
+  if (!opts.env.ERIS_INFERENCE_BASE_URL)
+    reasons.push(
+      "no inference proxy for the agents: set ERIS_INFERENCE_BASE_URL (and ERIS_INFERENCE_SECRET) " +
+        "to the operator's proxy started with --keys (infra/inference-proxy/README.md)",
+    );
+
   const custom = opts.agents
     .filter((a) => a.external !== true && a.command !== undefined)
     .map((a) => a.id);
@@ -189,4 +198,47 @@ export function stateDumpRefusal(manifest: {
     `: ${manifest.publicTestAccounts.map((a) => `${a.address} (${formatEther(BigInt(a.balanceWei))} ETH)`).join(", ")}. ` +
     regenerate
   );
+}
+
+/**
+ * What GET /healthz on the inference proxy has to say for the live week: the proxy forwards the
+ * participants' own credentials (`--keys`), not the operator's. A proxy on the operator's keys would
+ * revise every agent on one key the operator pays for, the opposite of rules §2.5, and nothing else
+ * in the run would show it. Pure: the caller fetches, this reads.
+ */
+export function inferenceProxyRefusal(health: unknown): string | undefined {
+  const h = health as { ok?: unknown; credentials?: unknown } | null;
+  if (!h || typeof h !== "object" || h.ok !== true)
+    return "the inference proxy at ERIS_INFERENCE_BASE_URL did not answer GET /healthz with {ok: true}";
+  if (h.credentials !== "participant")
+    return (
+      `the inference proxy forwards the ${String(h.credentials ?? "operator")}'s credentials: start it ` +
+      "with --keys <keys.yaml> so each agent revises on the credential its participant submitted (rules §2.5)"
+    );
+  return undefined;
+}
+
+/**
+ * Fetch the proxy's /healthz and read it with inferenceProxyRefusal. The URL the agents use may be a
+ * container-network name this host cannot resolve; ERIS_INFERENCE_PROBE_URL names the same proxy as
+ * this host reaches it.
+ */
+export async function probeInferenceProxy(
+  env: Record<string, string | undefined>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string | undefined> {
+  const base = env.ERIS_INFERENCE_PROBE_URL ?? env.ERIS_INFERENCE_BASE_URL;
+  if (!base) return undefined; // liveWeekRefusals already names the missing URL
+  let body: unknown;
+  try {
+    const res = await fetchImpl(`${base.replace(/\/$/, "")}/healthz`);
+    body = await res.json();
+  } catch (error) {
+    return (
+      `the inference proxy at ${base} is not reachable from this host (${
+        error instanceof Error ? error.message : String(error)
+      }); set ERIS_INFERENCE_PROBE_URL if the agents' URL is a container-network name`
+    );
+  }
+  return inferenceProxyRefusal(body);
 }

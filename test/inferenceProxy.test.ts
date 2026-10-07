@@ -10,6 +10,7 @@ import type { AddressInfo } from "node:net";
 import {
   agentToken,
   createInferenceProxy,
+  loadParticipantKeys,
   loadProxyConfig,
   type ProxyOptions,
 } from "../core/src/inference/proxy.js";
@@ -87,7 +88,7 @@ test("only the three inference paths exist; everything else is 404", async () =>
     assert.equal(health.status, 200);
     // Liveness and nothing else: this proxy sits on every agent's network, so a count of calls or of
     // capped agents here would be one participant reading another's revision cadence (issue #218).
-    assert.deepEqual(await health.json(), { ok: true });
+    assert.deepEqual(await health.json(), { ok: true, credentials: "operator" });
     // And the stats path does not exist unless the operator gave it a token.
     assert.equal((await fetch(`${base}/admin/recording`)).status, 404);
     const models = (await (await fetch(`${base}/v1/models`)).json()) as { data: { id: string }[] };
@@ -695,11 +696,11 @@ test("past the cap a call still leaves a bounded stub: padding a request cannot 
   });
 });
 
-test("the recording stats are the operator's, not the field's: /healthz says only that it is alive", async () => {
+test("the recording stats are the operator's, not the field's: /healthz says that it is alive and whose credentials it forwards, nothing counted", async () => {
   const dir = mkdtempSync(join(tmpdir(), "eris-proxy-stats-"));
   // Without a token the stats do not exist as a path at all, so the surface an agent sees is `{ok}`.
   await withProxy({ recordDir: dir, config: unlimited }, async (base) => {
-    assert.deepEqual(await (await fetch(`${base}/healthz`)).json(), { ok: true });
+    assert.deepEqual(await (await fetch(`${base}/healthz`)).json(), { ok: true, credentials: "operator" });
     assert.equal((await fetch(`${base}/admin/recording`)).status, 404);
     assert.equal(
       (await fetch(`${base}/admin/recording`, { headers: { authorization: `Bearer ${STATS_TOKEN}` } })).status,
@@ -717,7 +718,7 @@ test("the recording stats are the operator's, not the field's: /healthz says onl
         "x-eris-agent": "alice",
         authorization: `Bearer ${mine}`,
       });
-      assert.deepEqual(await (await fetch(`${base}/healthz`)).json(), { ok: true });
+      assert.deepEqual(await (await fetch(`${base}/healthz`)).json(), { ok: true, credentials: "operator" });
       assert.equal((await fetch(`${base}/admin/recording`)).status, 401);
       assert.equal(
         (await fetch(`${base}/admin/recording`, { headers: { authorization: `Bearer ${mine}` } })).status,
@@ -770,3 +771,73 @@ test("the record caps default to 256 MiB per agent and 8 GiB in all, and cannot 
   assert.throws(() => loadProxyConfig({ models: config.models, maxRecordBytesPerAgent: 0 }), /maxRecordBytesPerAgent/);
   assert.throws(() => loadProxyConfig({ models: config.models, maxRecordBytesTotal: -1 }), /maxRecordBytesTotal/);
 });
+
+// ---- the participants' own credentials (rules §2.5, issue #260) ----
+
+const participantKeys = loadParticipantKeys({
+  participants: { alice: { openai: " sk-alice " }, carol: { anthropic: "sk-carol" } },
+});
+
+test("participant mode forwards the calling agent's own key, never the operator's", async () => {
+  await withProxy({ participantKeys }, async (base, seen) => {
+    const res = await post(base, "/v1/chat/completions", { model: "gpt-x", messages: [] }, { "x-eris-agent": "alice" });
+    assert.equal(res.status, 200);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].headers.authorization, "Bearer sk-alice");
+    const ant = await post(base, "/v1/messages", { model: "claude-y", messages: [] }, { "x-eris-agent": "carol" });
+    assert.equal(ant.status, 200);
+    assert.equal(seen[1].headers["x-api-key"], "sk-carol");
+  });
+});
+
+test("participant mode refuses an agent with no key for that provider, and forwards nothing", async () => {
+  const lines: string[] = [];
+  await withProxy({ participantKeys, log: (l) => lines.push(l) }, async (base, seen) => {
+    // bob submitted nothing; alice has an OpenAI key but asks for Anthropic.
+    for (const [agent, path, model] of [
+      ["bob", "/v1/chat/completions", "gpt-x"],
+      ["alice", "/v1/messages", "claude-y"],
+    ] as const) {
+      const res = await post(base, path, { model, messages: [] }, { "x-eris-agent": agent });
+      assert.equal(res.status, 403);
+      const body = (await res.json()) as { error: string };
+      assert.match(body.error, /no (openai|anthropic) credential on file/);
+      assert.match(body.error, /operator's key is not a fallback/);
+    }
+    assert.equal(seen.length, 0, "a refused call reaches no upstream");
+    // The operator's key from the environment is not used either: a second bob call is still 403.
+    assert.equal((await post(base, "/v1/chat/completions", { model: "gpt-x", messages: [] }, { "x-eris-agent": "bob" })).status, 403);
+    assert.equal(lines.filter((l) => l.includes("bob")).length, 1, "one stderr line per agent and provider");
+  });
+});
+
+test("a local Ollama with no key of its own takes no participant key either", async () => {
+  await withProxy({ participantKeys }, async (base, seen) => {
+    const res = await post(base, "/api/chat", { model: "local-z", messages: [] }, { "x-eris-agent": "bob" });
+    assert.equal(res.status, 200);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].headers.authorization, undefined);
+  });
+});
+
+test("/healthz says whose credentials the proxy forwards, and the admin stats count the refusals", async () => {
+  await withProxy({}, async (base) => {
+    assert.deepEqual(await (await fetch(`${base}/healthz`)).json(), { ok: true, credentials: "operator" });
+  });
+  await withProxy({ participantKeys, statsToken: "stats" }, async (base) => {
+    assert.deepEqual(await (await fetch(`${base}/healthz`)).json(), { ok: true, credentials: "participant" });
+    await post(base, "/v1/chat/completions", { model: "gpt-x", messages: [] }, { "x-eris-agent": "bob" });
+    const stats = (await (await fetch(`${base}/admin/recording`, { headers: { authorization: "Bearer stats" } })).json()) as {
+      credentials: { mode: string; refused: number };
+    };
+    assert.deepEqual(stats.credentials, { mode: "participant", refused: 1 });
+  });
+});
+
+test("the keys file is validated: a provider the proxy does not know, an empty key, a missing map", () => {
+  assert.throws(() => loadParticipantKeys({ participants: { a: { gemini: "x" } } }), /unknown provider gemini/);
+  assert.throws(() => loadParticipantKeys({ participants: { a: { openai: "  " } } }), /non-empty string/);
+  assert.throws(() => loadParticipantKeys({}), /participants/);
+  assert.deepEqual(loadParticipantKeys({ participants: { a: { openai: "k" } } }), { a: { openai: "k" } });
+});
+
