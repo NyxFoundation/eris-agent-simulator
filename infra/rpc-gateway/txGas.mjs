@@ -119,3 +119,35 @@ export function feeRuleViolation(fees, capWei) {
     };
   return null;
 }
+
+// The EVM-executing reads whose gas the caller chooses. Unlike a transaction, nothing signs or pays
+// for this gas: the node runs the call up to whatever `gas` the request names, or the block gas limit
+// when it names none (320M on the practice devnet, 30M in a backtest).
+export const CALL_GAS_METHODS = new Set(["eth_call", "eth_estimateGas", "eth_createAccessList"]);
+
+// Caps the gas of every read in `calls` at `capGas`, in place. Returns how many it rewrote.
+//
+// A missing, unreadable or over-cap `gas` becomes the cap; one at or under it is left alone. The
+// cap is written in rather than refused because every client's default is to leave `gas` out.
+// Unreadable is rewritten, not passed: a cap that forwards what it cannot parse is not a cap.
+// `gasLimit` is dropped because a node that reads it as an alias of `gas` would run the call on it.
+// The call's result does not change under the cap unless it needs more than the cap -- base fee is 0,
+// so the gas a call is given does not depend on the caller's balance.
+// capGas 0n disables. A call whose first param is not an object is left for the node to refuse.
+export function capCallGas(calls, capGas) {
+  if (capGas <= 0n) return 0;
+  const capHex = "0x" + capGas.toString(16);
+  let rewritten = 0;
+  for (const c of calls) {
+    if (!c || !CALL_GAS_METHODS.has(c.method) || !Array.isArray(c.params)) continue;
+    const tx = c.params[0];
+    if (!tx || typeof tx !== "object" || Array.isArray(tx)) continue;
+    let gas = null;
+    try { if (typeof tx.gas === "string" || typeof tx.gas === "number") gas = BigInt(tx.gas); } catch { gas = null; }
+    let changed = false;
+    if ("gasLimit" in tx) { delete tx.gasLimit; changed = true; }
+    if (gas === null || gas < 0n || gas > capGas) { tx.gas = capHex; changed = true; }
+    if (changed) rewritten++;
+  }
+  return rewritten;
+}
