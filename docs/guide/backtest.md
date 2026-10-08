@@ -159,7 +159,8 @@ instead, so one unattended process runs the live week (ADR 0026):
 npm run competition -- plan --hidden hidden.yaml --lottery lottery.yaml --k 60 \
   --starts-at 2026-11-01T00:00:00+09:00 --ends-at 2026-11-08T00:00:00+09:00 --out plan.yaml   # one every 168 min
 npm run backtest -- --scenarios plan.yaml --agents field.yaml --follow-schedule \
-  --scenario-key <secret-dir>/scenario-key.yaml   # ADR 0027: a plan refuses to start without a key
+  --scenario-key <secret-dir>/scenario-key.yaml \  # ADR 0027: a plan refuses to start without a key
+  --agent-state-root <state-dir>                   # rules §4.7.1: a keyed plan refuses to start without one
 ```
 
 - Before each epoch it runs, the runner prints what it is waiting for (`s=5 crash#…: waiting 2h 31m
@@ -180,6 +181,12 @@ npm run backtest -- --scenarios plan.yaml --agents field.yaml --follow-schedule 
   bind-mount mode. Checked once per regime before the first wait, and again by each epoch; a refusal
   stops the week instead of becoming an excluded epoch. `ERIS_ALLOW_PUBLIC_ROLE_KEYS` does not apply.
   Rehearse the plan with `--scenario-key public`, which is not the live week.
+- **`--agent-state-root` is part of that posture.** The rules carry each unit's internal state —
+  revised strategies, version history, whatever the agent wrote — across the epochs (§4.7.1), and
+  this flag is what does it. A keyed plan without it is refused. Start a fresh week on an empty
+  directory; a `--resume` runs with the directory the matrix ran with. Back the root up with the
+  matrix directory: its `.snapshots/end-s<N>` checkpoints are what a re-run of a voided epoch
+  restores from.
 - A slot shorter than an epoch's wall time (360 blocks = 12 min of block time plus setup and
   reconstruction) makes every epoch after it late. The runner reports it; the plan is where it is
   fixed.

@@ -29,6 +29,7 @@
 import { formatEther, formatUnits, type Address } from "viem";
 import type { AgentSpec } from "@eris/sdk/types.js";
 import { agentSandboxWarning } from "./agentView.js";
+import { AGENT_STATE_ROOT_ENV } from "./agentState.js";
 import {
   checkRoleKeys,
   publicTestAddresses,
@@ -97,6 +98,17 @@ export function liveWeekRefusals(opts: {
     reasons.push(
       "no inference proxy for the agents: set ERIS_INFERENCE_BASE_URL (and ERIS_INFERENCE_SECRET) " +
         "to the operator's proxy started with --keys (infra/inference-proxy/README.md)",
+    );
+
+  // Rules §4.7.1: an agent's internal state, the strategies it revised under §2.5 included, is
+  // carried from epoch to epoch, in a persistent area the organizer provides. The runner does that
+  // with --agent-state-root (issue #77); without it every epoch starts every agent at version 0, and
+  // sixty epochs run against the rules with nothing in the record saying so (issue #264).
+  if (!opts.env[AGENT_STATE_ROOT_ENV])
+    reasons.push(
+      "no agent state root: the live week carries each unit's internal state across epochs " +
+        "(rules §4.7.1); pass --agent-state-root <dir> (an empty directory for a fresh week, or the " +
+        "one the matrix being resumed ran with)",
     );
 
   const custom = opts.agents
