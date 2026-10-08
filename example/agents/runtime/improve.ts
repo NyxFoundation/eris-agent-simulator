@@ -646,8 +646,10 @@ export const RECENT_DECISIONS_SHOWN = 24;
 // same clause of the rules: "the trading records so far, and the PnL".
 export function buildRevisionContext(opts: {
   block: number;
-  valueUsdc: number;
-  initialValueUsdc: number;
+  // Wallet plus every venue position (issue #274). Null when the account could not be valued --
+  // shown as unknown, never as a PnL of zero.
+  valueUsdc: number | null;
+  initialValueUsdc: number | null;
   sinceLastRevisionUsdc: number | null;
   // What holding the inventory of the run's first observation would be worth now, less what it was
   // worth then, at fair prices: the do-nothing counterfactual for the PnL above. The PnL is the
@@ -655,6 +657,11 @@ export function buildRevisionContext(opts: {
   // rising market as its own doing (or a falling one as its fault). Same for the last revision.
   holdSinceStartUsdc?: number | null;
   holdSinceLastRevisionUsdc?: number | null;
+  // How much of the value sat in venue positions at the start of each interval. The holding
+  // counterfactual is the wallet's balances at fair prices; a position held then is counted as if
+  // it kept its value, so its market move lands on the trading side. Said when it is not zero.
+  venuesAtStartUsdc?: number | null;
+  venuesAtLastRevisionUsdc?: number | null;
   currentVersion: number;
   history: StrategyVersion[];
   recent: Array<{ round: number; reason?: string; action?: unknown }>;
@@ -677,26 +684,42 @@ export function buildRevisionContext(opts: {
   // number in the hundreds of thousands that means nothing.
   epochId?: string;
 }): string {
-  const pnl = opts.valueUsdc - opts.initialValueUsdc;
-  const withHold = (actual: number, hold: number | null | undefined): string => {
+  const pnl =
+    opts.valueUsdc !== null && opts.initialValueUsdc !== null
+      ? opts.valueUsdc - opts.initialValueUsdc
+      : null;
+  const withHold = (
+    actual: number,
+    hold: number | null | undefined,
+    venuesThen: number | null | undefined,
+  ): string => {
     if (hold === null || hold === undefined) return `${actual.toFixed(2)} USDC`;
     const trading = actual - hold;
+    // A dollar is noise here; anything above it is a position the counterfactual did not mark.
+    const positions =
+      venuesThen !== null && venuesThen !== undefined && Math.abs(venuesThen) >= 1
+        ? `; that counts the wallet only -- the ${venuesThen.toFixed(2)} USDC you held in venue ` +
+          `positions then is taken as unchanged, so their market move is in the difference`
+        : "";
     return (
       `${actual.toFixed(2)} USDC (holding the inventory you had then would be ` +
       `${hold >= 0 ? "+" : ""}${hold.toFixed(2)} USDC; ` +
-      `the difference, ${trading >= 0 ? "+" : ""}${trading.toFixed(2)} USDC, is what trading did)`
+      `the difference, ${trading >= 0 ? "+" : ""}${trading.toFixed(2)} USDC, is what trading did${positions})`
     );
   };
   const lines = [
     `block: ${opts.block}`,
     `strategy version: ${opts.currentVersion}`,
-    `PnL since the run started: ${withHold(pnl, opts.holdSinceStartUsdc)}`,
+    pnl === null
+      ? `PnL since the run started: unknown (the account could not be valued yet)`
+      : `PnL since the run started: ${withHold(pnl, opts.holdSinceStartUsdc, opts.venuesAtStartUsdc)}`,
   ];
   if (opts.sinceLastRevisionUsdc !== null)
     lines.push(
       `PnL since the last revision: ${withHold(
         opts.sinceLastRevisionUsdc,
         opts.holdSinceLastRevisionUsdc,
+        opts.venuesAtLastRevisionUsdc,
       )}`,
     );
   // Issue #77: the epoch count is the frame for everything below it. The PnL and the history are
@@ -736,8 +759,8 @@ export function buildRevisionContext(opts: {
       const value =
         v.valueAtInstall === null
           ? "unknown"
-          : carriedIn
-            ? `${v.valueAtInstall.toFixed(2)} USDC, in that epoch`
+          : carriedIn || opts.initialValueUsdc === null
+            ? `${v.valueAtInstall.toFixed(2)} USDC${carriedIn ? ", in that epoch" : ""}`
             : `${(v.valueAtInstall - opts.initialValueUsdc).toFixed(2)} USDC vs the run start`;
       lines.push(
         `  v${v.version} @ block ${v.installedAtBlock}${ordinalOf(v.epochId)}` +
