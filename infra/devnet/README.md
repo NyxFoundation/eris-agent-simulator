@@ -127,6 +127,23 @@ log, the coordinator died on `ENOSPC`, the unit restarted it 30 s later, and tha
 the real one. The unit now refuses to start with less than 5% of the disk free (the first
 `ExecStartPre`), every container's log is capped, and "Host disk low" fires below 15%.
 
+### When the coordinator died mid-period
+
+The days already closed keep their results, and two steps keep the standings whole when the next
+period starts:
+
+1. **Close the day it died in.** A day gets its `summary.json` when it rolls, so the day the
+   coordinator died in has none, and the standings drop it. `npm run close:crashed-segment --
+   runs/<period> <day-dir>` builds the one the roll would have written from the day's own
+   `intervals.jsonl`, ending at the last boundary it read, and prints every agent's P; add `--write`
+   to write it and close the day's entry in `matrix.json`.
+2. **Continue the standings.** After the new period has started, write
+   `runs/<new period>/continues.json` as `{"from": "<old period>", "note": "<why>"}`. The dashboard
+   then serves the new period's `matrix.json` with the old period's days first, and admits them even
+   when only the new period is in `ERIS_DASHBOARD_COMPETITIONS`. The coordinator never touches this
+   file (it rewrites `matrix.json` from memory at every roll). The practice period ranks every day on
+   its own return from its own opening value, so days from two chains stand side by side.
+
 Adding a participant mid-period is the one thing that explicitly does **not** need a restart — that
 is what `run.registrationsFile` is for ([practice devnet](../../docs/guide/practice-devnet.md)).
 
