@@ -3838,6 +3838,16 @@ export async function runRealtimeSimulation(
                       callbackGasLimit: refusal.callbackGasLimit.toString(),
                       reason: refusal.reason,
                     }),
+                  // Issue #225: fills past the per-block bound wait for the next pass. Recorded so a
+                  // run can say how often the bound bit and how long the queue got.
+                  onOrdersDeferred: ({ sent, deferred }) =>
+                    logger.event({
+                      type: "keeper_orders_deferred",
+                      protocol: adapter.id,
+                      blockNumber: bn,
+                      sent,
+                      deferred,
+                    }),
                 });
               } catch (error) {
                 logger.event({

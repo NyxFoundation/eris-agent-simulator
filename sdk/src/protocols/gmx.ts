@@ -1692,6 +1692,20 @@ function gmxTokenPrice(
 // through the mock provider), the same check LiquidationUtils makes on chain.
 // ---------------------------------------------------------------------------
 
+// Order fills per block (issue #225). The keeper's fee sits above the participants' cap, so under
+// `--order fees` its fills go first; without a bound, every order created in the scanned range was
+// sent into one block. What fills a block is gas *used*, not declared -- measured 2026-10-08 on
+// anvil 1.7.1: seven transactions each declaring 6,000,000 all landed in one 30,000,000 block -- and
+// an executeOrder uses up to 2.79M (PR #221, 49,498 fills). Five fills are under half the block,
+// leaving the oracle update and the participants their room. The rest wait, in arrival order, and
+// are re-read on the next pass, so an order cancelled meanwhile is dropped rather than filled late.
+export const MAX_ORDER_FILLS_PER_BLOCK = 5;
+const deferredOrderKeys: Hex[] = [];
+/** Test seam: the deferral queue is module state. */
+export function resetKeeperOrderQueue(): void {
+  deferredOrderKeys.length = 0;
+}
+
 // Liquidations per block. Each declares GMX_KEEPER_EXECUTE_GAS like an order fill; the cap keeps a
 // cascade from declaring the whole block ahead of the participants. The rest go next block.
 const MAX_LIQUIDATIONS_PER_BLOCK = 2;
@@ -1964,6 +1978,9 @@ export const gmxAdapter: ProtocolAdapter = {
       toBlock?: bigint;
       // Told about every order the keeper read and did not execute (gmxKeeperRefusal), or could not read.
       onOrderRefused?: (refusal: GmxKeeperRefusal) => void;
+      // Told when more orders were executable than MAX_ORDER_FILLS_PER_BLOCK: how many went now,
+      // how many wait for the next pass (issue #225).
+      onOrdersDeferred?: (report: { sent: number; deferred: number }) => void;
     },
   ): Promise<void> {
     if (!ctx.gmx.mockProvider) return;
@@ -1979,19 +1996,27 @@ export const gmxAdapter: ProtocolAdapter = {
       fromBlock,
       toBlock,
     });
-    const keys = logs
+    const created = logs
       .filter(
         (l) =>
           (l.topics[1]?.toLowerCase() ?? "") ===
             ORDER_CREATED_HASH.toLowerCase() && l.topics[2],
       )
       .map((l) => l.topics[2] as Hex);
+    // Orders deferred by an earlier pass go first (arrival order), then this range's.
+    const keys = [...new Set([...deferredOrderKeys.splice(0), ...created])];
     if (keys.length === 0) return;
-    const executable = await keeperExecutableKeys(
+    const readable = await keeperExecutableKeys(
       ctx,
       keys,
       opts?.onOrderRefused,
     );
+    const executable = readable.slice(0, MAX_ORDER_FILLS_PER_BLOCK);
+    const deferred = readable.slice(MAX_ORDER_FILLS_PER_BLOCK);
+    if (deferred.length > 0) {
+      deferredOrderKeys.push(...deferred);
+      opts?.onOrdersDeferred?.({ sent: executable.length, deferred: deferred.length });
+    }
     if (executable.length === 0) return;
 
     const keeper = privateKeyToAccount(ctx.keeperPk);
