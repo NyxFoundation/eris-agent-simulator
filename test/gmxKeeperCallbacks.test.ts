@@ -26,7 +26,7 @@ import {
 } from "viem";
 
 const gmx = await import("@eris/sdk/protocols/gmx.js");
-const { gmxAdapter, gmxKeeperRefusal } = gmx;
+const { gmxAdapter, gmxKeeperRefusal, MAX_ORDER_FILLS_PER_BLOCK, resetKeeperOrderQueue } = gmx;
 const { GMX, DEFAULT_ANVIL_PRIVATE_KEYS } =
   await import("@eris/sdk/constants.js");
 const { gmxMarketAddresses } = await import("@eris/sdk/markets.js");
@@ -241,4 +241,51 @@ test("the deploy patch zeroes all three gas limits in the localhost profile", ()
   assert.match(patch, /^\+\s+refundExecutionFeeGasLimit: 0,/m);
   assert.match(patch, /^\+\s+maxCallbackGasLimit: 0,/m);
   assert.match(patch, /^\+\s+nativeTokenTransferGasLimit: 0,/m);
+});
+
+// ---- fills per block (issue #225) ----
+
+test("the keeper fills at most MAX_ORDER_FILLS_PER_BLOCK orders a pass and carries the rest to the next", async () => {
+  resetKeeperOrderQueue();
+  const orders = new Map<Hex, StubOrder | Error>();
+  for (let n = 1; n <= MAX_ORDER_FILLS_PER_BLOCK + 2; n++)
+    orders.set(key(n), { account: ACCOUNT, callbackContract: zeroAddress, callbackGasLimit: 0n });
+  const { ctx, executed } = stubCtx(orders);
+  const deferred: Array<{ sent: number; deferred: number }> = [];
+  await gmxAdapter.afterMine!(ctx, {
+    noMine: true,
+    fromBlock: 10n,
+    toBlock: 10n,
+    onOrdersDeferred: (r) => deferred.push(r),
+  });
+  assert.deepEqual(executed, [1, 2, 3, 4, 5].map(key), "the first five, in arrival order");
+  assert.deepEqual(deferred, [{ sent: MAX_ORDER_FILLS_PER_BLOCK, deferred: 2 }]);
+
+  // The next pass scans a range with no new orders: the two that waited go now, nothing is reported.
+  (ctx.publicClient as unknown as { getLogs: () => Promise<unknown[]> }).getLogs = async () => [];
+  await gmxAdapter.afterMine!(ctx, {
+    noMine: true,
+    fromBlock: 11n,
+    toBlock: 11n,
+    onOrdersDeferred: (r) => deferred.push(r),
+  });
+  assert.deepEqual(executed.slice(MAX_ORDER_FILLS_PER_BLOCK), [6, 7].map(key));
+  assert.equal(deferred.length, 1);
+  resetKeeperOrderQueue();
+});
+
+test("an order deferred and cancelled before its turn is dropped, not filled late", async () => {
+  resetKeeperOrderQueue();
+  const orders = new Map<Hex, StubOrder | Error>();
+  for (let n = 1; n <= MAX_ORDER_FILLS_PER_BLOCK + 1; n++)
+    orders.set(key(n), { account: ACCOUNT, callbackContract: zeroAddress, callbackGasLimit: 0n });
+  const { ctx, executed } = stubCtx(orders);
+  await gmxAdapter.afterMine!(ctx, { noMine: true, fromBlock: 10n, toBlock: 10n });
+  assert.equal(executed.length, MAX_ORDER_FILLS_PER_BLOCK);
+  // The sixth is gone from the Reader by the next pass (cancelled by its owner).
+  orders.set(key(MAX_ORDER_FILLS_PER_BLOCK + 1), undefined as never);
+  (ctx.publicClient as unknown as { getLogs: () => Promise<unknown[]> }).getLogs = async () => [];
+  await gmxAdapter.afterMine!(ctx, { noMine: true, fromBlock: 11n, toBlock: 11n });
+  assert.equal(executed.length, MAX_ORDER_FILLS_PER_BLOCK, "nothing filled late");
+  resetKeeperOrderQueue();
 });
