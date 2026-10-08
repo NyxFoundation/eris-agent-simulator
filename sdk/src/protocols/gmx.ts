@@ -46,6 +46,7 @@ import {
   sendNoMine,
   setStorageAt,
   bigintToStorageWord,
+  type StorageWrite,
 } from "../chain.js";
 import type {
   AgentObservation,
@@ -2684,6 +2685,29 @@ function gmxOraclePrice(
         ? fairPrice
         : baseFairPrice(ctx, info.symbol, fairPrice);
   return toGmxPrice(usd, info.decimals);
+}
+
+// The GMX provider's prices as storage writes (ADR 0011), for the oracle tokens the keeper passes.
+// Empty when GMX is not set up in this run.
+export function gmxOracleStorageWrites(
+  ctx: SimContext,
+  fairPrice: number,
+): StorageWrite[] {
+  const mock = ctx.gmx?.mockProvider;
+  const tokens = ctx.gmx?.oracleTokens;
+  if (!mock || !tokens) return [];
+  const out: StorageWrite[] = [];
+  for (const token of tokens) {
+    const price = gmxOraclePrice(ctx, token, fairPrice);
+    if (price === null) continue;
+    const [minSlot, maxSlot, setSlot] = gmxOraclePriceSlots(token);
+    out.push(
+      { address: mock, slot: minSlot, value: bigintToStorageWord(price) },
+      { address: mock, slot: maxSlot, value: bigintToStorageWord(price) },
+      { address: mock, slot: setSlot, value: bigintToStorageWord(1n) },
+    );
+  }
+  return out;
 }
 
 // Storage of contracts/MockOracleProvider.sol: `owner` is immutable (no slot), so

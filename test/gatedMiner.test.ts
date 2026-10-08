@@ -229,3 +229,76 @@ test("a head that moved without the miner is gated on, not skipped", async () =>
   await until(() => h.log.length === 1);
   await h.miner.stop();
 });
+
+test("a price set that cannot be written holds the block, and the chain goes on after three ticks", async () => {
+  const h = harness();
+  let attempts = 0;
+  // Every apply of this stage fails: the first two ticks hold the block, the third mines anyway.
+  h.miner.stage(100, async () => {
+    attempts++;
+    throw new Error("node refused the write");
+  });
+  const held: Array<{ heldTicks: number; minedAnyway: boolean }> = [];
+  (h.miner as unknown as { opts: { onApplyHeld: (i: { heldTicks: number; minedAnyway: boolean }) => void } }).opts.onApplyHeld =
+    (i) => held.push({ heldTicks: i.heldTicks, minedAnyway: i.minedAnyway });
+  h.miner.start();
+  await until(() => h.log.length === 1);
+  await h.miner.stop();
+  assert.deepEqual(held, [
+    { heldTicks: 1, minedAnyway: false },
+    { heldTicks: 2, minedAnyway: false },
+    { heldTicks: 3, minedAnyway: true },
+  ]);
+  assert.equal(attempts, 6, "each tick tries twice");
+  assert.equal(h.miner.stats().held, 2);
+});
+
+test("a stage with a commit writes and mines in one call; a failed commit falls back to two", async () => {
+  let t = 0;
+  let head = 100;
+  const log: string[] = [];
+  const miner: GatedMiner = new GatedMiner({
+    blockTimeMs: 2_000,
+    gateTimeoutMs: 6_000,
+    startHead: head,
+    now: () => t,
+    sleep: async (ms) => {
+      t += ms;
+      await new Promise((r) => setImmediate(r));
+    },
+    mine: async () => {
+      head++;
+      log.push(`mine ${head}`);
+      return head;
+    },
+    // The pass for each new head stages at once: 101's commit fails, so it goes in two steps.
+    onMined: (h) => {
+      if (h === 101)
+        miner.stage(
+          101,
+          async () => {
+            log.push("apply 101");
+          },
+          async () => {
+            throw new Error("batch refused");
+          },
+        );
+    },
+  });
+  miner.stage(
+    100,
+    async () => {
+      log.push("apply 100 (unused)");
+    },
+    async () => {
+      head++;
+      log.push(`commit 100 -> ${head}`);
+      return head;
+    },
+  );
+  miner.start();
+  await until(() => log.includes("mine 102"));
+  await miner.stop();
+  assert.deepEqual(log, ["commit 100 -> 101", "apply 101", "mine 102"]);
+  assert.equal(miner.stats().mined, 2);
+});

@@ -56,6 +56,11 @@ import {
   setChainMode,
   setEthBalance,
   setIntervalMining,
+  setStorageAt,
+  setStorageBatch,
+  commitStorageBatch,
+  batchServedInOrder,
+  type StorageWrite,
   transferEth,
   waitForMiningToSettle,
 } from "@eris/sdk/chain.js";
@@ -130,10 +135,12 @@ import type {
   SimContext,
 } from "@eris/sdk/protocols/types.js";
 import {
+  aaveOracleWrites,
   updateOracles,
   updateOraclesMempool,
   writeAaveOraclesStorage,
 } from "@eris/sdk/protocols/oracles.js";
+import { gmxOracleStorageWrites } from "@eris/sdk/protocols/gmx.js";
 import { AAVE, GMX_MARKETS, LST, TOKENS } from "@eris/sdk/constants.js";
 import {
   baseTokens,
@@ -212,6 +219,8 @@ import {
   setPriceFeedOpeningFor,
   updatePriceFeedForMempool,
   updatePriceFeedMempool,
+  priceFeedWrites,
+  priceFeedWritesFor,
   writePriceFeedStorage,
   writePriceFeedStorageFor,
 } from "./priceFeed.js";
@@ -992,6 +1001,37 @@ export async function runRealtimeSimulation(
         ? { cut: cutReport }
         : {}),
     });
+    // The checkpoint's prices back into the PriceFeed, every base, before anything below mines a
+    // block (the resume's setup does: a new GMX provider, approvals). A stop between the checkpoint
+    // and the miner's apply -- a SIGTERM that could not flush, a kill -9 -- leaves the PriceFeed one
+    // step behind the checkpoint, and every setup block would be mined on it (measured: 40 blocks on a
+    // local resume; PR #287 review). Aave and GMX are rewritten below, where their addresses are known.
+    if (config.chainMode !== "external") {
+      const cpWalk = resume.checkpoint.walk;
+      const writes = [
+        ...Object.entries(cpWalk.fairPrices)
+          .filter(([b, p]) => b !== "WETH" && Number.isFinite(p) && p > 0)
+          .flatMap(([b, p]) =>
+            priceFeedWritesFor(
+              resume!.checkpoint.priceFeed as Address,
+              tokenInfo(b).address,
+              p,
+              BigInt(resume!.checkpoint.lastProcessedBlock),
+            ),
+          ),
+        ...priceFeedWrites(
+          resume.checkpoint.priceFeed as Address,
+          cpWalk.latestFairPrice,
+          BigInt(resume.checkpoint.lastProcessedBlock),
+        ),
+      ];
+      for (const w of writes) await setStorageAt(publicClient, w.address, w.slot, w.value);
+      logger.event({
+        type: "price_feed_restored",
+        address: resume.checkpoint.priceFeed,
+        fairPrices: cpWalk.fairPrices,
+      });
+    }
     console.error(
       `[period] resuming ${runId} after block ${resume.checkpoint.lastProcessedBlock} ` +
         `(chain head ${resume.head}${resume.rewound ? ", the chain went back: artifacts cut to the checkpoint" : ""})` +
@@ -1215,6 +1255,8 @@ export async function runRealtimeSimulation(
   // Declared before the stop handler below (a SIGTERM right after start must not hit the temporal
   // dead zone) and out here so every exit, the failing ones included, stops it before the teardown.
   let gatedMiner: GatedMiner | null = null;
+  // Set at the start of mining: whether a pass's writes and the next block go in one batch.
+  let batchCommit = false;
 
   // A period's stop (systemd's SIGTERM, a Ctrl-C) pauses the chain on its way out. The next start
   // resumes the period from its last checkpoint, and until then participants' transactions wait in
@@ -1899,26 +1941,6 @@ export async function runRealtimeSimulation(
           `the period's PriceFeed ${priceFeedAddress} has no code on this chain, though the chain holds the checkpoint's block`,
         );
       logger.event({ type: "price_feed_reused", address: priceFeedAddress });
-      // Write the checkpoint's prices back, every base: a stop between the checkpoint and the
-      // miner's apply (or a kill -9) leaves the PriceFeed one step behind Aave and GMX, which the
-      // resume rewrites (PR #287 review).
-      if (!external) {
-        await writePriceFeedStorage(
-          publicClient,
-          priceFeedAddress,
-          latestFairPrice,
-          BigInt(cp.lastProcessedBlock),
-        );
-        for (const b of extraBaseSymbols)
-          if (ctx.fairPrices?.[b] !== undefined)
-            await writePriceFeedStorageFor(
-              publicClient,
-              priceFeedAddress,
-              tokenInfo(b).address,
-              ctx.fairPrices[b],
-              BigInt(cp.lastProcessedBlock),
-            );
-      }
     } else {
       for (const b of extraBaseSymbols)
         await setPriceFeedOpeningFor(
@@ -3588,7 +3610,21 @@ export async function runRealtimeSimulation(
       // The interval above was only to flush the setup backlog the same way every run does. Under
       // economicGas the timer cannot know when the storage writes are done, so it stops here and
       // the gated miner below takes over at the same cadence (gatedMiner.ts).
-      if (config.economicGas) await setIntervalMining(publicClient, 0);
+      if (config.economicGas) {
+        await setIntervalMining(publicClient, 0);
+        // Whether this node serves a JSON-RPC batch in order, so a pass's price writes and the block
+        // that uses them can go in one request (gatedMiner.ts commit). Measured on this node, before
+        // the run's first block (it mines a few probe blocks); otherwise writes and mine are two
+        // requests and the new prices are readable in `latest` for the time between them.
+        const order = await batchServedInOrder(config.rpcUrl).catch((error: unknown) => ({
+          inOrder: false,
+          trials: 0,
+          writeFirst: 0,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+        batchCommit = order.inOrder;
+        logger.event({ type: "batch_order_check", ...order });
+      }
     }
     const startTime = Date.now();
     // base/effective separation (ADR 0009 §1): advance the OU state as the base series, and derive the effective
@@ -4303,8 +4339,22 @@ export async function runRealtimeSimulation(
           endBlock,
         });
         const bn = step.block;
-        // The price writes for block bn+1, handed to the gated miner when this pass is over (below).
+        // The price writes for block bn+1, handed to the gated miner once this pass is done reading the
+        // head (stagePass below), or at the latest when the pass ends.
         let pendingOracleApply: (() => Promise<void>) | null = null;
+        let pendingOracleCommit: (() => Promise<number>) | null = null;
+        let passStaged = false;
+        const stagePass = (): void => {
+          if (passStaged || !gatedMiner) return;
+          passStaged = true;
+          // A pass that failed before its oracle task stages nothing to write, which still opens
+          // the gate: the next block is mined on the prices already in storage rather than not at all.
+          gatedMiner.stage(
+            bn,
+            pendingOracleApply ?? (async () => {}),
+            pendingOracleCommit ?? undefined,
+          );
+        };
         try {
           const fromBlock = step.fromBlock;
           lastProcessedBlock = Math.max(lastProcessedBlock, bn);
@@ -4575,37 +4625,39 @@ export async function runRealtimeSimulation(
             try {
               if (economicGas) {
                 // Every price is a keyless `anvil_setStorageAt` (PriceFeed, every Aave aggregator,
-                // the GMX provider), staged rather than written: the gated miner applies them just
-                // before it mines the next block, so no block is cut between two of them and none
-                // sits readable in `latest` for a block time ahead of the block it prices
-                // (gatedMiner.ts). They are independent, so they run concurrently. The prices are
-                // captured now: the next pass moves latestFairPrice before the miner may apply.
-                // Staged when this pass is over, not here: anvil writes storage into the head's
-                // state, so a write made while the pass still reads block bn (the live scorer's
-                // boundary, the observation, the flow context) is read back as bn's own price --
-                // measured as a 0.24% live-vs-sweep disagreement on calm#101 before this moved.
-                const price = latestFairPrice;
-                const extra = extraBaseSymbols.map((b) => [b, fairPrices[b]] as const);
+                // the GMX provider), planned here and applied by the gated miner in one JSON-RPC
+                // batch right before it mines the next block (gatedMiner.ts), so no block is cut
+                // between two of them and the new prices are in `latest` for one batch round trip
+                // and the mine, not for the dozen sequential calls they used to be (PR #287 review).
+                // Planned now, from this pass's prices and reads (the LST's redemption rate, a
+                // market-priced stable's quote); the next pass moves them before the miner applies.
+                // Staged once this pass is done reading block bn, not here: anvil writes storage into
+                // the head's state, so a write made while the pass still reads bn is read back as
+                // bn's own price -- measured as a 0.24% live-vs-sweep disagreement on calm#101.
                 const block = BigInt(bn);
+                const writes: StorageWrite[] = [
+                  ...(await aaveOracleWrites(ctx, latestFairPrice)),
+                  ...gmxOracleStorageWrites(ctx, latestFairPrice),
+                  ...extraBaseSymbols.flatMap((b) =>
+                    priceFeedWritesFor(priceFeedAddress, tokenInfo(b).address, fairPrices[b], block),
+                  ),
+                  // The PriceFeed last: what the reference runtime reads first.
+                  ...priceFeedWrites(priceFeedAddress, latestFairPrice, block),
+                ];
                 const apply = async (): Promise<void> => {
-                  await Promise.all([
-                    writePriceFeedStorage(publicClient, priceFeedAddress, price, block),
-                    writeAaveOraclesStorage(ctx, price),
-                    ...extra.map(([b, p]) =>
-                      writePriceFeedStorageFor(
-                        publicClient,
-                        priceFeedAddress,
-                        tokenInfo(b).address,
-                        p,
-                        block,
-                      ),
-                    ),
-                    ctx.oracle.gmxProvider && ctx.updateGmxOracle
-                      ? ctx.updateGmxOracle(ctx, price, { storage: true })
-                      : Promise.resolve(),
-                  ]);
+                  if (gatedMiner) await setStorageBatch(config.rpcUrl, writes);
+                  else
+                    for (const w of writes)
+                      await setStorageAt(publicClient, w.address, w.slot, w.value);
                   for (const base of ["WETH", ...extraBaseSymbols]) auditPrice(base, "storage_written");
                 };
+                pendingOracleCommit = batchCommit
+                  ? async (): Promise<number> => {
+                      const head = await commitStorageBatch(config.rpcUrl, writes);
+                      for (const base of ["WETH", ...extraBaseSymbols]) auditPrice(base, "storage_written");
+                      return head;
+                    }
+                  : null;
                 if (gatedMiner) pendingOracleApply = apply;
                 else await apply();
                 // The LST accrual stays a tx from the admin key (its amount is a pure function of
@@ -5101,6 +5153,12 @@ export async function runRealtimeSimulation(
           if (liquityRuntime) tasks.push(timed(liquityWatchTask));
           const results = await Promise.all(tasks);
 
+          // Everything that reads block bn as the head is done (state, keeper, oracle planning, the
+          // event reconciles, victim watches). What follows reads history (the boundary trails by a
+          // block under economicGas) or only writes artifacts, so the next block need not wait for
+          // it: stage now (PR #287 review).
+          stagePass();
+
           // After the block's own work, not beside it: this reads the block that has just been
           // mined, so it cannot race anything above, and running it inside the Promise.all would
           // put a cross-section read on the critical path of every block instead of one in twelve.
@@ -5200,10 +5258,8 @@ export async function runRealtimeSimulation(
             error: error instanceof Error ? error.message : String(error),
           });
         } finally {
-          // The pass is done reading block bn: the miner may write bn+1's prices and mine. A pass
-          // that failed before its oracle task stages nothing to write, which still opens the gate:
-          // the next block is mined on the prices already in storage rather than not at all.
-          gatedMiner?.stage(bn, pendingOracleApply ?? (async () => {}));
+          // A pass that threw before its tasks finished stages here.
+          stagePass();
           processing = false;
           settle();
           // The end block has been processed -- or its pass failed, which does not move the end:
@@ -5249,6 +5305,14 @@ export async function runRealtimeSimulation(
               blockNumber: forBlock,
               retried,
               error: error instanceof Error ? error.message : String(error),
+            }),
+          onApplyHeld: (info) =>
+            logger.event({
+              type: "mining_held",
+              ...info,
+              note: info.minedAnyway
+                ? "the price writes kept failing; the block was mined on what storage holds"
+                : "the price writes failed; the block waits for the next tick rather than mix prices",
             }),
           onMineError: ({ head, error }) =>
             logger.event({

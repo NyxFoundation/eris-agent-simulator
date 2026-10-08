@@ -581,6 +581,136 @@ export async function resetFork(
   }
 }
 
+// One storage slot to set: the unit the economicGas price writes are planned in (ADR 0011).
+export type StorageWrite = { address: Address; slot: Hex; value: Hex };
+
+// Every write in one JSON-RPC batch (one HTTP request), rather than one round trip each. Under
+// gated mining the new prices are readable in `latest` from the first write until the block is
+// mined, so the number of round trips is the width of that window (PR #287 review). anvil may serve
+// a batch's members concurrently; storage sets do not depend on each other, so their order does not
+// matter, and the mine is sent only after the whole batch has answered.
+export async function setStorageBatch(
+  rpcUrl: string,
+  writes: StorageWrite[],
+  opts: { timeoutMs?: number } = {},
+): Promise<void> {
+  requireDevNode(
+    "setStorageBatch",
+    "storage cannot be written from outside on a real chain; the economicGas profile (ADR 0011) " +
+      "is unusable there",
+  );
+  if (writes.length === 0) return;
+  const body = writes.map((w, i) => ({
+    jsonrpc: "2.0",
+    id: i,
+    method: "anvil_setStorageAt",
+    params: [w.address, w.slot, w.value],
+  }));
+  const response = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    ...(opts.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
+  });
+  if (!response.ok) throw new Error(`setStorageBatch: HTTP ${response.status}`);
+  const replies = (await response.json()) as Array<{ id: number; error?: { message: string } }>;
+  if (!Array.isArray(replies) || replies.length !== writes.length)
+    throw new Error("setStorageBatch: the node did not answer every write");
+  const failed = replies.filter((r) => r.error);
+  if (failed.length > 0)
+    throw new Error(
+      `setStorageBatch: ${failed.length} of ${writes.length} writes failed: ${failed[0].error?.message}`,
+    );
+}
+
+// The writes and one block, in one JSON-RPC batch, on a node that serves a batch in order
+// (batchServedInOrder): the block is mined right after the last write inside the node, so the new
+// values are never readable at `latest` from outside for longer than the node takes to handle the
+// request. Resolves to the new head.
+export async function commitStorageBatch(
+  rpcUrl: string,
+  writes: StorageWrite[],
+  opts: { timeoutMs?: number } = {},
+): Promise<number> {
+  requireDevNode("commitStorageBatch", "only a dev node lets the environment write storage and mine");
+  const body = [
+    ...writes.map((w, i) => ({
+      jsonrpc: "2.0",
+      id: i,
+      method: "anvil_setStorageAt",
+      params: [w.address, w.slot, w.value],
+    })),
+    { jsonrpc: "2.0", id: writes.length, method: "anvil_mine", params: [] },
+    { jsonrpc: "2.0", id: writes.length + 1, method: "eth_blockNumber", params: [] },
+  ];
+  const response = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    ...(opts.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
+  });
+  if (!response.ok) throw new Error(`commitStorageBatch: HTTP ${response.status}`);
+  const replies = (await response.json()) as Array<{
+    id: number;
+    result?: unknown;
+    error?: { message: string };
+  }>;
+  if (!Array.isArray(replies) || replies.length !== body.length)
+    throw new Error("commitStorageBatch: the node did not answer every call");
+  const failed = replies.find((r) => r.error);
+  if (failed) throw new Error(`commitStorageBatch: call ${failed.id} failed: ${failed.error?.message}`);
+  const head = replies.find((r) => r.id === writes.length + 1)?.result;
+  if (typeof head !== "string") throw new Error("commitStorageBatch: no block number");
+  return Number(BigInt(head));
+}
+
+// Whether this node serves a JSON-RPC batch in order: a storage write in a batch takes effect before
+// an anvil_mine later in the same batch. Measured, not assumed -- anvil 1.5.1 does (40 of 40), but no
+// version documents it, and a node that mined first would put every block on the previous prices.
+// A pending transaction to a probe contract copies slot 0 into slot 1 when mined, so slot 1 says which
+// came first. Mines `trials` blocks; run it before the run's first block.
+export async function batchServedInOrder(
+  rpcUrl: string,
+  trials = 5,
+): Promise<{ inOrder: boolean; trials: number; writeFirst: number }> {
+  requireDevNode("batchServedInOrder", "only a dev node lets the environment write storage and mine");
+  const call = async (body: unknown): Promise<any> =>
+    (
+      await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      })
+    ).json();
+  const rpc = (method: string, params: unknown[]) =>
+    call({ jsonrpc: "2.0", id: 1, method, params });
+  // Addresses nothing else uses: a probe contract (SLOAD 0, SSTORE 1, STOP) and a sender.
+  const probe = "0x00000000000000000000000000000000e215b0a1";
+  const sender = "0x00000000000000000000000000000000e215b0a2";
+  await rpc("anvil_setCode", [probe, "0x60005460015500"]);
+  await rpc("anvil_setBalance", [sender, "0xde0b6b3a7640000"]);
+  await rpc("anvil_impersonateAccount", [sender]);
+  let writeFirst = 0;
+  try {
+    for (let i = 1; i <= trials; i++) {
+      const value = `0x${i.toString(16).padStart(64, "0")}`;
+      await rpc("eth_sendTransaction", [
+        { from: sender, to: probe, gas: "0x30000", maxFeePerGas: "0x0", maxPriorityFeePerGas: "0x0" },
+      ]);
+      await call([
+        { jsonrpc: "2.0", id: 1, method: "anvil_setStorageAt", params: [probe, "0x0", value] },
+        { jsonrpc: "2.0", id: 2, method: "anvil_mine", params: [] },
+      ]);
+      const slot1 = (await rpc("eth_getStorageAt", [probe, "0x1", "latest"])).result;
+      if (typeof slot1 === "string" && BigInt(slot1) === BigInt(i)) writeFirst++;
+    }
+  } finally {
+    await rpc("anvil_stopImpersonatingAccount", [sender]);
+    await rpc("anvil_setCode", [probe, "0x"]);
+  }
+  return { inOrder: writeFirst === trials, trials, writeFirst };
+}
+
 export async function setStorageAt(
   publicClient: PublicClient,
   token: Address,

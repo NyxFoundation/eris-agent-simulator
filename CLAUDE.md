@@ -193,7 +193,10 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
 **priority fee に上限は無い**（2026-10-08。旧 5 gwei は `economicGas: false` = ADR 0010 のプロファイルにだけ残る）。
 - **価格は storage 直書き**（PriceFeed・Aave の全 aggregator・GMX の `MockOracleProvider` = `gmxOraclePriceSlots`）。
   **採掘は coordinator**（`core/src/realtime/gatedMiner.ts`）: block pass は終わったときに書き込みを段取りし、miner が
-  `blockTimeSec` の固定の格子で「head の価格が段取り済みか」を待って（上限 3 ブロック）、書き込みを適用してから `anvil_mine`。
+  `blockTimeSec` の固定の格子で「head の価格が段取り済みか」を待って（上限 3 ブロック）、**書き込みと `anvil_mine` を 1 本の
+  JSON-RPC バッチ**で送る（起動時に `batchServedInOrder` でノードが順番どおりに処理するか実測。駄目なら 2 段）。新しい価格が
+  `latest` に先に見えるのはブロックの組み立て中だけ（実測 中央値 5.5 ms）。書き込みの内容は段取り時に計算し、段取りは head を読む
+  処理が終わった時点（採点・checkpoint・セグメントの切り替えを待たない）。適用が 2 回失敗したらそのブロックは掘らない（3 tick まで）。
   tick ごとにチェーンの head を読み直す（見失うと待ちを飛ばす）。遅れは半ブロック間隔で取り戻し、30 ブロック超は張り直す
 - **anvil は head に書いた storage をそのブロックの履歴に残す**ので、ブロック B の履歴は B+1 用の価格を持つ。よって
   ライブ採点は境界を 1 ブロック遅れて履歴から読み（`readLagBlocks: 1`）、`close()` は miner の `stop()` が保留中の
@@ -201,10 +204,15 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   帰結: 「ブロック B の価値」は B+1 の取引が約定する価格で評価される。agent の観測は従来どおり 1 ブロック遅れ
 - **keeper（GMX の約定・清算）は 50 gwei 固定**（`ECONOMIC_KEEPER_FEE_WEI`）。順序のためではなく、上限なしの
   ブロックで参加者に埋められて締め出されないため。keeper/admin は anvil で 200 万 ETH（`GAS_ONLY_WEI`）
-- **環境のイベント取引**（launch の波・depeg の売買・流動性の引き抜き）は `U × V / 150k gas` を入札
-  （`core/src/realtime/envBid.ts`。V = 先回りの価値、U ~ lognormal(中央値 0.86, σ 0.6) で P(U<1) ≈ 0.6、鍵付きストリーム
-  `env-bid:<種類>`、練習期間のチェックポイントに位置を保存）。数字は参加者に公開しない（更新履歴は仕組みだけ）
-- ゲートウェイは `RPC_MAX_PRIORITY_FEE_WEI=0`、マニフェストは `limits.maxPriorityFeeWei: "none"`。起動時に coinbase が
+- **環境のイベント取引**（launch の波・depeg の売買・流動性の引き抜き・whale）は `U × V / G` を入札
+  （`core/src/realtime/envBid.ts`。V = 先回りの価値、G = 同じ venue で先回りする swap の gas = `FRONT_RUN_GAS`（Uniswap 100k /
+  Balancer 95k / Curve 135k）、U ~ lognormal(中央値 0.86, σ 0.6) で P(U<1) ≈ 0.6、鍵付きストリーム `env-bid:<種類>`、練習期間の
+  チェックポイントに位置を保存）。deployer の鍵の tx は入札の高い順に送る（`sendByBid`。nonce 順の足引っ張りを防ぐ）。
+  **lstSlash は 100 gwei 固定**（`ECONOMIC_LST_SLASH_FEE_WEI`）。数字は参加者に公開しない（更新履歴は仕組みだけ）
+- **練習期間の再開**: SIGTERM で miner の保留中の書き込みを適用してから止める。再開時は setup が掘る前に PriceFeed を
+  チェックポイントの価格へ書き直す（`price_feed_restored`）
+- ゲートウェイは `RPC_MAX_PRIORITY_FEE_WEI=0`、マニフェストは `limits.maxPriorityFeeWei: "none"` と `limits.economicGas`
+  （自己ホストのランタイムは設定より優先して使う = 古い practice.yaml でも 5 gwei に縛られない）。起動時に coinbase が
   agent のアドレスなら拒否（anvil は 0x0）
 
 ### GMX の funding は localhost でも動く

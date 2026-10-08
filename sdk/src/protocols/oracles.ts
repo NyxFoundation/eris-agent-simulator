@@ -6,6 +6,7 @@ import {
   sendAndMine,
   sendNoMine,
   setStorageAt,
+  type StorageWrite,
 } from "../chain.js";
 import { lstVaultAbi } from "../abis.js";
 import { marketPricedStables, readStablePrices } from "../stables.js";
@@ -313,6 +314,31 @@ const AGG_ANSWER_SLOT = `0x${"0".repeat(64)}` as Hex;
 // ADR 0011 §1: finalize the Aave WETH/USDC oracle prices by writing storage directly instead of via a mempool tx.
 // Like PriceFeed, it exists at the block boundary, so there is nothing to front-run and it does not depend on the priority-fee cap.
 // Used only in the economic profile (economicGas). No-op if the aggregator is not deployed (aave disabled).
+// The same writes as writeAaveOraclesStorage, planned rather than made (ADR 0011: the gated miner
+// applies a pass's writes in one batch). The reads -- the LST's redemption rate, a market-priced
+// stable's quote -- happen here, when the pass plans, not when the miner applies.
+export async function aaveOracleWrites(
+  ctx: SimContext,
+  fairPrice: number,
+): Promise<StorageWrite[]> {
+  const out: StorageWrite[] = [];
+  const push = (address: Address, price: bigint): void => {
+    out.push({ address, slot: AGG_ANSWER_SLOT, value: bigintToStorageWord(price) });
+  };
+  const wethAgg = ctx.oracle.aaveAggregators[TOKENS.WETH.address.toLowerCase()];
+  const usdcAgg = ctx.oracle.aaveAggregators[TOKENS.USDC.address.toLowerCase()];
+  if (wethAgg) push(wethAgg, toAavePrice(fairPrice));
+  if (usdcAgg) push(usdcAgg, toAavePrice(1));
+  for (const { aggregator, aavePrice } of [
+    ...extraAaveAggregators(ctx),
+    ...(await stableAaveAggregators(ctx)),
+  ])
+    push(aggregator, aavePrice);
+  const lstAgg = await lstAaveAggregator(ctx, fairPrice);
+  if (lstAgg) push(lstAgg.aggregator, lstAgg.aavePrice);
+  return out;
+}
+
 export async function writeAaveOraclesStorage(
   ctx: SimContext,
   fairPrice: number,

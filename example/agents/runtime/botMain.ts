@@ -120,6 +120,8 @@ type Manifest = {
   period?: unknown;
   // The venues the run turned on, compared against the loaded config's on start.
   protocols?: string[];
+  // The operator's fee profile (ADR 0011): wins over the config's, like `period`.
+  limits?: { economicGas?: unknown };
   contracts?: {
     priceFeed?: string;
     // Issue #40: the discovery registry, the permissionless lending singleton, and the block the
@@ -234,9 +236,13 @@ async function main(): Promise<void> {
         "from the config: blocksRemaining may not match the run. Ask the operator for a current " +
         "manifest.\n",
     );
-  const runOverrides = period
+  const runOverrides: Record<string, string> = period
     ? manifestRunOverrides(period, manifest?.chain?.blockTimeSec)
     : {};
+  // The fee profile is the operator's, not the participant's copy of the config: an old
+  // practice.yaml without `economicGas` would cap every bid at the retired 5 gwei (ADR 0011).
+  if (typeof manifest?.limits?.economicGas === "boolean")
+    runOverrides.ERIS_ECONOMIC_GAS = manifest.limits.economicGas ? "1" : "0";
 
   // ADR 0013: the coordinator passes a YAML config path via ERIS_CONFIG -- the agent's own file,
   // with the fields the runtime reads as the coordinator resolved them (core/src/realtime/
