@@ -25,7 +25,12 @@ import { accountAddress, sendAndMine, sendNoMine } from "@eris/sdk/chain.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
 import type { EventSchedule } from "./events.js";
-import { pullFrontRunValueUsd, type EnvBidContext } from "./envBid.js";
+import {
+  FRONT_RUN_GAS,
+  pullFrontRunValueUsd,
+  type DeferredSend,
+  type EnvBidContext,
+} from "./envBid.js";
 import {
   approvalsFor,
   buildDeposit,
@@ -287,7 +292,10 @@ export async function reconcileLiquidityPull(
   blockNumber: number,
   // `bid` (economicGas, ADR 0011): price each send at a random fraction of what getting ahead of it
   // is worth (envBid.ts) instead of the fixed `priorityFeeWei`.
-  opts: { priorityFeeWei: bigint; bid?: EnvBidContext },
+  // `defer`: collect the sends instead of making them, for the caller to order by bid with another
+  // event's sends from the same key (sendByBid). The returned hashes are then empty; each deferred
+  // send resolves to its own.
+  opts: { priorityFeeWei: bigint; bid?: EnvBidContext; defer?: DeferredSend[] },
   logger: RunLogger,
 ): Promise<Hex[]> {
   const mults = schedule.depthMultiplierAt(blockIndex);
@@ -376,23 +384,38 @@ export async function reconcileLiquidityPull(
                     seededDepth: pos.seededShare,
                   })
                 : 0,
+            frontRunGas: FRONT_RUN_GAS[pos.venue],
             gasLimit: RECONCILE_GAS,
             ethUsd: opts.bid.ethUsd,
             balanceWei: await ctx.publicClient.getBalance({ address: runtime.owner }),
           })
         : null;
-      const hash = await sendNoMine(
-        ctx.publicClient,
-        ctx.walletClient,
-        ctx.chain,
-        runtime.ownerPk,
-        { to: call.to, data: call.data, gas: RECONCILE_GAS },
-        bid?.priorityFeeWei ?? opts.priorityFeeWei,
-      );
-      runtime.pending.set(key, { hash, blockIndex });
-      allSettled = false;
-      hashes.push(hash);
-      logger.event({
+      const priorityFeeWei = bid?.priorityFeeWei ?? opts.priorityFeeWei;
+      const send = async (): Promise<Hex | null> => {
+        let hash: Hex;
+        try {
+          hash = await sendNoMine(
+            ctx.publicClient,
+            ctx.walletClient,
+            ctx.chain,
+            runtime.ownerPk,
+            { to: call.to, data: call.data, gas: RECONCILE_GAS },
+            priorityFeeWei,
+          );
+        } catch (error) {
+          logger.event({
+            type: "stress_liquidity_pull_failed",
+            blockIndex,
+            blockNumber,
+            venue: pos.venue,
+            market: pos.marketKey,
+            targetShare: target.toString(),
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        }
+        runtime.pending.set(key, { hash, blockIndex });
+        logger.event({
         type: "stress_liquidity_pull",
         blockIndex,
         blockNumber,
@@ -415,7 +438,17 @@ export async function reconcileLiquidityPull(
               ...(bid.balanceCapped ? { bidBalanceCapped: true } : {}),
             }
           : {}),
-      });
+        });
+        return hash;
+      };
+      // Something is going out either way, so the window is not settled this block.
+      allSettled = false;
+      if (opts.defer) {
+        opts.defer.push({ priorityFeeWei, send });
+        continue;
+      }
+      const hash = await send();
+      if (hash) hashes.push(hash);
     } catch (error) {
       // `applied` is untouched, so the next block recomputes the same delta and retries: a failed
       // send costs one block of depth rather than desynchronizing the pool for the whole run.

@@ -174,7 +174,15 @@ import {
 } from "../liquityVictims.js";
 import { waitForAgentsReady } from "./agentsReady.js";
 import { GatedMiner } from "./gatedMiner.js";
-import { EnvBidder, type EnvBidContext } from "./envBid.js";
+import {
+  EnvBidder,
+  FRONT_RUN_GAS,
+  seededImpactValueUsd,
+  sendByBid,
+  type DeferredSend,
+  type EnvBidContext,
+  type FrontRunVenue,
+} from "./envBid.js";
 import { epochNonceFloor, raiseNonces } from "./nonceFloor.js";
 import {
   agentStateRootFromEnv,
@@ -351,6 +359,9 @@ const GAS_ONLY_WEI = 2_000_000_000_000_000_000_000_000n; // 2,000,000 ETH (gas f
 // ordering lever -- it keeps the keeper in the block when agents fill it (30M gas at 50 gwei is 1.5 ETH
 // a block to crowd it out).
 export const ECONOMIC_KEEPER_FEE_WEI = 50_000_000_000n; // 50 gwei
+// ADR 0011: an LST slash under economicGas. Not priced by envBid: it is the environment's event on
+// the vault, like a price, so it goes at a fixed fee far above an ordinary bid (decided 2026-10-09).
+export const ECONOMIC_LST_SLASH_FEE_WEI = 100_000_000_000n; // 100 gwei
 
 // The root of an empty transaction trie: a block header carrying any other transactionsRoot had
 // transactions, whatever list the node returns with it.
@@ -1200,6 +1211,11 @@ export async function runRealtimeSimulation(
     console.error(`[flow] ${info.reason}`);
   };
 
+  // ADR 0011 §5-3/4: under economicGas the environment mines, and only on a complete price set.
+  // Declared before the stop handler below (a SIGTERM right after start must not hit the temporal
+  // dead zone) and out here so every exit, the failing ones included, stops it before the teardown.
+  let gatedMiner: GatedMiner | null = null;
+
   // A period's stop (systemd's SIGTERM, a Ctrl-C) pauses the chain on its way out. The next start
   // resumes the period from its last checkpoint, and until then participants' transactions wait in
   // the mempool rather than being mined against a price nobody is updating.
@@ -1213,11 +1229,15 @@ export async function runRealtimeSimulation(
       } catch {
         // nothing to do about it on the way out
       }
-      // Under economicGas the environment mines (gatedMiner.ts); interval mining is already off.
-      (gatedMiner as GatedMiner | null)?.halt();
+      // Under economicGas the environment mines (gatedMiner.ts): stop it and apply the stage it
+      // holds, so the head carries the prices the checkpoint was written against.
+      const miner = gatedMiner as GatedMiner | null;
       const pause = external
         ? Promise.resolve()
-        : setIntervalMining(publicClient, 0).catch(() => undefined);
+        : Promise.all([
+            miner ? miner.stop().catch(() => undefined) : undefined,
+            setIntervalMining(publicClient, 0).catch(() => undefined),
+          ]);
       void Promise.race([
         pause,
         new Promise((resolve) => setTimeout(resolve, 3_000)),
@@ -1425,9 +1445,6 @@ export async function runRealtimeSimulation(
   // exhaustion rather than every block after it.
   let lstExhaustedReported = cp?.lstExhaustedReported ?? false;
   let latestFairPrice = 0;
-  // ADR 0011 §5-3/4: under economicGas the environment mines, and only on a complete price set.
-  // Declared out here so every exit, the failing ones included, stops it before the teardown.
-  let gatedMiner: GatedMiner | null = null;
   const latestHistory: AgentObservation["history"] = [];
 
   try {
@@ -1882,6 +1899,26 @@ export async function runRealtimeSimulation(
           `the period's PriceFeed ${priceFeedAddress} has no code on this chain, though the chain holds the checkpoint's block`,
         );
       logger.event({ type: "price_feed_reused", address: priceFeedAddress });
+      // Write the checkpoint's prices back, every base: a stop between the checkpoint and the
+      // miner's apply (or a kill -9) leaves the PriceFeed one step behind Aave and GMX, which the
+      // resume rewrites (PR #287 review).
+      if (!external) {
+        await writePriceFeedStorage(
+          publicClient,
+          priceFeedAddress,
+          latestFairPrice,
+          BigInt(cp.lastProcessedBlock),
+        );
+        for (const b of extraBaseSymbols)
+          if (ctx.fairPrices?.[b] !== undefined)
+            await writePriceFeedStorageFor(
+              publicClient,
+              priceFeedAddress,
+              tokenInfo(b).address,
+              ctx.fairPrices[b],
+              BigInt(cp.lastProcessedBlock),
+            );
+      }
     } else {
       for (const b of extraBaseSymbols)
         await setPriceFeedOpeningFor(
@@ -4364,12 +4401,16 @@ export async function runRealtimeSimulation(
               if (ev.type === "lstSlash") {
                 if (!lstRuntime) continue;
                 try {
+                  // Under economicGas a slash is sent, not mined here (only the gated miner mines), at
+                  // a fixed 100 gwei: it is the environment's event on the vault, not a trade to be
+                  // priced, and kept above what an ordinary bid reaches (ADR 0011 §1b).
                   await slashLst(
                     ctx,
                     lstRuntime,
                     ev.magnitude,
                     logger,
-                    oracleFee,
+                    economicGas ? ECONOMIC_LST_SLASH_FEE_WEI : oracleFee,
+                    { noMine: economicGas },
                   );
                   stressAudit.record(ev, blockIndex, bn, { stage: "applied" });
                 } catch (error) {
@@ -4388,10 +4429,23 @@ export async function runRealtimeSimulation(
                 // capacity before any print. That is deliberate — reading the tape is part of the
                 // regime — but it does mean the event is anticipatable, not just reactable.
                 try {
+                  // Under economicGas the print bids like the other event trades: a random share of
+                  // what getting ahead of it is worth (envBid.ts), V from its notional on a seeded book.
+                  const basePrice = fairPrices[ev.base] ?? latestFairPrice;
+                  const whaleBid = envBid("whale");
+                  const whaleVenue = (ev.venue ?? "uniswap") as FrontRunVenue;
+                  const bid = whaleBid
+                    ? whaleBid.bidder.bid({
+                        valueUsd: seededImpactValueUsd(ev.magnitude * basePrice),
+                        frontRunGas: FRONT_RUN_GAS[whaleVenue] ?? FRONT_RUN_GAS.uniswap,
+                        gasLimit: 1_000_000n,
+                        ethUsd: whaleBid.ethUsd,
+                      })
+                    : null;
                   const order = buildWhaleOrder(
                     ev,
-                    fairPrices[ev.base] ?? latestFairPrice,
-                    config.defaultPriorityFeeWei,
+                    basePrice,
+                    bid?.priorityFeeWei ?? config.defaultPriorityFeeWei,
                   );
                   logger.event({
                     type: "stress_whale",
@@ -4401,6 +4455,13 @@ export async function runRealtimeSimulation(
                     side: ev.side,
                     base: ev.base,
                     magnitude: ev.magnitude,
+                    ...(bid
+                      ? {
+                          priorityFeeWei: bid.priorityFeeWei.toString(),
+                          frontRunValueUsd: Number(bid.valueUsd.toFixed(4)),
+                          bidFraction: Number(bid.u.toFixed(4)),
+                        }
+                      : {}),
                   });
                   const hashes = await handleFlowOrders([order]);
                   if (hashes.length > 0) stressAudit.record(ev, blockIndex, bn, { stage: "tx_submitted", hashes });
@@ -4834,30 +4895,59 @@ export async function runRealtimeSimulation(
           // Liquidity-pull stress event (issue #52): move each seeded pool toward the depth this
           // block's trapezoid asks for. Its own task rather than riding inside oracleTask because it
           // sends from the LP owner key, not the admin key, so the two cannot collide on a nonce.
+          // Under economicGas the deployer key's sends (pulls and depegs) are collected and sent
+          // highest bid first (envBid.ts sendByBid): one key's transactions are included in nonce
+          // order, so a pull's low bid sent first would hold back a depeg's higher one (PR #287
+          // review). Each deferred send attributes its own hash once it is out.
+          const deployerSends: DeferredSend[] | undefined = economicGas ? [] : undefined;
+          const deferInto = (
+            from: number,
+            attribute: (hash: Hex, priorityFeeWei: bigint) => void,
+          ): void => {
+            if (!deployerSends) return;
+            for (let i = from; i < deployerSends.length; i++) {
+              const item = deployerSends[i];
+              const send = item.send;
+              item.send = async () => {
+                const hash = await send();
+                if (hash) attribute(hash, item.priorityFeeWei);
+                return hash;
+              };
+            }
+          };
+          const attributePull = (hashes: Hex[], priorityFeeWei: bigint): void => {
+            if (hashes.length > 0) {
+              for (const event of stressAudit.active(blockIndex, e => e.type === "liquidityPull"))
+                stressAudit.record(event, blockIndex, bn, { stage: "tx_submitted", hashes });
+            }
+            for (const hash of hashes) {
+              submittedByHash.record(hash.toLowerCase(), {
+                ownerId: "liquidity",
+                role: "system",
+                priorityFeeWei,
+                actionType: "liquidityPull",
+              });
+            }
+          };
           const liquidityTask = async (): Promise<void> => {
             if (!liquidityPullRuntime) return;
             try {
+              const from = deployerSends?.length ?? 0;
               const hashes = await reconcileLiquidityPull(
                 ctx,
                 liquidityPullRuntime,
                 schedule,
                 blockIndex,
                 bn,
-                { priorityFeeWei: oracleFee, bid: envBid("liquidity-pull") },
+                {
+                  priorityFeeWei: oracleFee,
+                  bid: envBid("liquidity-pull"),
+                  ...(deployerSends ? { defer: deployerSends } : {}),
+                },
                 logger,
               );
-              if (hashes.length > 0) {
-                for (const event of stressAudit.active(blockIndex, e => e.type === "liquidityPull"))
-                  stressAudit.record(event, blockIndex, bn, { stage: "tx_submitted", hashes });
-              }
-              for (const hash of hashes) {
-                submittedByHash.record(hash.toLowerCase(), {
-                  ownerId: "liquidity",
-                  role: "system",
-                  priorityFeeWei: oracleFee,
-                  actionType: "liquidityPull",
-                });
-              }
+              attributePull(hashes, oracleFee);
+              deferInto(from, (hash, fee) => attributePull([hash], fee));
             } catch (error) {
               // Distinct from liquidity.ts's per-position `stress_liquidity_pull_failed`: this one
               // means *no* position was reconciled this block, which post-run analysis has to be
@@ -4877,16 +4967,7 @@ export async function runRealtimeSimulation(
             // Sequential across stables as well as with the pull: they all send from the deployer
             // key, and two senders on one key race on the nonce.
             for (const { runtime, fractionAt, ownerId } of depegRuntimes) {
-              try {
-                const hashes = await reconcileStableDepeg(
-                  ctx,
-                  runtime,
-                  fractionAt(blockIndex),
-                  blockIndex,
-                  bn,
-                  { priorityFeeWei: oracleFee, bid: envBid(`depeg:${runtime.symbol}`) },
-                  logger,
-                );
+              const attribute = (hashes: Hex[], priorityFeeWei: bigint): void => {
                 if (hashes.length > 0) {
                   for (const event of stressAudit.active(blockIndex, e =>
                     (e.type === "eusdDepeg" && runtime.symbol === "EUSD") ||
@@ -4897,10 +4978,28 @@ export async function runRealtimeSimulation(
                   submittedByHash.record(hash.toLowerCase(), {
                     ownerId,
                     role: "system",
-                    priorityFeeWei: oracleFee,
+                    priorityFeeWei,
                     actionType: "depeg",
                   });
                 }
+              };
+              try {
+                const from = deployerSends?.length ?? 0;
+                const hashes = await reconcileStableDepeg(
+                  ctx,
+                  runtime,
+                  fractionAt(blockIndex),
+                  blockIndex,
+                  bn,
+                  {
+                    priorityFeeWei: oracleFee,
+                    bid: envBid(`depeg:${runtime.symbol}`),
+                    ...(deployerSends ? { defer: deployerSends } : {}),
+                  },
+                  logger,
+                );
+                attribute(hashes, oracleFee);
+                deferInto(from, (hash, fee) => attribute([hash], fee));
               } catch (error) {
                 logger.event({
                   type: `${runtime.label}_task_failed`,
@@ -4994,6 +5093,7 @@ export async function runRealtimeSimulation(
           const deployerKeyTask = async (): Promise<void> => {
             if (liquidityPullRuntime) await liquidityTask();
             if (depegRuntimes.length > 0) await depegStep();
+            if (deployerSends && deployerSends.length > 0) await sendByBid(deployerSends);
           };
           if (liquidityPullRuntime || depegRuntimes.length > 0)
             tasks.push(timed(deployerKeyTask));

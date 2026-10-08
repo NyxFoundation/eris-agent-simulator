@@ -28,7 +28,13 @@ import { accountAddress, sendAndMine, sendNoMine } from "@eris/sdk/chain.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
 import { tokenInfoByAddress } from "@eris/sdk/markets.js";
-import { impactValueUsd, probeAmount, type EnvBidContext } from "./envBid.js";
+import {
+  FRONT_RUN_GAS,
+  impactValueUsd,
+  probeAmount,
+  type DeferredSend,
+  type EnvBidContext,
+} from "./envBid.js";
 
 // Swaps against a stableswap pool are a fixed shape; pinning the gas skips an eth_estimateGas (a
 // whole extra EVM execution) on a transaction the environment may send every block of a window.
@@ -208,7 +214,9 @@ export async function reconcileStableDepeg(
   blockNumber: number,
   // `bid` (economicGas, ADR 0011): price each send at a random fraction of what getting ahead of it
   // is worth (envBid.ts) instead of the fixed `priorityFeeWei`.
-  opts: { priorityFeeWei: bigint; bid?: EnvBidContext },
+  // `defer`: hand the send to the caller to order by bid with the other sends from the same key
+  // (sendByBid, liquidity.ts); the returned hashes are then empty.
+  opts: { priorityFeeWei: bigint; bid?: EnvBidContext; defer?: DeferredSend[] },
   logger: RunLogger,
 ): Promise<Hex[]> {
   if (runtime.pending) {
@@ -262,21 +270,37 @@ export async function reconcileStableDepeg(
     const bid = opts.bid
       ? opts.bid.bidder.bid({
           valueUsd: call.valueUsd,
+          frontRunGas: FRONT_RUN_GAS.curve,
           gasLimit: DEPEG_GAS,
           ethUsd: opts.bid.ethUsd,
           balanceWei: await ctx.publicClient.getBalance({ address: runtime.actor }),
         })
       : null;
-    const hash = await sendNoMine(
-      ctx.publicClient,
-      ctx.walletClient,
-      ctx.chain,
-      runtime.actorPk,
-      { to: call.to, data: call.data, gas: DEPEG_GAS },
-      bid?.priorityFeeWei ?? opts.priorityFeeWei,
-    );
-    runtime.pending = { hash, blockIndex };
-    logger.event({
+    const priorityFeeWei = bid?.priorityFeeWei ?? opts.priorityFeeWei;
+    const send = async (): Promise<Hex | null> => {
+      let hash: Hex;
+      try {
+        hash = await sendNoMine(
+          ctx.publicClient,
+          ctx.walletClient,
+          ctx.chain,
+          runtime.actorPk,
+          { to: call.to, data: call.data, gas: DEPEG_GAS },
+          priorityFeeWei,
+        );
+      } catch (error) {
+        logger.event({
+          type: `${runtime.label}_failed`,
+          stable: runtime.symbol,
+          blockIndex,
+          blockNumber,
+          targetSoldStableWei: target.toString(),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+      runtime.pending = { hash, blockIndex };
+      logger.event({
       type: runtime.label,
       stable: runtime.symbol,
       blockIndex,
@@ -295,8 +319,15 @@ export async function reconcileStableDepeg(
             ...(bid.balanceCapped ? { bidBalanceCapped: true } : {}),
           }
         : {}),
-    });
-    return [hash];
+      });
+      return hash;
+    };
+    if (opts.defer) {
+      opts.defer.push({ priorityFeeWei, send });
+      return [];
+    }
+    const hash = await send();
+    return hash ? [hash] : [];
   } catch (error) {
     // `sold` is re-derived from the chain next block, so a failed send costs one block of lag
     // rather than desynchronizing the window.

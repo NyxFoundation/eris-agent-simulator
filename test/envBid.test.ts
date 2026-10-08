@@ -4,15 +4,16 @@ import { Rng } from "@eris/sdk/rng.js";
 import {
   ENV_BID_MEDIAN,
   EnvBidder,
-  FRONT_RUN_REFERENCE_GAS,
+  FRONT_RUN_GAS,
   PULL_REFERENCE_TRADE_USD,
   SEEDED_SPOT_DEPTH_USD,
   impactValueUsd,
   pullFrontRunValueUsd,
+  sendByBid,
 } from "../core/src/realtime/envBid.js";
 
-// ADR 0011: the environment's event transactions bid U × V. In ~60% of draws U < 1, i.e. the bid is
-// below what getting ahead is worth.
+// ADR 0011 §1b: the environment's event transactions bid U × V per gas of the front-runner's swap.
+// In ~60% of draws U < 1, i.e. getting ahead costs less than it is worth.
 
 const FLOOR = 100_000_000n; // 0.1 gwei
 
@@ -22,7 +23,12 @@ test("about 60% of bids are below the front-running value", () => {
   let below = 0;
   const us: number[] = [];
   for (let i = 0; i < n; i++) {
-    const { u } = bidder.bid({ valueUsd: 100, gasLimit: 200_000n, ethUsd: 3000 });
+    const { u } = bidder.bid({
+      valueUsd: 100,
+      frontRunGas: FRONT_RUN_GAS.uniswap,
+      gasLimit: 700_000n,
+      ethUsd: 3000,
+    });
     us.push(u);
     if (u < 1) below++;
   }
@@ -33,27 +39,56 @@ test("about 60% of bids are below the front-running value", () => {
   assert.ok(Math.abs(median - ENV_BID_MEDIAN) < 0.02, `median ${median}`);
 });
 
-test("the bid is U × V per gas of a front-runner's transaction, never below the floor", () => {
-  const bidder = new EnvBidder(Rng.fromSeed(7, "env-bid:test"), FLOOR);
-  // A 600k limit: the bid does not depend on it, only on the reference a front-runner pays on.
-  const b = bidder.bid({ valueUsd: 300, gasLimit: 600_000n, ethUsd: 3000 });
-  const expected =
-    BigInt(Math.floor(((b.u * 300) / 3000) * 1e18)) / FRONT_RUN_REFERENCE_GAS;
-  assert.equal(b.priorityFeeWei, expected > FLOOR ? expected : FLOOR);
-  const zero = bidder.bid({ valueUsd: 0, gasLimit: 600_000n, ethUsd: 3000 });
-  assert.equal(zero.priorityFeeWei, FLOOR);
+test("bid × the front-runner's gas = U × V: what getting ahead costs is the drawn share of V", () => {
+  for (const venue of ["uniswap", "balancer", "curve"] as const) {
+    const bidder = new EnvBidder(Rng.fromSeed(7, `env-bid:${venue}`), FLOOR);
+    const b = bidder.bid({
+      valueUsd: 300,
+      frontRunGas: FRONT_RUN_GAS[venue],
+      gasLimit: 900_000n,
+      ethUsd: 3000,
+    });
+    const costUsd = (Number(b.priorityFeeWei * FRONT_RUN_GAS[venue]) / 1e18) * 3000;
+    // Integer division on the fee per gas loses at most one wei per gas.
+    assert.ok(Math.abs(costUsd - b.u * 300) < 1e-6, `${venue}: ${costUsd} vs ${b.u * 300}`);
+  }
 });
 
-test("a fee the sender cannot cover is capped at half its balance", () => {
+test("the gas limit does not move the bid unless the balance cap binds", () => {
+  const bid = (gasLimit: bigint, balanceWei?: bigint) =>
+    new EnvBidder(Rng.fromSeed(7, "env-bid:limit"), FLOOR).bid({
+      valueUsd: 300,
+      frontRunGas: FRONT_RUN_GAS.curve,
+      gasLimit,
+      ethUsd: 3000,
+      ...(balanceWei !== undefined ? { balanceWei } : {}),
+    });
+  const ample = 1000n * 10n ** 18n;
+  const base = bid(135_000n, ample);
+  for (const gasLimit of [300_000n, 600_000n, 900_000n, 5_000_000n])
+    assert.equal(bid(gasLimit, ample).priorityFeeWei, base.priorityFeeWei, `${gasLimit}`);
+  assert.equal(bid(900_000n).priorityFeeWei, base.priorityFeeWei, "no balance given");
+  assert.equal(base.balanceCapped, false);
+});
+
+test("never below the floor, and capped at half the sender's balance", () => {
   const bidder = new EnvBidder(Rng.fromSeed(7, "env-bid:test"), FLOOR);
-  const b = bidder.bid({
+  const zero = bidder.bid({
+    valueUsd: 0,
+    frontRunGas: FRONT_RUN_GAS.uniswap,
+    gasLimit: 600_000n,
+    ethUsd: 3000,
+  });
+  assert.equal(zero.priorityFeeWei, FLOOR);
+  const capped = bidder.bid({
     valueUsd: 1_000_000,
+    frontRunGas: FRONT_RUN_GAS.uniswap,
     gasLimit: 100_000n,
     ethUsd: 3000,
     balanceWei: 10n ** 18n,
   });
-  assert.equal(b.balanceCapped, true);
-  assert.equal(b.priorityFeeWei, 10n ** 18n / 2n / 100_000n);
+  assert.equal(capped.balanceCapped, true);
+  assert.equal(capped.priorityFeeWei, 10n ** 18n / 2n / 100_000n);
 });
 
 test("impact value: what the trade loses against the marginal rate, in dollars", () => {
@@ -96,4 +131,26 @@ test("pull value: a withdrawal is worth getting ahead of, a restore is not", () 
     pullFrontRunValueUsd({ depthBefore: 500n, depthAfter: 1000n, seededDepth: 1000n }),
     0,
   );
+});
+
+test("one key's deferred sends go out highest bid first, ties in the callers' order", async () => {
+  // One sender's transactions are included in nonce order, so a low bid sent first would hold back a
+  // higher one sent after it (a pull before a depeg from the deployer key; PR #287 review).
+  const sent: string[] = [];
+  const item = (name: string, gwei: bigint) => ({
+    priorityFeeWei: gwei * 1_000_000_000n,
+    send: async () => {
+      sent.push(name);
+      return `0x${name}` as `0x${string}`;
+    },
+  });
+  const hashes = await sendByBid([
+    item("pull-a", 1n),
+    item("pull-b", 7n),
+    item("depeg", 40n),
+    item("pull-c", 7n),
+  ]);
+  assert.deepEqual(sent, ["depeg", "pull-b", "pull-c", "pull-a"]);
+  // Results stay in the callers' order.
+  assert.deepEqual(hashes, ["0xpull-a", "0xpull-b", "0xdepeg", "0xpull-c"]);
 });

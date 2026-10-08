@@ -8,11 +8,12 @@
 // Neither is something to be good at. So each such transaction bids a random fraction of what
 // getting ahead of it is worth:
 //
-//   priority fee per gas = U × V / FRONT_RUN_REFERENCE_GAS,   U ~ lognormal(median ENV_BID_MEDIAN, σ ENV_BID_SIGMA)
+//   priority fee per gas = U × V / G,   U ~ lognormal(median ENV_BID_MEDIAN, σ ENV_BID_SIGMA)
 //
-// Per gas of a *front-runner's* transaction, not of this one's gas limit: a front-runner only has to
-// beat the fee per gas and pays it on its own gas, so dividing by the padded limit (600k–900k against
-// ~150k used) put the real bid at a fifth of U × V and made getting ahead pay in ~99.8% of draws.
+// G is the gas of the swap a front-runner would send on the same venue (FRONT_RUN_GAS), not this
+// transaction's gas limit: a front-runner only has to beat the fee per gas and pays it on its own gas.
+// Dividing by the padded limit (600k–900k) put the real bid at a fifth of U × V, and a single 150k for
+// every venue still left it a third low against a 100k Uniswap swap (PR #287 review).
 //
 // V is the environment's own estimate of what a front-runner can take: the price-impact cost of
 // its trade (a sandwich takes at most about that), or for a pull the slippage a reference trade
@@ -28,8 +29,16 @@ import type { Rng, RngSnapshot } from "@eris/sdk/rng.js";
 // ln(1/0.86) / 0.6 = 0.251 → Φ(0.251) = 0.599. (0.29 put it at 0.98; changed the same day.)
 export const ENV_BID_MEDIAN = 0.86;
 export const ENV_BID_SIGMA = 0.6;
-// What a front-running swap uses (a Uniswap exactInputSingle or a Curve exchange: ~110k–250k).
-export const FRONT_RUN_REFERENCE_GAS = 150_000n;
+// What a front-running swap uses on each venue: gasUsed of successful swaps in 40 runs' blocks.csv
+// (agents and flow alike; PR #287 review), rounded slightly down so a leaner front-runner still pays
+// about U × V. Uniswap V3 exactInputSingle ~104k (p10–p90 101k–107k), Balancer swap ~96k, Curve
+// exchange ~136k (134k–142k).
+export const FRONT_RUN_GAS = {
+  uniswap: 100_000n,
+  balancer: 95_000n,
+  curve: 135_000n,
+} as const;
+export type FrontRunVenue = keyof typeof FRONT_RUN_GAS;
 
 // A liquidity pull has no trade of its own to sandwich: what being ahead of it is worth depends on
 // the trade that gets ahead. Valued at this reference size.
@@ -37,6 +46,31 @@ export const PULL_REFERENCE_TRADE_USD = 10_000;
 // The spot venues' seeded depth, both sides: 3M USDC + the base at the anchor price, per venue and
 // per base (deployer: uniswap-v3 / balancer / curve seed WETH/USDC and WBTC/USDC alike).
 export const SEEDED_SPOT_DEPTH_USD = 6_000_000;
+
+// A send the caller holds back so it can order several of one key's transactions by bid (ADR 0011
+// §1b). Transactions from one sender are included in nonce order only, so a low bid sent first would
+// hold back a higher one sent after it from the same key. `send` does the send and its bookkeeping
+// and resolves to the hash, or null when the send failed (already reported).
+export type DeferredSend = {
+  priorityFeeWei: bigint;
+  send: () => Promise<`0x${string}` | null>;
+};
+
+// Send highest bid first. Stable for equal bids, so the callers' own order breaks ties.
+export async function sendByBid(sends: DeferredSend[]): Promise<Array<`0x${string}` | null>> {
+  const order = sends
+    .map((s, i) => ({ s, i }))
+    .sort((a, b) =>
+      a.s.priorityFeeWei === b.s.priorityFeeWei
+        ? a.i - b.i
+        : a.s.priorityFeeWei > b.s.priorityFeeWei
+          ? -1
+          : 1,
+    );
+  const out: Array<`0x${string}` | null> = new Array(sends.length).fill(null);
+  for (const { s, i } of order) out[i] = await s.send();
+  return out;
+}
 
 export type EnvBidContext = {
   bidder: EnvBidder;
@@ -69,6 +103,8 @@ export class EnvBidder {
   // event rather than price it. Half the balance, so the next block's transaction is affordable too.
   bid(input: {
     valueUsd: number;
+    // The gas of the swap that would get ahead of this one (FRONT_RUN_GAS): what the fee is per.
+    frontRunGas: bigint;
     // This transaction's gas limit: only for the affordability cap.
     gasLimit: bigint;
     ethUsd: number;
@@ -77,9 +113,9 @@ export class EnvBidder {
     const u = ENV_BID_MEDIAN * Math.exp(ENV_BID_SIGMA * this.rng.gaussian());
     const valueUsd = Number.isFinite(input.valueUsd) ? Math.max(0, input.valueUsd) : 0;
     let fee = this.floorWei;
-    if (valueUsd > 0 && input.ethUsd > 0) {
+    if (valueUsd > 0 && input.ethUsd > 0 && input.frontRunGas > 0n) {
       const totalWei = BigInt(Math.floor(((u * valueUsd) / input.ethUsd) * 1e18));
-      const perGas = totalWei / FRONT_RUN_REFERENCE_GAS;
+      const perGas = totalWei / input.frontRunGas;
       if (perGas > fee) fee = perGas;
     }
     let balanceCapped = false;
@@ -120,6 +156,14 @@ export function impactValueUsd(input: {
 export function probeAmount(amountIn: bigint): bigint {
   const small = amountIn / 1000n;
   return small > 0n ? small : 1n;
+}
+
+// The price-impact cost of a trade of `notionalUsd` on a seeded spot book (constant product, about
+// N² / (2D)), for a trade whose own quote the environment does not take before sending: the whale's
+// print goes out through the flow path. An estimate of V like the pull's, from the seeded depth.
+export function seededImpactValueUsd(notionalUsd: number): number {
+  if (!(notionalUsd > 0)) return 0;
+  return (notionalUsd * notionalUsd) / (2 * SEEDED_SPOT_DEPTH_USD);
 }
 
 // What a reference trade saves by executing before a pull takes depth from `depthBefore` to

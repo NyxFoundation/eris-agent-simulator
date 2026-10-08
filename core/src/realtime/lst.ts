@@ -311,6 +311,9 @@ export async function slashLst(
   magnitude: number,
   logger: RunLogger,
   priorityFeeWei: bigint,
+  // economicGas (ADR 0011): send at `priorityFeeWei` without mining. Under gated mining only the
+  // miner mines; a block mined here would be cut mid-pass, on the previous step's prices.
+  opts: { noMine?: boolean } = {},
 ): Promise<void> {
   const bps = BigInt(Math.round(magnitude * 10_000));
   if (bps <= 0n) return;
@@ -323,6 +326,26 @@ export async function slashLst(
     return;
   }
   const before = await getLstState(ctx);
+  if (opts.noMine) {
+    const hash = await sendNoMine(
+      ctx.publicClient,
+      ctx.walletClient,
+      ctx.chain,
+      ctx.adminPk,
+      { to: runtime.vault, data: encodeCall("slash", [bps]), gas: 300_000n },
+      priorityFeeWei,
+    );
+    // Lands in the next block; the rate after it is in lst_block from then on.
+    logger.event({
+      type: "lst_slash",
+      bps: Number(bps),
+      redemptionRateBefore: before.redemptionRateWeth,
+      pending: true,
+      priorityFeeWei: priorityFeeWei.toString(),
+      hash,
+    });
+    return;
+  }
   await sendAndMine(
     ctx.publicClient,
     ctx.walletClient,

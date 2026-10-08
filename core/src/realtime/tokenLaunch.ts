@@ -45,7 +45,7 @@ import {
 } from "@eris/sdk/protocols/uniswap.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
-import { impactValueUsd, probeAmount, type EnvBidContext } from "./envBid.js";
+import { FRONT_RUN_GAS, impactValueUsd, probeAmount, type EnvBidContext } from "./envBid.js";
 import type {
   EventSchedule,
   ResolvedStressEvent,
@@ -734,6 +734,7 @@ async function sendSwap(
         usdDecimals: TOKENS.USDC.decimals,
         usdSide: kind === "buy" ? "in" : "out",
       }),
+      frontRunGas: FRONT_RUN_GAS.uniswap,
       gasLimit: GAS_SWAP,
       ethUsd: opts.bid.ethUsd,
       balanceWei: await ctx.publicClient.getBalance({ address: account.address }),
