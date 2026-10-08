@@ -22,11 +22,12 @@
 // passive one would let it collapse. That makes the regime's character a function of the roster,
 // which breaks "the same market conditions in every scenario" (ADR 0009). The dislocation is
 // injected; the *resolution* is left to the real mechanism -- redemption for eUSD, arbitrage for DAI.
-import { encodeFunctionData, maxUint256, type Address, type Hex } from "viem";
+import { encodeFunctionData, type Address, type Hex } from "viem";
 import { curveStableSwapNgAbi, erc20Abi } from "@eris/sdk/abis.js";
 import { accountAddress, sendAndMine, sendNoMine } from "@eris/sdk/chain.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
+import { requireStandingApprovals } from "./standingApprovals.js";
 
 // Swaps against a stableswap pool are a fixed shape; pinning the gas skips an eth_estimateGas (a
 // whole extra EVM execution) on a transaction the environment may send every block of a window.
@@ -151,23 +152,15 @@ export async function setupStableDepeg(
   }
 
   // The deploy approved the pool for exactly the amounts it seeded, so both legs need standing
-  // approval before the window opens. Sequential: one key, one nonce.
-  for (const token of [market.stable, market.quote]) {
-    await sendAndMine(
-      ctx.publicClient,
-      ctx.walletClient,
-      ctx.chain,
-      opts.actorPk,
-      {
-        to: token,
-        data: encodeFunctionData({
-          abi: erc20Abi,
-          functionName: "approve",
-          args: [market.pool, maxUint256],
-        }),
-      },
-    );
-  }
+  // approval before the window opens. The coordinator grants it in every run, depeg or not
+  // (standingApprovals.ts): granting it here put two approvals from the deployer in the setup blocks
+  // of exactly the depeg regimes, which an agent could read before its first block.
+  await requireStandingApprovals(
+    ctx,
+    actor,
+    [market.stable, market.quote].map((token) => ({ token, spender: market.pool })),
+    `stress event ${label}`,
+  );
 
   logger.event({
     type: `${label}_setup`,

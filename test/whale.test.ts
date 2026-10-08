@@ -10,7 +10,13 @@ import {
   EventSchedule,
   parseStressEvents,
 } from "../core/src/realtime/events.js";
-import { buildWhaleOrder, whaleFunding } from "../core/src/realtime/whale.js";
+import {
+  buildWhaleOrder,
+  WHALE_ENDOWMENT,
+  whaleEndowment,
+  whaleFunding,
+  whaleFundingCeiling,
+} from "../core/src/realtime/whale.js";
 import { baseTokens } from "@eris/sdk/markets.js";
 
 const WHALE = {
@@ -174,6 +180,36 @@ test("no whale in the schedule means no endowment", () => {
     baseWei: {},
     usdcUnits: 0n,
   });
+});
+
+test("the whale wallet's endowment is fixed: the same with no whale as with an official draw", () => {
+  assert.deepEqual(whaleEndowment([], { WETH: 3000 }), WHALE_ENDOWMENT);
+  for (let seed = 1; seed <= 20; seed++) {
+    const s = new EventSchedule(
+      [{ ...WHALE, count: [3, 5] as [number, number], magnitudeRange: [25, 60] as [number, number] }],
+      seed,
+      360,
+    );
+    assert.deepEqual(whaleEndowment(s.events, { WETH: 3000 }), WHALE_ENDOWMENT, `seed ${seed}`);
+  }
+});
+
+test("a schedule that needs more than the fixed endowment gets it", () => {
+  const sells = Array.from({ length: 10 }, () => whaleEvent({ side: "sell", magnitude: 60 }));
+  const e = whaleEndowment(sells, { WETH: 3000 });
+  assert.equal(e.baseWei.WETH, 1200n * 10n ** 18n);
+  assert.equal(e.usdcUnits, WHALE_ENDOWMENT.usdcUnits);
+});
+
+test("the ceiling is every whale at its largest count and size, on whichever side costs more", () => {
+  const ceiling = whaleFundingCeiling(
+    [{ ...WHALE, count: [3, 5] as [number, number], magnitudeRange: [25, 60] as [number, number] }],
+    { WETH: 3000 },
+  );
+  assert.equal(ceiling.baseWei.WETH, 600n * 10n ** 18n);
+  assert.equal(ceiling.usdcUnits, 1_800_000n * 10n ** 6n);
+  const buysOnly = whaleFundingCeiling([{ ...WHALE, side: "buy" }], { WETH: 3000 });
+  assert.deepEqual(buysOnly.baseWei, {});
 });
 
 test("side/venue are rejected on event types they do not apply to", () => {
