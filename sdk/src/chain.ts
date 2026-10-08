@@ -525,6 +525,21 @@ export async function resetFork(
           /* stale id: use the current state as the base */
         });
     }
+    // The pool is not part of the snapshot. A transaction the last run sent but never mined (the
+    // flow wallet's order for the block after the last one, an agent's final swap) is still pending
+    // after the revert, with a nonce the rewound chain has not reached. Anvil then reports that
+    // sender's `pending` nonce as one past the orphan, viem signs the next setup transaction with
+    // it, and nothing ever mines it: the orphan has a gap below it, the new one sits above the
+    // orphan. The coordinator's first write after the revert waits for a receipt that never comes
+    // (issue #137 -- the same hash in three scenarios, because the orphan and the payload were the
+    // same each time). Measured on anvil 1.7.1: after evm_revert, latest nonce 0, pending nonce 2,
+    // txpool still holding the orphan. The failed epoch's mining attempts are what finally drop the
+    // orphan, which is why the epoch after a failed one went through. Empty the pool here, before
+    // the clean snapshot is taken, so every epoch starts with the chain's nonces and nothing else.
+    await publicClient.request({
+      method: "anvil_dropAllTransactions",
+      params: [],
+    } as AnvilRequest);
     localSnapshotId = (await publicClient.request({
       method: "evm_snapshot",
       params: [],
