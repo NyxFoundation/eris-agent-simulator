@@ -90,11 +90,11 @@ import { checkRevisedRawTx, rawTxAllowlist } from "./rawTxGuard.js";
 import { AgentStateStore, capBytesFromEnv, STATE_DIR_ENV } from "./state.js";
 import { preflightChain } from "./preflight.js";
 import { Reader } from "./read.js";
-import { blockWatchTiming, watchBlocks } from "./blockWatch.js";
 import { manifestRunOverrides } from "./runClock.js";
 import { readOnlyClient } from "./readOnlyClient.js";
 import { StrategyRunner } from "./strategyRunner.js";
 import { PyBridge } from "./pyBridge.js";
+import { blockWatchTiming, watchBlocks } from "./blockWatch.js";
 import type { StrategySource } from "./strategyProtocol.js";
 
 // Backend for the revision call when neither prompt.md nor the roster names one.
