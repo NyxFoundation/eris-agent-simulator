@@ -258,8 +258,8 @@ same rule, and the RPC gateway refuses what does not:
 
 | transaction type | requirement |
 |---|---|
-| EIP-1559 / 4844 / 7702 (`maxFeePerGas`, `maxPriorityFeePerGas`) | `maxFeePerGas` **equal to** (never above) `maxPriorityFeePerGas`, and that ≤ the manifest's `limits.maxPriorityFeeWei` (5 gwei) |
-| legacy / EIP-2930 (`gasPrice`) | `gasPrice` ≤ `limits.maxPriorityFeeWei` |
+| EIP-1559 / 4844 / 7702 (`maxFeePerGas`, `maxPriorityFeePerGas`) | `maxFeePerGas` **equal to** (never above) `maxPriorityFeePerGas`. No cap on the value (ADR 0011, since 2026-10-08) |
+| legacy / EIP-2930 (`gasPrice`) | any `gasPrice` |
 | any | gas limit ≤ 10,000,000 |
 
 ```ts
@@ -275,10 +275,16 @@ cast send … --gas-price 1gwei --priority-gas-price 1gwei
 **Why maxFeePerGas and not just the tip.** The rules order a block by the priority fee, highest first
 (§2.6). The chain's node sorts its pool on **maxFeePerGas**, and with base fee 0 a transaction pays
 min(maxFeePerGas, tip) — so without the rule, a transaction signed with a high maxFeePerGas and a small
-tip is placed ahead of bids that pay more, including the environment's price update, which the cap
-exists to keep first. (Measured: tip 0.1 gwei + maxFeePerGas 7 gwei landed at the top of its block
-ahead of a 6 gwei transaction, paying 0.1 gwei.) With maxFeePerGas equal to the tip, the position you
-get is exactly the price you pay.
+tip is placed ahead of bids that pay more. (Measured: tip 0.1 gwei + maxFeePerGas 7 gwei landed at
+the top of its block ahead of a 6 gwei transaction, paying 0.1 gwei.) With maxFeePerGas equal to the
+tip, the position you get is exactly the price you pay.
+
+**There is no cap on the bid.** Until 2026-10-08 the tip was capped at 5 gwei so that the environment's
+price update, sent at 6 gwei, stayed first in every block; with everyone who wanted a contested
+opportunity at the cap, ties were settled by arrival. The prices are now written straight into the
+contracts' storage and the environment mines the block right after, so nothing you bid can get ahead
+of them, and the cap is gone (ADR 0011). A fee is real money: it comes off your ETH, which is part of
+your score.
 
 A refused transaction comes back as HTTP 403 with JSON-RPC error `-32003` and a message naming the
 field; it never reached the chain and used no nonce. A transaction that reaches the chain another way
@@ -369,8 +375,10 @@ systemctl --user enable --now ascon-devnet.service
 On anvil, step 2's ordering probe reports `key probe: max-fee`: the node sorts on maxFeePerGas, not on
 the tip a transaction pays. That is safe only because participants may not sign maxFeePerGas above
 their tip ([the fee rule](#if-you-sign-transactions-yourself-the-fee-rule)), which the RPC gateway
-refuses at entry and `postRunCheck` flags afterwards. Keep the gateway's `RPC_MAX_PRIORITY_FEE_WEI`
-equal to the config's `fees.maxPriorityFeeWei` (both default to 5 gwei; `infra/rpc-gateway/README.md`).
+refuses at entry and `postRunCheck` flags afterwards. The period runs `economicGas: true` (ADR 0011),
+so the gateway's `RPC_MAX_PRIORITY_FEE_WEI` is 0 (`infra/monitoring/docker-compose.yml`): no cap, the
+maxFeePerGas half still enforced. A config with `economicGas: false` needs it back at
+`fees.maxPriorityFeeWei` (5 gwei; `infra/rpc-gateway/README.md`).
 
 ### The chain's own keys (issue #74)
 

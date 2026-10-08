@@ -75,6 +75,7 @@ function scorerFixture(opts: {
   failAt?: Set<number>;
   runStartBlock?: number;
   endBlock?: number | null;
+  readLagBlocks?: number;
 }) {
   const runStartBlock = opts.runStartBlock ?? 100;
   return new LiveScorer({
@@ -89,6 +90,7 @@ function scorerFixture(opts: {
     intervalBlocks: 4,
     markMedianBlocks: 0,
     sampleMarket: false,
+    ...(opts.readLagBlocks !== undefined ? { readLagBlocks: opts.readLagBlocks } : {}),
   });
 }
 
@@ -556,4 +558,26 @@ test("restore refuses boundaries the snapshot never attempted", () => {
     () => scorer.restore(snapshot, [{ blockNumber: 104, values: {} }, { blockNumber: 100, values: {} }]),
     /out of order/,
   );
+});
+
+test("economicGas: a boundary is read once it is history, and close still reads the end", async () => {
+  // ADR 0011: the price writes for B+1 land in block B's state, so B is read a block later, from
+  // history, like the median window and the sweep. The end block is read by close() with no lag.
+  const root = tmp();
+  const scorer = scorerFixture({
+    runDir: root,
+    valueAt: (b) => b,
+    endBlock: 110,
+    readLagBlocks: 1,
+  });
+  await scorer.onBlock(100);
+  assert.equal(scorer.count, 0, "100 is still the head");
+  await scorer.onBlock(104);
+  assert.equal(scorer.count, 1, "104 is still the head");
+  await scorer.onBlock(105);
+  assert.deepEqual(scorer.series()?.boundaryBlocks, [100, 104]);
+  for (let b = 106; b <= 110; b++) await scorer.onBlock(b);
+  assert.deepEqual(scorer.series()?.boundaryBlocks, [100, 104, 108]);
+  await scorer.close(110);
+  assert.deepEqual(scorer.series()?.boundaryBlocks, [100, 104, 108, 110]);
 });

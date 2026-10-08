@@ -116,6 +116,14 @@ export class LiveScorer {
       markMedianBlocks: number;
       /** Sample the venue-state row at each boundary too. */
       sampleMarket: boolean;
+      /**
+       * Read a boundary this many blocks after it is mined instead of while it is the head. 1 under
+       * economicGas (ADR 0011): the environment's price writes land in the head block's state, and
+       * anvil keeps them there, so block B read as the head and block B read from history are two
+       * different states. Reading every boundary from history -- the same state the median window's
+       * earlier blocks and the post-run sweep read -- keeps them one. close() still reads the end.
+       */
+      readLagBlocks?: number;
       /** How V_0 treats a measured value above the endowment (endowmentV0.ts). Default floor. */
       v0Rule?: V0Rule;
     },
@@ -181,9 +189,13 @@ export class LiveScorer {
   // event (pointEventsAt). Never reads past the end block, whatever block it is told about.
   async onBlock(blockNumber: number): Promise<void> {
     if (!this.enabled) return;
+    await this.readThrough(blockNumber - (this.opts.readLagBlocks ?? 0));
+  }
+
+  private async readThrough(through: number): Promise<void> {
     for (
       let at = this.pendingBoundary();
-      at !== null && at <= blockNumber;
+      at !== null && at <= through;
       at = this.pendingBoundary()
     ) {
       this.lastAttempted = at;
@@ -201,7 +213,8 @@ export class LiveScorer {
     if (!this.enabled) return;
     if (this.endBlock === null || finalBlock < this.endBlock)
       this.endBlock = finalBlock;
-    await this.onBlock(finalBlock);
+    // Not onBlock: no lag here. The run is over, so the end block is already what history keeps.
+    await this.readThrough(finalBlock);
   }
 
   private async scoreBoundary(blockNumber: number): Promise<void> {

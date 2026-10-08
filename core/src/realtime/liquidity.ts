@@ -25,6 +25,7 @@ import { accountAddress, sendAndMine, sendNoMine } from "@eris/sdk/chain.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
 import type { EventSchedule } from "./events.js";
+import { pullFrontRunValueUsd, type EnvBidContext } from "./envBid.js";
 import {
   approvalsFor,
   buildDeposit,
@@ -284,7 +285,9 @@ export async function reconcileLiquidityPull(
   schedule: EventSchedule,
   blockIndex: number,
   blockNumber: number,
-  opts: { priorityFeeWei: bigint },
+  // `bid` (economicGas, ADR 0011): price each send at a random fraction of what getting ahead of it
+  // is worth (envBid.ts) instead of the fixed `priorityFeeWei`.
+  opts: { priorityFeeWei: bigint; bid?: EnvBidContext },
   logger: RunLogger,
 ): Promise<Hex[]> {
   const mults = schedule.depthMultiplierAt(blockIndex);
@@ -362,13 +365,29 @@ export async function reconcileLiquidityPull(
               target - applied,
               deadline,
             );
+      const bid = opts.bid
+        ? opts.bid.bidder.bid({
+            valueUsd:
+              depthBefore !== undefined && target < applied
+                ? pullFrontRunValueUsd({
+                    depthBefore,
+                    depthAfter: depthBefore - (applied - target),
+                    // The environment seeded the pool, so its seeded share is the seeded depth.
+                    seededDepth: pos.seededShare,
+                  })
+                : 0,
+            gas: RECONCILE_GAS,
+            ethUsd: opts.bid.ethUsd,
+            balanceWei: await ctx.publicClient.getBalance({ address: runtime.owner }),
+          })
+        : null;
       const hash = await sendNoMine(
         ctx.publicClient,
         ctx.walletClient,
         ctx.chain,
         runtime.ownerPk,
         { to: call.to, data: call.data, gas: RECONCILE_GAS },
-        opts.priorityFeeWei,
+        bid?.priorityFeeWei ?? opts.priorityFeeWei,
       );
       runtime.pending.set(key, { hash, blockIndex });
       allSettled = false;
@@ -388,6 +407,14 @@ export async function reconcileLiquidityPull(
         previousShare: applied.toString(),
         targetShare: target.toString(),
         hash,
+        ...(bid
+          ? {
+              priorityFeeWei: bid.priorityFeeWei.toString(),
+              frontRunValueUsd: Number(bid.valueUsd.toFixed(4)),
+              bidFraction: Number(bid.u.toFixed(4)),
+              ...(bid.balanceCapped ? { bidBalanceCapped: true } : {}),
+            }
+          : {}),
       });
     } catch (error) {
       // `applied` is untouched, so the next block recomputes the same delta and retries: a failed

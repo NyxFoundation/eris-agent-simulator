@@ -2,7 +2,13 @@
 
 ## Status
 
-Accepted
+**Superseded by [ADR 0011](0011-economic-gas-cost-mev-skill-axis.md)（2026-10-08）。**
+§2 の 2 つの理由のうち、順序保証は価格の state-write で上限から切り離し、資本バイアスは公式競技の
+scenario リセット（ADR 0020。毎エポック全員が同じ配布から始まる）で成立しなくなった。§3 の再検討条件を
+満たしたので Supersede する。公式レジームと練習期間は同日 `economicGas: true` に切り替えた。上限方式は
+`run.economicGas: false` としてそのまま残る（ロールバック先）。
+
+（以前の Status: Accepted）
 
 > 本 ADR は既にコードに存在する「priority-fee 上限」という運用上の決定を**事後的に文書化**し、
 > 代替案（gas を実コスト化して上限を廃する）を評価して見送りの根拠と再検討条件を残すもの。

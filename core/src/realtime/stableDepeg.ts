@@ -27,6 +27,8 @@ import { curveStableSwapNgAbi, erc20Abi } from "@eris/sdk/abis.js";
 import { accountAddress, sendAndMine, sendNoMine } from "@eris/sdk/chain.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
+import { tokenInfoByAddress } from "@eris/sdk/markets.js";
+import { impactValueUsd, probeAmount, type EnvBidContext } from "./envBid.js";
 
 // Swaps against a stableswap pool are a fixed shape; pinning the gas skips an eth_estimateGas (a
 // whole extra EVM execution) on a transaction the environment may send every block of a window.
@@ -204,7 +206,9 @@ export async function reconcileStableDepeg(
   fraction: number,
   blockIndex: number,
   blockNumber: number,
-  opts: { priorityFeeWei: bigint },
+  // `bid` (economicGas, ADR 0011): price each send at a random fraction of what getting ahead of it
+  // is worth (envBid.ts) instead of the fixed `priorityFeeWei`.
+  opts: { priorityFeeWei: bigint; bid?: EnvBidContext },
   logger: RunLogger,
 ): Promise<Hex[]> {
   if (runtime.pending) {
@@ -255,13 +259,21 @@ export async function reconcileStableDepeg(
         ? await buildSell(ctx, runtime, delta)
         : await buildBuyBack(ctx, runtime, delta);
     if (!call) return [];
+    const bid = opts.bid
+      ? opts.bid.bidder.bid({
+          valueUsd: call.valueUsd,
+          gas: DEPEG_GAS,
+          ethUsd: opts.bid.ethUsd,
+          balanceWei: await ctx.publicClient.getBalance({ address: runtime.actor }),
+        })
+      : null;
     const hash = await sendNoMine(
       ctx.publicClient,
       ctx.walletClient,
       ctx.chain,
       runtime.actorPk,
       { to: call.to, data: call.data, gas: DEPEG_GAS },
-      opts.priorityFeeWei,
+      bid?.priorityFeeWei ?? opts.priorityFeeWei,
     );
     runtime.pending = { hash, blockIndex };
     logger.event({
@@ -275,6 +287,14 @@ export async function reconcileStableDepeg(
       soldStableWei: sold.toString(),
       deltaStableWei: delta.toString(),
       hash,
+      ...(bid
+        ? {
+            priorityFeeWei: bid.priorityFeeWei.toString(),
+            frontRunValueUsd: Number(bid.valueUsd.toFixed(4)),
+            bidFraction: Number(bid.u.toFixed(4)),
+            ...(bid.balanceCapped ? { bidBalanceCapped: true } : {}),
+          }
+        : {}),
     });
     return [hash];
   } catch (error) {
@@ -292,23 +312,39 @@ export async function reconcileStableDepeg(
   }
 }
 
+// The quote token's decimals: the dollar side of every depeg trade.
+function quoteDecimals(runtime: StableDepegRuntime): number {
+  return tokenInfoByAddress(runtime.quote)?.decimals ?? 6;
+}
+
+type DepegCall = { to: Address; data: Hex; valueUsd: number };
+
 async function buildSell(
   ctx: SimContext,
   runtime: StableDepegRuntime,
   amountStable: bigint,
-): Promise<{ to: Address; data: Hex } | null> {
-  const quoted = (await ctx.publicClient.readContract({
-    address: runtime.pool,
-    abi: curveStableSwapNgAbi,
-    functionName: "get_dy",
-    args: [
-      BigInt(runtime.stableIndex),
-      BigInt(runtime.quoteIndex),
-      amountStable,
-    ],
-  })) as bigint;
+): Promise<DepegCall | null> {
+  const small = probeAmount(amountStable);
+  const [quoted, smallQuoted] = (await Promise.all(
+    [amountStable, small].map((amount) =>
+      ctx.publicClient.readContract({
+        address: runtime.pool,
+        abi: curveStableSwapNgAbi,
+        functionName: "get_dy",
+        args: [BigInt(runtime.stableIndex), BigInt(runtime.quoteIndex), amount],
+      }),
+    ),
+  )) as [bigint, bigint];
   if (quoted <= 0n) return null;
   return {
+    valueUsd: impactValueUsd({
+      amountIn: amountStable,
+      quoted,
+      smallIn: small,
+      smallQuoted,
+      usdDecimals: quoteDecimals(runtime),
+      usdSide: "out",
+    }),
     to: runtime.pool,
     data: encodeFunctionData({
       abi: curveStableSwapNgAbi,
@@ -331,7 +367,7 @@ async function buildBuyBack(
   ctx: SimContext,
   runtime: StableDepegRuntime,
   amountStable: bigint,
-): Promise<{ to: Address; data: Hex } | null> {
+): Promise<DepegCall | null> {
   const [needed, quoteBalance] = (await Promise.all([
     ctx.publicClient.readContract({
       address: runtime.pool,
@@ -352,14 +388,27 @@ async function buildBuyBack(
   ])) as [bigint, bigint];
   const spend = needed > quoteBalance ? quoteBalance : needed;
   if (spend <= 0n) return null;
-  const quoted = (await ctx.publicClient.readContract({
-    address: runtime.pool,
-    abi: curveStableSwapNgAbi,
-    functionName: "get_dy",
-    args: [BigInt(runtime.quoteIndex), BigInt(runtime.stableIndex), spend],
-  })) as bigint;
+  const small = probeAmount(spend);
+  const [quoted, smallQuoted] = (await Promise.all(
+    [spend, small].map((amount) =>
+      ctx.publicClient.readContract({
+        address: runtime.pool,
+        abi: curveStableSwapNgAbi,
+        functionName: "get_dy",
+        args: [BigInt(runtime.quoteIndex), BigInt(runtime.stableIndex), amount],
+      }),
+    ),
+  )) as [bigint, bigint];
   if (quoted <= 0n) return null;
   return {
+    valueUsd: impactValueUsd({
+      amountIn: spend,
+      quoted,
+      smallIn: small,
+      smallQuoted,
+      usdDecimals: quoteDecimals(runtime),
+      usdSide: "in",
+    }),
     to: runtime.pool,
     data: encodeFunctionData({
       abi: curveStableSwapNgAbi,

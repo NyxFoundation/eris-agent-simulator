@@ -130,6 +130,9 @@ export type PeriodCheckpoint = {
     fairPrices: Record<string, number>;
     rng: Record<string, RngSnapshot>;
   };
+  // The environment's event-transaction bid streams (envBid.ts), by stream name. Absent in a
+  // checkpoint written before they existed or without economicGas; such a stream starts afresh.
+  envBidRng?: Record<string, RngSnapshot>;
   agents: CheckpointAgent[];
   loggedThroughBlock: number;
   derivedSenders: DerivedSender[];

@@ -288,6 +288,11 @@ services:
       # credential a 100+ field is gated on cannot be one of them. The file holds sha256 digests
       # only -- no key material ever reaches this container.
       - RPC_KEYS_FILE=/keys/rpc-keys.json
+      # ADR 0011: the practice period runs economicGas (config/practice.yaml), so there is no
+      # priority-fee cap to enforce. 0 retires the cap only; maxFeePerGas <= tip is still refused.
+      # Change it together with the config: a gateway at 5 gwei on an uncapped chain refuses bids
+      # the rules allow.
+      - RPC_MAX_PRIORITY_FEE_WEI=0
     volumes:
       - ../rpc-gateway:/app:ro
       # The DIRECTORY, not the file. A single-file bind mount pins the inode it was created with,

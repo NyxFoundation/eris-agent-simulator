@@ -44,6 +44,8 @@ import {
   sendAndMine,
   sendAsPrivileged,
   sendNoMine,
+  setStorageAt,
+  bigintToStorageWord,
 } from "../chain.js";
 import type {
   AgentObservation,
@@ -2618,6 +2620,20 @@ export const gmxAdapter: ProtocolAdapter = {
     ctx.gmx.oracleTokens = oracleTokens;
     ctx.oracle.gmxProvider = mock;
     ctx.updateGmxOracle = async (c, fairPrice, opts) => {
+      // ADR 0011 §1: under economicGas the price is a storage write, like PriceFeed and Aave. The
+      // keeper's executeOrder reads the provider when it runs, so a price already in storage is the
+      // price every order of the next block fills at, wherever the keeper lands in that block.
+      if (opts?.storage) {
+        for (const token of c.gmx.oracleTokens ?? oracleTokens) {
+          const price = gmxOraclePrice(c, token, fairPrice);
+          if (price === null) continue;
+          const [minSlot, maxSlot, setSlot] = gmxOraclePriceSlots(token);
+          await setStorageAt(c.publicClient, mock, minSlot, bigintToStorageWord(price));
+          await setStorageAt(c.publicClient, mock, maxSlot, bigintToStorageWord(price));
+          await setStorageAt(c.publicClient, mock, setSlot, bigintToStorageWord(1n));
+        }
+        return;
+      }
       const send = (tx: { to: Address; data: Hex }): Promise<unknown> =>
         opts?.noMine
           ? sendNoMine(
@@ -2634,15 +2650,8 @@ export const gmxAdapter: ProtocolAdapter = {
       // token the keeper names always has a price: the mock reverts on one that was never set. The
       // layout check in setup guarantees each is USDC ($1, the numéraire) or a market's base.
       for (const token of c.gmx.oracleTokens ?? oracleTokens) {
-        const info = tokenInfoByAddress(token);
-        if (!info) continue; // unreachable after the layout check
-        const usd =
-          info.kind === "stable"
-            ? 1
-            : info.symbol === "WETH"
-              ? fairPrice
-              : baseFairPrice(c, info.symbol, fairPrice);
-        const price = toGmxPrice(usd, info.decimals);
+        const price = gmxOraclePrice(c, token, fairPrice);
+        if (price === null) continue;
         await send({
           to: mock,
           data: encodeFunctionData({
@@ -2655,3 +2664,38 @@ export const gmxAdapter: ProtocolAdapter = {
     };
   },
 };
+
+// The price the environment publishes for one oracle token: USDC is the numéraire, every other
+// token is its base's fair price. Exactly the tokens the keeper passes (WETH, USDC, then WBTC on the
+// local deploy), so a token the keeper names always has a price: the mock reverts on one that was
+// never set. The layout check in setup guarantees each is USDC ($1) or a market's base, so the null
+// (an address the registry does not know) is unreachable after it.
+function gmxOraclePrice(
+  ctx: SimContext,
+  token: Address,
+  fairPrice: number,
+): bigint | null {
+  const info = tokenInfoByAddress(token);
+  if (!info) return null;
+  const usd =
+    info.kind === "stable"
+      ? 1
+      : info.symbol === "WETH"
+        ? fairPrice
+        : baseFairPrice(ctx, info.symbol, fairPrice);
+  return toGmxPrice(usd, info.decimals);
+}
+
+// Storage of contracts/MockOracleProvider.sol: `owner` is immutable (no slot), so
+// `mapping(address => Price) prices` is slot 0, and `Price {uint256 min; uint256 max; bool set}`
+// takes three consecutive slots from keccak256(abi.encode(token, 0)). `forge inspect
+// MockOracleProvider storageLayout` pins slot 0; test/gmxOracleStorage.test.ts pins the rest
+// against a deployed mock.
+export function gmxOraclePriceSlots(token: Address): [Hex, Hex, Hex] {
+  const base = BigInt(
+    keccak256(encodeAbiParameters(parseAbiParameters("address, uint256"), [token, 0n])),
+  );
+  return [base, base + 1n, base + 2n].map(
+    (slot) => `0x${slot.toString(16).padStart(64, "0")}` as Hex,
+  ) as [Hex, Hex, Hex];
+}
