@@ -792,6 +792,9 @@ export async function runRealtimeSimulation(
     blockTimeSec: config.blockTimeSec,
     runSeconds: config.runSeconds,
     runBlocks: config.runBlocks,
+    // Issue #264: whether each agent's state directory is carried across epochs (--agent-state-root,
+    // rules §4.7.1). A reader of the record can tell a week of carried state from one of fresh starts.
+    agentStateCarried: agentStateRootFromEnv() !== undefined,
     // Issue #136: when the run was stated as a date, the date it was converted from. runBlocks is
     // what that date came to at this cadence when this process started.
     ...(config.runEndsAt ? { runEndsAt: config.runEndsAt } : {}),
