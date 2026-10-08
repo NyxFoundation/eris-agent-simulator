@@ -13,8 +13,16 @@ name: ascon-monitoring
 # and cAdvisor have no auth at all, and Loki holds the per-team RPC call log. Reach them through the
 # Cloudflare tunnel (ASCON docs/20 §3) or an ssh -L forward, never by opening a port.
 
+# Every container's stdout is capped (2026-10-08): Docker's json-file driver keeps it forever by
+# default, and one Blockscout backend stuck in a retry loop wrote 699 GB of it in 2.5 days, filled the
+# disk and took the RPC gateway and the coordinator down with it. 3 x 100 MB is days of a healthy log.
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "100m", max-file: "3" }
+
 services:
   node-exporter:
+    logging: *logging
     image: prom/node-exporter:v1.8.2
     container_name: ascon-node-exporter
     command:
@@ -33,6 +41,7 @@ services:
   # any more; the container memory/CPU that the alerts and the fleet panels use comes from
   # eris-exporter, which reads the cgroup tree directly.
   cadvisor:
+    logging: *logging
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     container_name: ascon-cadvisor
     restart: unless-stopped
@@ -47,6 +56,7 @@ services:
     ports: ["127.0.0.1:8081:8080"]          # 8080 is taken on the host
 
   prometheus:
+    logging: *logging
     image: prom/prometheus:v2.54.1
     container_name: ascon-prometheus
     restart: unless-stopped
@@ -60,6 +70,7 @@ services:
     extra_hosts: ["host.docker.internal:host-gateway"]
 
   renderer:
+    logging: *logging
     # v5+ required for Grafana 13 (Go renderer; no pinned semver tag is published)
     image: grafana/grafana-image-renderer:latest
     container_name: ascon-renderer
@@ -68,6 +79,7 @@ services:
     environment: [TZ=Asia/Tokyo, BROWSER_TZ=Asia/Tokyo]
 
   grafana:
+    logging: *logging
     image: grafana/grafana:13.2.1
     container_name: ascon-grafana
     restart: unless-stopped
@@ -87,6 +99,7 @@ services:
     depends_on: [prometheus, renderer]
 
   loki:
+    logging: *logging
     image: grafana/loki:3.1.1
     container_name: ascon-loki
     restart: unless-stopped
@@ -94,6 +107,7 @@ services:
     ports: ["127.0.0.1:3100:3100"]
 
   promtail:
+    logging: *logging
     image: grafana/promtail:3.1.1
     container_name: ascon-promtail
     restart: unless-stopped
@@ -105,6 +119,7 @@ services:
     depends_on: [loki]
 
   eris-exporter:
+    logging: *logging
     image: python:3.12-slim
     container_name: ascon-eris-exporter
     restart: unless-stopped
@@ -141,6 +156,7 @@ services:
   # SerializableTransactionType". Keep this tag and the host's foundry on the same version; ASCON
   # docs/18 says to pin foundry to stable but only means the host, which is not sufficient.
   anvil-state-init:
+    logging: *logging
     image: ghcr.io/foundry-rs/foundry:v1.8.3
     container_name: ascon-anvil-state-init
     user: "0:0"
@@ -175,6 +191,7 @@ services:
         fi
 
   anvil:
+    logging: *logging
     image: ghcr.io/foundry-rs/foundry:v1.8.3
     container_name: ascon-anvil
     restart: unless-stopped
@@ -252,6 +269,7 @@ services:
         wait $$ANVILPID
 
   rpc-gateway-live:
+    logging: *logging
     image: node:24-bookworm-slim
     container_name: ascon-rpc-gateway-live
     restart: unless-stopped
@@ -284,6 +302,7 @@ services:
       - ascon-textfile:/textfile
 
   rpc-gateway-test:
+    logging: *logging
     image: node:24-bookworm-slim
     container_name: ascon-rpc-gateway-test
     restart: unless-stopped
@@ -302,6 +321,7 @@ services:
       - ascon-textfile:/textfile
 
   dashboard:
+    logging: *logging
     image: node:24-bookworm-slim
     container_name: ascon-dashboard
     restart: unless-stopped

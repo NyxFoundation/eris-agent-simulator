@@ -27,6 +27,12 @@ Environment=PATH=%h/.foundry/bin:%h/.nix-profile/bin:/run/current-system/sw/bin:
 
 # The chain is a container that may still be starting at boot. Waiting here rather than failing
 # keeps the restart budget above for real faults.
+# A start reverts the chain to the setup snapshot before it writes anything (README, "A restart is a
+# new competition"). On a full disk that revert is all a start gets done: on 2026-10-08 the coordinator
+# died on ENOSPC, this unit restarted it 30 s later, the restart reverted 2.5 days of chain and died
+# again. Refuse below 5% free, before the chain is touched. (The chain's volume and the run directory
+# share this filesystem on the practice box; that is the one checked.)
+ExecStartPre=/bin/sh -c 'used=$$(df --output=pcent %h | tail -n 1 | tr -dc 0-9); test "$$used" -lt 95 || { echo "the disk under %h is $$used%% full: refusing to start, because a start reverts the chain before it writes anything (infra/devnet/README.md)" >&2; exit 1; }'
 ExecStartPre=%h/workspace/eris-agent-simulator/infra/devnet/wait-for-chain.sh
 
 # The seed is the one run key that does not come from the config. config/practice.yaml is public, and

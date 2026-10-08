@@ -140,3 +140,18 @@ tests:
         alertname: ascon_gateway_upstream_down
         exp_alerts:
           - exp_labels: {}
+  # disk: 30% free is quiet; under 15% for 5 m pages
+  - interval: 1m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{mountpoint="/",job="node"}'
+        values: '300x10 100x10'
+      - series: 'node_filesystem_size_bytes{mountpoint="/",job="node"}'
+        values: '1000x20'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: ascon_host_disk_low
+        exp_alerts: []
+      - eval_time: 17m
+        alertname: ascon_host_disk_low
+        exp_alerts:
+          - exp_labels: {}

@@ -30,6 +30,18 @@ Reindexing a run-sized chain (hundreds of blocks) takes well under a minute. Ski
 reset does not crash anything, but the explorer will show a mix of stale and current
 blocks at the same heights.
 
+### It cannot index a chain the coordinator has started an epoch on (yet)
+
+At every epoch start the coordinator raises every known signer's nonce to a wall-clock floor
+(`core/src/realtime/nonceFloor.ts`, replay protection across reverts) — about 1.8 × 10^15 today.
+Blockscout stores `transactions.nonce` and `addresses.nonce` as 32-bit integers, so the first
+block after an epoch start fails to import, and the backend retries it forever. Nothing else
+breaks, but every retry logs a full stack trace: on the practice box (2026-10-08) that was ~11 GB
+an hour, 699 GB in 2.5 days, until the disk filled and took the RPC gateway and the coordinator
+down with it. Every container's log is now capped (`x-logging` in the compose files), so the
+failure costs the explorer and nothing else — but the explorer still shows nothing after the
+period start until those columns are widened to `bigint`.
+
 ## Pointing it at the different anvils
 
 | target | `RPC_PORT` | `CHAIN_ID` | `FIRST_BLOCK` |

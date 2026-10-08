@@ -13,8 +13,16 @@
 # and the coordinator inspects the containers after launch to confirm they hold (issue #214).
 name: ascon-sim
 
+# Every container's stdout is capped (2026-10-08): Docker's json-file driver keeps it forever by
+# default, and one Blockscout backend stuck in a retry loop wrote 699 GB of it in 2.5 days, filled the
+# disk and took the RPC gateway and the coordinator down with it. 3 x 100 MB is days of a healthy log.
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "100m", max-file: "3" }
+
 services:
   sim:
+    logging: *logging
     profiles: [live]
     build:
       context: .

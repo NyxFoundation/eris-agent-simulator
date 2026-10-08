@@ -120,6 +120,13 @@ That shapes the restart policy:
 So a crash costs the standings. That is a real limitation, not a rough edge to be papered over: if
 the period matters, watch the alert rather than trusting the restart.
 
+A start also **reverts the chain** to the setup snapshot before it writes anything, so a restart on a
+full disk is the worst of both: on 2026-10-08 a Blockscout retry loop filled the disk with container
+log, the coordinator died on `ENOSPC`, the unit restarted it 30 s later, and that start reverted
+2.5 days of chain and died again — after which the 5-minute state dump saved the reverted chain over
+the real one. The unit now refuses to start with less than 5% of the disk free (the first
+`ExecStartPre`), every container's log is capped, and "Host disk low" fires below 15%.
+
 Adding a participant mid-period is the one thing that explicitly does **not** need a restart — that
 is what `run.registrationsFile` is for ([practice devnet](../../docs/guide/practice-devnet.md)).
 
