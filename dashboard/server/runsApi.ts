@@ -282,6 +282,40 @@ function redactSummary(file: Json): Json {
   return rest;
 }
 
+/**
+ * The file beside a competition's matrix.json that names the period it continues:
+ * `{"from": "<competition id>", "note": "<why>"}`. Written by the operator, never by the coordinator,
+ * which rewrites matrix.json from memory at every roll.
+ */
+export const CONTINUES_FILE = "continues.json";
+
+/**
+ * A period that continues an earlier one, as one competition (2026-10-08). A coordinator restart
+ * opens a new competition by design (infra/devnet/README.md), so when the practice chain was lost
+ * and restarted, the days already played would have dropped out of the standings. The practice
+ * period ranks every day on its own return from its own opening value (practiceReturn.ts), so the
+ * earlier period's days stand unchanged beside the new one's: its scenarios come first, as
+ * recorded (their runDirs name the earlier period's directory), and every day is renumbered in
+ * order. Only one level: the earlier period's own continues.json is not followed.
+ */
+export function continuedIndex(file: Json, earlier: Json, link: Json): Json {
+  const own = Array.isArray(file.scenarios) ? (file.scenarios as Json[]) : [];
+  const before = Array.isArray(earlier.scenarios)
+    ? (earlier.scenarios as Json[])
+    : [];
+  const scenarios = [...before, ...own].map((s, i) => ({ ...s, seed: i }));
+  return {
+    ...file,
+    scenariosPlanned: scenarios.length,
+    scenarios,
+    continues: {
+      from: link.from,
+      ...(typeof link.note === "string" ? { note: link.note } : {}),
+      days: before.length,
+    },
+  };
+}
+
 const REDACTED_JSON: Record<string, (file: Json) => Json> = {
   "matrix.json": redactMatrix,
   "standings.json": redactStandings,
@@ -720,9 +754,48 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
   function scenarioRunIdOf(competitionId: string, runDir: string): string {
     const rel = runDir.replace(/^\.?\/?runs\//, "").replace(/^\/+/, "");
     if (rel.startsWith(`${competitionId}/`)) return rel;
-    const name = rel.split("/").filter(Boolean).pop() ?? rel;
     const cut = competitionId.lastIndexOf("/");
-    return `${cut === -1 ? "" : competitionId.slice(0, cut + 1)}${name}`;
+    const prefix = cut === -1 ? "" : competitionId.slice(0, cut + 1);
+    // A day of another period beside this one (`runs/<period>/<day>`), which a continued period
+    // lists (continues.json) -- the same rule as the dashboard's scenarioRunId.
+    if (rel.includes("/")) return `${prefix}${rel}`;
+    const name = rel.split("/").filter(Boolean).pop() ?? rel;
+    return `${prefix}${name}`;
+  }
+
+  /**
+   * A competition's index as it is served: its matrix.json, plus the days of the period it
+   * continues when a continues.json beside it names one (continuedIndex). Null when the
+   * competition has no readable matrix.json.
+   */
+  function competitionIndex(comp: string): Json | null {
+    const dir = path.join(root, comp);
+    let file: Json;
+    try {
+      file = JSON.parse(
+        fs.readFileSync(path.join(dir, "matrix.json"), "utf8"),
+      ) as Json;
+    } catch {
+      return null;
+    }
+    let link: Json;
+    try {
+      link = JSON.parse(
+        fs.readFileSync(path.join(dir, CONTINUES_FILE), "utf8"),
+      ) as Json;
+    } catch {
+      return file;
+    }
+    if (typeof link.from !== "string" || link.from === comp) return file;
+    let earlier: Json;
+    try {
+      earlier = JSON.parse(
+        fs.readFileSync(path.join(root, link.from, "matrix.json"), "utf8"),
+      ) as Json;
+    } catch {
+      return file;
+    }
+    return continuedIndex(file, earlier, link);
   }
 
   /**
@@ -745,16 +818,11 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
     const ids = new Set<string>();
     for (const comp of allowlist) {
       ids.add(comp);
-      let file: Json;
-      try {
-        file = JSON.parse(
-          fs.readFileSync(path.join(root, comp, "matrix.json"), "utf8"),
-        ) as Json;
-      } catch {
-        // not a competition (yet): the id itself stays admitted, so a period whose first segment
-        // has not opened is not a 404 for the seconds before it does
-        continue;
-      }
+      // The served index, so the days a continued period lists are admitted with it.
+      const file = competitionIndex(comp);
+      // not a competition (yet): the id itself stays admitted, so a period whose first segment
+      // has not opened is not a 404 for the seconds before it does
+      if (!file) continue;
       const scenarios = Array.isArray(file.scenarios)
         ? (file.scenarios as Json[])
         : [];
@@ -1264,6 +1332,20 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
       mode.audience && base === "blocks.csv" ? blocksRedactionOf(file) : null;
     if (blocksRedact) {
       send(req, res, redactedLinesStream(file, blocksRedact), contentType, cache);
+      return true;
+    }
+    if (
+      base === "matrix.json" &&
+      fs.existsSync(path.join(path.dirname(file), CONTINUES_FILE))
+    ) {
+      const merged = competitionIndex(path.dirname(checked));
+      if (!merged) {
+        res.statusCode = 503;
+        res.end();
+        return true;
+      }
+      const out = mode.audience ? redactMatrix(merged) : merged;
+      send(req, res, `${JSON.stringify(out, null, 2)}\n`, contentType, cache);
       return true;
     }
     if (mode.audience && REDACTED_JSON[base]) {

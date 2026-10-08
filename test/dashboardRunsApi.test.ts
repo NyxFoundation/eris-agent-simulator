@@ -1024,3 +1024,67 @@ test("a symlink inside an admitted competition does not serve a run outside the 
   }
   rmSync(root, { recursive: true, force: true });
 });
+
+// 2026-10-08: the practice chain was lost and the coordinator restarted, which opens a new
+// competition. continues.json beside the new period's matrix.json names the earlier one, and the
+// served index carries the earlier period's days first -- admitted with it, even when only the new
+// period is listed.
+test("a period that continues another serves the earlier days first, and admits them", async () => {
+  const root = mkdtempSync(join(tmpdir(), "eris-runs-continued-"));
+  const period = (id: string, days: string[]) => {
+    mkdirSync(join(root, id), { recursive: true });
+    for (const d of days) {
+      mkdirSync(join(root, id, d), { recursive: true });
+      writeFileSync(join(root, id, d, "summary.json"), JSON.stringify({ agents: [] }));
+    }
+    writeFileSync(
+      join(root, id, "matrix.json"),
+      JSON.stringify({
+        schema: 1,
+        resetUnit: "continuous",
+        segmentHours: 24,
+        scenariosPlanned: days.length,
+        scenarios: days.map((d, i) => ({
+          regime: "segment",
+          seed: i,
+          label: d,
+          runDir: `runs/${id}/${d}`,
+          agents: [],
+        })),
+      }),
+    );
+  };
+  period("period-a", ["a-s00", "a-s01"]);
+  period("period-b", ["b-s00"]);
+  writeFileSync(
+    join(root, "period-b", "continues.json"),
+    JSON.stringify({ from: "period-a", note: "chain lost, restarted" }),
+  );
+  for (const audience of [false, true]) {
+    const { get, close } = await serve(root, audience, ["period-b"]);
+    try {
+      const index = JSON.parse((await get("/period-b/matrix.json")).text);
+      assert.deepEqual(
+        index.scenarios.map((s: { runDir: string; seed: number }) => [s.runDir, s.seed]),
+        [
+          ["runs/period-a/a-s00", 0],
+          ["runs/period-a/a-s01", 1],
+          ["runs/period-b/b-s00", 2],
+        ],
+      );
+      assert.equal(index.scenariosPlanned, 3);
+      assert.deepEqual(index.continues, {
+        from: "period-a",
+        note: "chain lost, restarted",
+        days: 2,
+      });
+      // The earlier days are served because the continued index names them; the earlier period's
+      // own index is not, since it is not on the list.
+      assert.equal((await get("/period-a/a-s01/summary.json")).status, 200);
+      assert.equal((await get("/period-a/matrix.json")).status, 404);
+    } finally {
+      await close();
+    }
+  }
+  rmSync(root, { recursive: true, force: true });
+});

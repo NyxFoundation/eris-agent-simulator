@@ -134,6 +134,9 @@ export function scenarioRunId(competitionId: string, runDir: string): string {
   // Nested: the run dir names the competition it lives in.
   if (competitionName && rel.startsWith(`${competitionName}/`))
     return `${prefix}${rel}`;
+  // A day of another period beside this one, which a continued period lists (the runs API's
+  // continues.json): `runs/<period>/<day>` names its own directory.
+  if (rel.includes("/")) return `${prefix}${rel}`;
   const name = rel.split("/").filter(Boolean).pop() ?? rel;
   return `${prefix}${name}`;
 }
