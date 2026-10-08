@@ -179,3 +179,8 @@ packages that were already in the base image.
 Regression tests: `test/submissionScan.test.ts` (zip and directory symlinks, shrinkwrap, v1 lock,
 missing `resolved` / `integrity`, git / URL `resolved`, non-registry specs, `requirements.txt`
 lines, and a clean accept case).
+
+**A resubmission whose build fails is not accepted** (issue #261): the build's exit code decides,
+not whether `eris-agent:<team-id>` exists afterwards — a tag left by the previous accepted ZIP would
+otherwise be reported as this one's digest. The extracted directory is removed, the previous image
+stays, and the previous digest stays the team's current one in the ledger.

@@ -77,9 +77,17 @@ npx tsx scripts/checkStrategyCode.ts "${STRATEGY_FILES[@]}" 2>&1 | tail -3
 [ "${PIPESTATUS[0]}" = 0 ] || { echo "check:strategy found issues — see above" >&2; rm -rf "$DEST"; exit 1; }
 
 step "4/4 build eris-agent:$TEAM"
+# A resubmission's tag may already exist from the last accepted one. The build's own exit code is
+# what says this ZIP became an image; `docker image inspect` after a failed build would happily
+# return the previous submission's id, and that id would be recorded as this one's (issue #261).
+BEFORE=$(docker image inspect "eris-agent:$TEAM" --format '{{.Id}}' 2>/dev/null || true)
 npm run agent:build -- team "$TEAM" 2>&1 | tail -2
+[ "${PIPESTATUS[0]}" = 0 ] || { echo "build failed — not accepting (the previous image${BEFORE:+ $BEFORE} is untouched)" >&2; rm -rf "$DEST"; exit 1; }
 DIGEST=$(docker image inspect "eris-agent:$TEAM" --format '{{.Id}}' 2>/dev/null)
-[ -n "$DIGEST" ] || { echo "image not found after build" >&2; exit 1; }
+[ -n "$DIGEST" ] || { echo "image not found after build" >&2; rm -rf "$DEST"; exit 1; }
+# Same id as before is possible and fine (byte-identical submission, docker reused the layers);
+# it is said so the operator does not take it for a stale one.
+[ -n "$BEFORE" ] && [ "$BEFORE" = "$DIGEST" ] && echo "  (same image id as the previous submission: identical contents)"
 
 cat <<DONE
 
