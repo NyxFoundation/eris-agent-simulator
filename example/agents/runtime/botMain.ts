@@ -454,6 +454,7 @@ async function main(): Promise<void> {
     ctx: simCtx,
     adapters,
     address,
+    headBlock: () => publicClient.getBlockNumber({ cacheTime: 0 }),
     onError: (block, venue, error) => {
       if (venueReadFailures.has(venue)) return;
       venueReadFailures.add(venue);
@@ -1024,6 +1025,13 @@ async function main(): Promise<void> {
         // What the harness owes the model is the evidence: the history, and the value at each point.
         const markNow = accountValue.latest();
         const value = markNow?.valueUsdc ?? null;
+        // Running totals, so a post-run reader can tell whether the PnL and the per-trade marks the
+        // model was shown rest on most blocks or on a few (accountValue.ts).
+        agentLog({
+          round: block,
+          reason: "account valuation coverage",
+          signals: { ...accountValue.stats() },
+        });
         const system = buildRevisionSystem(
           improveAgent,
           current().source,

@@ -14,6 +14,11 @@
  *
  * A partial total is worse than none: when any venue's read fails, the block has no value, rather
  * than a value that is missing that venue -- which is the hole this file exists to close.
+ *
+ * The same goes for a total from two blocks. The wallet half is the snapshot's (block N), and the
+ * venue reads go to the chain's head when they run. If block N+1 landed in between -- with this
+ * agent's own deposit in it -- the deposit would be in both halves. So the head is read again after
+ * the venue reads have returned: still N means every read saw N, and anything later drops the block.
  */
 import type { Address } from "viem";
 import type { ProtocolAdapter, SimContext } from "@eris/sdk/protocols/types.js";
@@ -27,8 +32,27 @@ export type AccountMark = {
   venuesUsdc: number;
 };
 
+// How many blocks got a value, and why the others did not. A block without one has no baseline for
+// a trade decided on it (the ledger falls back to the first mark after inclusion), so the ratio is
+// what says whether these numbers can be trusted in a given run.
+export type AccountValueStats = {
+  valued: number;
+  // Arrived while the previous block's valuation was still running.
+  skipped: number;
+  // The chain moved past the block before the venue reads returned.
+  stale: number;
+  // A venue read threw, or returned something that is not a number.
+  failed: number;
+};
+
 export class AccountValue {
   private inFlight = false;
+  private readonly counts: AccountValueStats = {
+    valued: 0,
+    skipped: 0,
+    stale: 0,
+    failed: 0,
+  };
   private firstMark: AccountMark | null = null;
   private latestMark: AccountMark | null = null;
 
@@ -37,6 +61,8 @@ export class AccountValue {
       ctx: SimContext;
       adapters: ProtocolAdapter[];
       address: Address;
+      // The chain's head, uncached. Read after the venue reads, to drop a total that spans a block.
+      headBlock?: () => Promise<bigint>;
       onError?: (block: number, venue: string, error: unknown) => void;
     },
   ) {}
@@ -50,12 +76,20 @@ export class AccountValue {
     return this.latestMark;
   }
 
+  stats(): AccountValueStats {
+    return { ...this.counts };
+  }
+
   /// Value one block's snapshot. Null when the block was skipped because a valuation was still
-  /// running, when the observation carried no wallet value, or when a venue read failed.
+  /// running, when the observation carried no wallet value, when a venue read failed, or when the
+  /// chain moved past the block before the venue reads were done.
   async mark(block: number, snap: ChainSnapshot): Promise<AccountMark | null> {
     const wallet = snap.observation.inventory?.valueUsdc;
-    if (this.inFlight || typeof wallet !== "number" || !Number.isFinite(wallet))
+    if (typeof wallet !== "number" || !Number.isFinite(wallet)) return null;
+    if (this.inFlight) {
+      this.counts.skipped += 1;
       return null;
+    }
     this.inFlight = true;
     try {
       // This block's fair prices, copied: the next block's snapshot rewrites ctx.fairPrices while
@@ -81,9 +115,20 @@ export class AccountValue {
       );
       let venuesUsdc = 0;
       for (const v of values) {
-        if (v === null || !Number.isFinite(v)) return null;
+        if (v === null || !Number.isFinite(v)) {
+          this.counts.failed += 1;
+          return null;
+        }
         venuesUsdc += v;
       }
+      if (this.opts.headBlock) {
+        const head = await this.opts.headBlock();
+        if (head > BigInt(block)) {
+          this.counts.stale += 1;
+          return null;
+        }
+      }
+      this.counts.valued += 1;
       const mark: AccountMark = {
         block,
         valueUsdc: wallet + venuesUsdc,

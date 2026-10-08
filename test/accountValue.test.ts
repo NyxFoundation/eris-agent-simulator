@@ -115,8 +115,38 @@ test("AccountValue gives a block no value when any venue read fails, rather than
   });
   assert.equal(await account.mark(7, snapshot(20_000, { WETH: 3_000 })), null);
   assert.deepEqual(errors, ["7:liquity"]);
+  assert.equal(account.stats().failed, 1);
   assert.equal(account.first(), null);
   assert.equal(account.latest(), null);
+});
+
+test("AccountValue drops a total whose venue reads ran after the chain moved on (#274)", async () => {
+  // The wallet half is block 9's; the venue reads go to the head. If block 10 (with this agent's own
+  // deposit in it) landed while they ran, the deposit would be counted in both halves.
+  let head = 9n;
+  const account = new AccountValue({
+    ctx: {} as SimContext,
+    address: AGENT,
+    adapters: venues([
+      {
+        id: "aave",
+        valueUsdc: async () => {
+          head = 10n;
+          return 5_000;
+        },
+      },
+    ]),
+    headBlock: async () => head,
+  });
+  assert.equal(await account.mark(9, snapshot(20_000, { WETH: 3_000 })), null);
+  assert.equal(account.latest(), null);
+  assert.equal(account.stats().stale, 1);
+  // At the head: kept.
+  assert.deepEqual(await account.mark(10, snapshot(15_000, { WETH: 3_000 })), {
+    block: 10,
+    valueUsdc: 20_000,
+    venuesUsdc: 5_000,
+  });
 });
 
 test("AccountValue values one block at a time and never moves latest backwards (#274)", async () => {
@@ -148,4 +178,5 @@ test("AccountValue values one block at a time and never moves latest backwards (
   await account.mark(7, snapshot(900, { WETH: 3_000 }));
   assert.equal(account.latest()?.block, 8);
   assert.equal(account.first()?.block, 5);
+  assert.deepEqual(account.stats(), { valued: 3, skipped: 1, stale: 0, failed: 0 });
 });
