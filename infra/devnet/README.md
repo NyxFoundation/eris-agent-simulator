@@ -101,36 +101,69 @@ and drive a world where nothing can be traded. Produce it first, from a deployer
 npm run gen:state-dump
 ```
 
-## A restart is a new competition, on purpose
+## A restart resumes the period
 
-`competitionId` is the process start time (`core/src/realtime/coordinator.ts`), so **restarting the
-coordinator does not resume the period.** It opens a new competition directory and the standings
-start again from zero. There is no resume, and the unit does not pretend otherwise.
+The coordinator writes the period's state down at the end of every pass —
+`<competition>/resume/state.json`, and a copy every 30 blocks in `resume/history/` (the last 40) —
+and a start that finds an open period **continues it**: the same chain (nothing is reverted), the
+same competition directory, the same PriceFeed, the same balances and the same standings. Nothing a
+participant holds changes: their manifest, nonces and approvals are all still good
+(`core/src/realtime/periodResume.ts`).
 
-That shapes the restart policy:
+| At the start | The coordinator |
+|---|---|
+| the period's last checkpoint is on the chain (it crashed, or was stopped) | resumes after it; the blocks mined while it was down are the first pass's catch-up |
+| the chain went back (anvil restarted from its periodic dump) | resumes from the newest checkpoint the chain still holds, and cuts the artifacts back to it — what it cuts is kept under `resume/cut-<time>/` |
+| no checkpoint is on the chain (it was reset or redeployed) | refuses, naming the blocks it looked for |
+| no open period, and no new one asked for | refuses |
+| `runs/NEW_PERIOD` exists, or `--new-period` was passed | marks every open period superseded, reverts the chain to the setup snapshot and starts a new period; the file is removed once that period has written its first checkpoint |
+| the config describes a different world | refuses, listing what differs. Across a restart only the fee rule (`fees.*`, `run.economicGas`), `flow.topUpEveryBlocks`, `run.registrationsFile` and the agents' readiness wait, disk quotas and sandbox may change |
 
-- `Restart=on-failure`, so a transient fault (the chain blinked, a disk write failed) comes back
-- `RestartSec=30`
-- `StartLimitIntervalSec=1h` / `StartLimitBurst=3`, so a **persistent** fault stops the unit instead
-  of shredding a week-long period into a directory per crash. After the third start in an hour the
-  unit stays `failed` and waits for a person.
-- a clean exit is **not** restarted. The period reaching its block count is the period ending, and
-  starting the next one is an operator's decision, not systemd's.
+So the restart policy is what it was — `Restart=on-failure`, `RestartSec=30`,
+`StartLimitIntervalSec=1h` / `StartLimitBurst=3` (a persistent fault stops the unit and waits for a
+person), a clean exit is not restarted — but a crash no longer costs the standings.
 
-So a crash costs the standings. That is a real limitation, not a rough edge to be papered over: if
-the period matters, watch the alert rather than trusting the restart.
+**Starting a new period** is the only thing that reverts the chain, so it has to be asked for:
 
-A start also **reverts the chain** to the setup snapshot before it writes anything, so a restart on a
-full disk is the worst of both: on 2026-10-08 a Blockscout retry loop filled the disk with container
-log, the coordinator died on `ENOSPC`, the unit restarted it 30 s later, and that start reverted
-2.5 days of chain and died again — after which the 5-minute state dump saved the reverted chain over
-the real one. The unit now refuses to start with less than 5% of the disk free (the first
+```sh
+touch runs/NEW_PERIOD                  # in the coordinator's checkout (run.reportDir)
+systemctl --user restart ascon-devnet
+```
+
+or `npm run sim:realtime -- --config config/practice.yaml --seed <seed> --new-period` by hand. A new
+period is still announced on Discord: the chain resets, so participants restart their agents and
+fetch the manifest again.
+
+Before this, *every* start reverted the chain. On 2026-10-08 a Blockscout retry loop filled the disk
+with container log, the coordinator died on `ENOSPC`, the unit restarted it 30 s later, and that start
+reverted 2.5 days of chain and died again — after which the 5-minute state dump saved the reverted
+chain over the real one. The unit still refuses to start with less than 5% of the disk free (the first
 `ExecStartPre`), every container's log is capped, and "Host disk low" fires below 15%.
 
-### When the coordinator died mid-period
+What a resume does **not** carry:
 
-The days already closed keep their results, and two steps keep the standings whole when the next
-period starts:
+- **The node's state history across an anvil restart.** anvil's dump holds the current state; the
+  300 blocks of history `--prune-history` keeps are in memory only. An interval boundary that came due
+  between the checkpoint and the reloaded head cannot be read, and is recorded as
+  `interval_boundary_failed` — never filled in. A coordinator crash does not lose it (anvil is still
+  up). Measured: transactions in those blocks do survive the dump, so `blocks.csv` loses nothing.
+- **Transactions older than `--transaction-block-keeper`** (300 blocks, 10 minutes) when the
+  coordinator was down longer than that: their blocks are reported as `blocks_csv_unrecoverable`
+  rather than written as empty.
+- **Features whose state is not checkpointed** — `agentMarkets`, `tokenLaunch`, vuln events, stress
+  victims, prewarm. None is in `config/practice.yaml`; a period that has one says so when it starts
+  (`period_not_resumable`) and is refused at a restart.
+- **The flow bot's position in its stream.** A resumed bot draws a continuation (`flow:resume-<n>`), not
+  the period's first day again.
+- **An agent process that had already exited on its own** is not started again (rules §2.3); one the
+  coordinator's own death took down is.
+
+### When a period cannot be resumed
+
+The next start then has to be a new period: the period predates checkpoints (one started before
+this code was deployed), the chain it ran on was lost or reset, or the period was not resumable.
+The days already closed keep their results, and two steps keep the standings whole across the
+new period:
 
 1. **Close the day it died in.** A day gets its `summary.json` when it rolls, so the day the
    coordinator died in has none, and the standings drop it. `npm run close:crashed-segment --
@@ -144,19 +177,21 @@ period starts:
    file (it rewrites `matrix.json` from memory at every roll). The practice period ranks every day on
    its own return from its own opening value, so days from two chains stand side by side.
 
-Adding a participant mid-period is the one thing that explicitly does **not** need a restart — that
-is what `run.registrationsFile` is for ([practice devnet](../../docs/guide/practice-devnet.md)).
+Adding a participant mid-period still does not need a restart — that is what
+`run.registrationsFile` is for ([practice devnet](../../docs/guide/practice-devnet.md)), and entries
+added while the coordinator was down are picked up by its first poll after the resume.
 
 ## Stopping
 
 ```sh
-systemctl --user stop ascon-devnet     # ends the period
+systemctl --user stop ascon-devnet     # pauses the period
 ```
 
-The coordinator installs no `SIGTERM` handler, so this is abrupt. The append-only artifacts
-(`events.jsonl`, `blocks.csv`, `intervals.jsonl`, `agents/*.jsonl`) are all on disk and intact;
-`summary.json` is written at the end of a run and will not exist. The segment is still readable —
-the dashboard reads the jsonl — but do not expect a closed book.
+On `SIGTERM` the coordinator stops the chain's interval mining and exits, so participants'
+transactions wait in the mempool instead of being mined against a price nobody is updating; the next
+start resumes. `summary.json` is written when a period reaches its end (the period is then closed, and
+a start after it needs `NEW_PERIOD`). A segment that is open is readable as it is — the dashboard reads
+the jsonl.
 
 ## When it dies, Slack says so
 
@@ -198,8 +233,8 @@ numbers are in the issue #135 PR; what they decided is in the compose file:
   than ten minutes returns nothing (docs/guide/practice-devnet.md says so).
 - **Not bounded by any flag: block headers.** anvil keeps one for every block, so memory still grows
   after the plateau. `ascon_anvil_mem_growth` fires when the chain container's six-hour slope reaches
-  80 % of the host within a week — enough warning to schedule a restart (which is a new period) or a
-  bigger box. It reads eris-exporter's `ascon_container_memory_working_set_bytes`: the practice box runs
+  80 % of the host within a week — enough warning to schedule a new period on a fresh chain (a
+  coordinator restart resumes the period and sheds nothing) or a bigger box. It reads eris-exporter's `ascon_container_memory_working_set_bytes`: the practice box runs
   Docker's containerd image store, under which cAdvisor exports no per-container series, so until
   issue #157 this rule was evaluating no data — green — while the rehearsal's anvil grew 0.11 GiB/h.
 - **No per-block state files on this version.** `~/.foundry/anvil/tmp/anvil-state-*` (6 MB a block on
@@ -287,11 +322,13 @@ pinned at the snapshot block.
 no-op, so the obvious reflex looks like it worked and changes nothing. It has to be `stop` then
 `start` (or `restart`).
 
-So: **stop the coordinator before touching the chain volume, and restart it after.**
+So: **stop the coordinator before touching the chain volume, and restart it after.** A reset chain no
+longer holds the period, so the start refuses until a new period is asked for:
 
 ```sh
 systemctl --user stop ascon-devnet
 # ... reset the chain ...
+touch runs/NEW_PERIOD
 systemctl --user start ascon-devnet
 ```
 

@@ -51,7 +51,12 @@ export function agentLogPath(runDir: string, agentId: string): string {
 // point, and the substring check keeps the common negative (no file yet, or preflight lines only)
 // from parsing anything. A line that merely mentions the word -- an error message quoting it --
 // is parsed and rejected rather than counted.
-export function agentLogHasRuntimeStart(file: string): boolean {
+//
+// `notBeforeMs`: only a line stamped at or after this counts. A practice period that resumes after a
+// restart (periodResume.ts) starts its agents again into the segment directory they were already
+// logging to, and the line the previous process wrote would otherwise declare the new one ready
+// before it has booted.
+export function agentLogHasRuntimeStart(file: string, notBeforeMs = 0): boolean {
   let text: string;
   try {
     text = readFileSync(file, "utf8");
@@ -62,8 +67,11 @@ export function agentLogHasRuntimeStart(file: string): boolean {
   for (const line of text.split("\n")) {
     if (!line.includes(RUNTIME_START_EVENT)) continue;
     try {
-      const parsed = JSON.parse(line) as { event?: unknown };
-      if (parsed.event === RUNTIME_START_EVENT) return true;
+      const parsed = JSON.parse(line) as { event?: unknown; ts?: unknown };
+      if (parsed.event !== RUNTIME_START_EVENT) continue;
+      if (notBeforeMs <= 0) return true;
+      const at = typeof parsed.ts === "string" ? Date.parse(parsed.ts) : Number.NaN;
+      if (at >= notBeforeMs) return true;
     } catch {
       // a partial last line while the agent is mid-write; the next poll reads it whole
     }
@@ -76,6 +84,8 @@ export async function waitForAgentsReady(opts: {
   runDir: string;
   /** When the processes were spawned; `ready[].afterMs` is measured from here. */
   spawnedAt: number;
+  /** Ignore `runtime_start` lines stamped before this (an earlier process's; see above). */
+  notBeforeMs?: number;
   timeoutMs: number;
   pollMs?: number;
   now?: () => number;
@@ -96,7 +106,7 @@ export async function waitForAgentsReady(opts: {
     for (const id of [...pending]) {
       const agent = byId.get(id);
       if (!agent) continue;
-      if (agentLogHasRuntimeStart(agentLogPath(opts.runDir, id))) {
+      if (agentLogHasRuntimeStart(agentLogPath(opts.runDir, id), opts.notBeforeMs)) {
         ready.set(id, now() - opts.spawnedAt);
         pending.delete(id);
       } else if (!agent.isAlive()) {

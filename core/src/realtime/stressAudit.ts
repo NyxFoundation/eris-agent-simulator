@@ -76,6 +76,23 @@ export class StressAudit {
     }
   }
 
+  // What has been seen so far, for a practice period that resumes after a restart (periodResume.ts):
+  // the summary at the period's end covers every window, not only those after the last restart.
+  snapshot(): Array<{
+    eventIndex: number;
+    applications: number;
+    firstBlock: number;
+    lastBlock: number;
+    peakMagnitude?: number;
+  }> {
+    return [...this.seen].map(([eventIndex, s]) => ({ eventIndex, ...s }));
+  }
+
+  restore(entries: ReturnType<StressAudit["snapshot"]>): void {
+    this.seen.clear();
+    for (const { eventIndex, ...s } of entries) this.seen.set(eventIndex, s);
+  }
+
   summaries(): Record<string, unknown>[] {
     return this.events.map((event, eventIndex) => {
       const observed = this.seen.get(eventIndex);

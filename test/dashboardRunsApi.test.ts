@@ -1088,3 +1088,39 @@ test("a period that continues another serves the earlier days first, and admits 
   }
   rmSync(root, { recursive: true, force: true });
 });
+
+// A practice period's checkpoint directory (core/src/realtime/periodResume.ts): state.json carries
+// the seed and the episode plan, and the tails a resume cut keep the artifacts' own names.
+test("audience mode serves nothing under a period's resume/ directory", async () => {
+  const root = mkdtempSync(join(tmpdir(), "eris-runs-api-resume-"));
+  const period = "2026-10-08T11-35-00-987Z";
+  const day = "2026-10-08-s00";
+  mkdirSync(join(root, period, day), { recursive: true });
+  writeFileSync(
+    join(root, period, "matrix.json"),
+    JSON.stringify({ scenarioSet: "practice", resetUnit: "continuous", scenarios: [] }),
+  );
+  writeFileSync(join(root, period, day, "events.jsonl"), "");
+  const cut = join(root, period, "resume", "cut-2026-10-08T12-00-00-000Z", day);
+  mkdirSync(cut, { recursive: true });
+  mkdirSync(join(root, period, "resume", "history"), { recursive: true });
+  writeFileSync(join(root, period, "resume", "state.json"), '{"world":{"seed":4242}}\n');
+  writeFileSync(join(cut, "events.jsonl"), '{"type":"stress_schedule","events":[]}\n');
+  writeFileSync(join(cut, "blocks.csv"), "round\n");
+  const { get, close } = await serve(root, true);
+  try {
+    assert.equal((await get(`/${period}/resume/state.json`)).status, 404);
+    assert.equal(
+      (await get(`/${period}/resume/cut-2026-10-08T12-00-00-000Z/${day}/events.jsonl`)).status,
+      404,
+    );
+    assert.equal(
+      (await get(`/${period}/resume/cut-2026-10-08T12-00-00-000Z/${day}/blocks.csv`)).status,
+      404,
+    );
+    assert.equal((await get(`/${period}/matrix.json`)).status, 200);
+  } finally {
+    await close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
