@@ -17,9 +17,9 @@
 **前提**: 起動時に登録ファイルを読む修正（#146）が入った commit で行う。入っていないと、登録ファイルから入る
 参加者が新しい competition の初日に採点されない（1.6 と 2.3 がそれを検出する）。
 
-**なぜリハーサルが先か**: coordinator の再起動は新しい competition を開く（順位表が割れる。
-[README](README.md#a-restart-is-a-new-competition-on-purpose)）。本番で試して落ちると、直してもう 1 回
-再起動することになる。
+**なぜリハーサルが先か**: 本番で落ちて新しい期間からやり直すと、チェーンと順位がリセットされる。
+coordinator の再起動そのものは期間を再開する（[README](README.md#a-restart-resumes-the-period)）が、
+環境側の欠陥は再開しても直らない。
 
 ---
 
@@ -40,7 +40,7 @@ gateway 経由の RPC・公開ダッシュボード）の 2 欄で見る。内�
 
 | 不合格の種類 | リハーサル | 本番 |
 |---|---|---|
-| チェーン・環境・参加者役 agent | 直してから 26h を最初からやり直す（時間とともに悪化する種類が多く、直した項目だけ見ても分からない） | 直して再起動する（新しい competition。Discord で告知） |
+| チェーン・環境・参加者役 agent | 直してから 26h を最初からやり直す（時間とともに悪化する種類が多く、直した項目だけ見ても分からない） | 直して再起動する（期間は再開される。直した内容が config の世界を変えるなら新しい期間 = `runs/NEW_PERIOD`。どちらも Discord で告知） |
 | ダッシュボードだけ | 走らせたまま直した版に差し替え、その項目だけ再確認する（ダッシュボードは状態を持たない） | 同左 + Discord で告知 |
 | リハーサル基盤の障害（SSH トンネルが切れた、EC2 の障害） | devnet の不合格ではない。記録して復旧し、影響した時間帯を判定から外す | — |
 
@@ -339,9 +339,11 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
 ### 2.1 前提
 
 - [ ] リハーサルの issue が go で、commit が書いてある
-- [ ] 事前に Discord で告知する: 再起動で新しい competition になる / チェーンがリセットされるので
+- [ ] 事前に Discord で告知する: 新しい期間（competition）になる / チェーンがリセットされるので
   **参加者は自分の agent を再起動する**（nonce と approve が消える。runtime は起動時にしか approve しない）/
-  登録は引き継がれ、再登録は要らない（登録ファイルは起動時に読まれ、初日から採点される）
+  登録は引き継がれ、再登録は要らない（登録ファイルは起動時に読まれ、初日から採点される）。
+  **期間中の再起動（コード更新・手数料などの設定変更・障害からの復旧）はこれに当たらない**: coordinator は
+  開いている期間を同じチェーンのまま再開し、参加者の作業は要らない（[README](README.md#a-restart-resumes-the-period)）
 
 ### 2.2 手順
 
@@ -370,7 +372,9 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
   [README](README.md#resetting-the-chain-under-a-running-coordinator-wedges-it-silently)）:
   `systemctl --user stop ascon-devnet` → compose を新しい commit で上げ直す（promote が済んでいること。
   `git -C <checkout> log -1 --format=%H` で実測する）→ exporter コンテナも同時に上げ直す
-  （古い exporter は `intervals.jsonl` を読めない）→ `systemctl --user start ascon-devnet`
+  （古い exporter は `intervals.jsonl` を読めない）→ **`touch runs/NEW_PERIOD`**（これが無いと coordinator は
+  前の期間を再開しようとし、チェーンが戻されていれば拒否して止まる）→ `systemctl --user start ascon-devnet`
+  → 期間ディレクトリができて `runs/NEW_PERIOD` が消えたことを確かめる（最初の checkpoint を書いた時点で消える）
 - [ ] 期間ディレクトリができたら `infra/monitoring/.env` に `ERIS_DASHBOARD_COMPETITIONS=<期間 id>`
   を書き、dashboard コンテナを上げ直す（公開 picker に smoke run を出さない。issue #84 K）
 - [ ] `infra/monitoring/.env` に `ASCON_DASHBOARD_PUBLIC_URL=https://ascon-dash.nyx.foundation/healthz` を
@@ -384,8 +388,9 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
   同じ commit、`sdk/src/constants.local.ts` は box からコピー、マニフェストは参加者と同じく
   `curl -fsS -o manifest.json https://ascon-dash.nyx.foundation/runs/manifest.json` で取る。env ファイルは 1.2 の形に
   `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` を足したもの（単一引用符はそのままでよい。systemd の
-  EnvironmentFile も引用符を解釈する）。再起動のたびに `constants.local.ts` とマニフェストを取り直して
-  unit を再起動する（チェーンのリセットで nonce と approve が消え、PriceFeed のアドレスも変わる）:
+  EnvironmentFile も引用符を解釈する）。新しい期間のたびに `constants.local.ts` とマニフェストを取り直して
+  unit を再起動する（チェーンのリセットで nonce と approve が消え、PriceFeed のアドレスも変わる。期間中の
+  coordinator の再起動では何も変わらないので不要）:
   ```ini
   # ~/.config/systemd/user/ascon-canary.service（loginctl enable-linger も要る）
   [Service]

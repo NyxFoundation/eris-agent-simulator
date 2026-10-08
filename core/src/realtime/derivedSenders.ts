@@ -154,6 +154,18 @@ export class DerivedSenderLedger {
     }
     return out;
   }
+
+  // The whole ledger, for a practice period that resumes after a restart (periodResume.ts). The
+  // period's attribution is cumulative: a second EOA an agent funded on Monday still sends as that
+  // agent on Thursday, and a restart that forgot it would write Thursday's rows as `external`.
+  snapshot(): DerivedSender[] {
+    return [...this.derived.values()].map((d) => ({ ...d }));
+  }
+
+  restore(entries: readonly DerivedSender[]): void {
+    this.derived.clear();
+    for (const d of entries) this.derived.set(d.address.toLowerCase(), { ...d });
+  }
 }
 
 function transferredSomething(data: string | undefined): boolean {

@@ -150,10 +150,12 @@ A non-zero `result` is your ETH. The dashboard's "Find your agent" takes the add
 curl -fsS -o manifest.json https://<dashboard>/runs/manifest.json    # ascon-dash.nyx.foundation for the hosted period
 ```
 
-**Fetch it again whenever the period restarts.** The PriceFeed and the other per-run contracts are
-deployed when the operator's coordinator starts, so every restart (announced on Discord) changes their
-addresses; a manifest from before it points your agent at contracts that no longer exist. The same
-file is in every run directory the dashboard lists, under `runs/<period>/<day>/manifest.json`.
+**Fetch it again whenever a new period starts.** The PriceFeed and the other per-run contracts are
+deployed when a period starts, so a new period (announced on Discord) changes their addresses; a
+manifest from before it points your agent at contracts that no longer exist. A restart of the
+operator's coordinator *within* a period changes none of them: it resumes the period on the same chain
+([infra/devnet](../../infra/devnet/README.md#a-restart-resumes-the-period)). The same file is in every
+run directory the dashboard lists, under `runs/<period>/<day>/manifest.json`.
 
 It carries where the chain is, what is deployed on it, how long an evaluation interval is, how long the
 period is and where each day ends, what the limits are, and which addresses are registered.
@@ -356,8 +358,9 @@ config alone it has no PriceFeed address and no period start — both exist only
 has started — so an agent cannot start from it, and the command says so.
 
 A period runs for a week, so step 3 does not stay in a terminal. On the box that hosts it, run the
-coordinator under systemd instead — `infra/devnet/` has the unit, what it needs, why a restart
-begins a new competition, and the Slack alert that fires when the chain stops moving.
+coordinator under systemd instead — `infra/devnet/` has the unit, what it needs, how a restart
+resumes the period (and how a new one is started), and the Slack alert that fires when the chain
+stops moving.
 
 ```bash
 systemctl --user enable --now ascon-devnet.service
@@ -465,9 +468,10 @@ the standings still rank agents, and collapsing a unit to its better one is the 
 
 ### Registering during the period
 
-The roster is read once, at startup. A period runs for weeks and participants register throughout,
-and restarting the coordinator to add one opens a **new competition directory** — the standings
-split in two. So the config can name a second list that is re-read while the chain runs.
+The roster is read once, at startup, and it is part of what a period is: a restart resumes the period
+with the roster it started with, and a different one is refused. A period runs for weeks and
+participants register throughout, so the config can name a second list that is re-read while the
+chain runs.
 
 Most participants register themselves with the Discord `/faucet` bot ([step 1 of the participant
 section](#1-create-a-wallet-and-register-its-address); setup and operation in
@@ -584,21 +588,25 @@ progress, because an environment that is silent for ten minutes reads as one tha
 A period ends on a **date**: `run.endsAt` (ISO 8601, with a time zone). `config/practice.yaml`
 states `2026-10-31T23:59:59+09:00`, the end of the trial in rules §2.7; the live week starts the next
 day. The coordinator converts the date into the blocks that remain at `blockTimeSec` when it starts
-and records both in `run_started_realtime` (`runEndsAt`, `runBlocks`). A restart — which is a new
-competition — therefore ends on the same day with fewer blocks (issue #136). Stated as a block count
-instead, the period used to end 42 days after whenever the coordinator started: a start on 9/23 ran
-into the live week, and every restart got a fresh 42 days.
+and records both in `run_started_realtime` (`runEndsAt`, `runBlocks`). A new period started later
+therefore ends on the same day with fewer blocks (issue #136), and a restart within a period keeps the
+block count its first start came to. Stated as a block count instead, the period used to end 42 days
+after whenever the coordinator started: a start on 9/23 ran into the live week, and every restart got a
+fresh 42 days.
 
 **The episode list is written for a start.** Each day of the period holds one of every kind of
 episode, and each episode's window is a fraction of the run, measured from the moment the coordinator
-starts. So before every (re)start the list is regenerated for that start, merged like any other
+starts. So before every new period the list is regenerated for that start, merged like any other
 change, and then **promoted onto the box** — which is a third step, not a consequence of the second:
 
 ```bash
 npm run gen:practice-episodes -- --start 2026-10-01T10:00:00+09:00   # rewrites config/practice.yaml
-# merge it, then on the box, before the coordinator is restarted:
+# merge it, then on the box, before the new period is started:
 infra/dashboard/sync-main.sh promote <tag|sha>                       # moves the checkout to it
 ```
+
+Not before a restart within a period: the episodes are part of the period, and a resume with a
+regenerated list is refused (the config would describe a different world).
 
 The box's checkout is **pinned**, not following `main` (issue #211,
 [infra/dashboard](../../infra/dashboard/README.md)): a merge changes nothing there until a ref is

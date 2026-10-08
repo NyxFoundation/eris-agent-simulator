@@ -101,6 +101,10 @@ export class ApySchedule {
 export async function setupLst(
   ctx: SimContext,
   logger: RunLogger,
+  // A practice period resuming after a restart (periodResume.ts): the vault was configured when the
+  // period started and has been running since, so nothing is re-sent, and the market's distance from
+  // redemption is today's market rather than a deployment fault -- reported, not refused.
+  opts: { resume?: boolean } = {},
 ): Promise<LstRuntime | null> {
   if (!LST) {
     throw new Error(
@@ -120,7 +124,7 @@ export async function setupLst(
     ctx.config.lstApyBps,
     ctx.config.lstSimulatedSecondsPerBlock,
   );
-  if (canConfigure) {
+  if (canConfigure && !opts.resume) {
     await sendAndMine(
       ctx.publicClient,
       ctx.walletClient,
@@ -207,7 +211,11 @@ export async function setupLst(
     );
   }
   const absDiscount = Math.abs(state.discountBps);
-  if (absDiscount > LST_STARTUP_FAIL_BPS) {
+  if (absDiscount > LST_STARTUP_FAIL_BPS && opts.resume) {
+    console.warn(
+      `[lst] resuming with the LST/WETH market ${state.discountBps.toFixed(1)}bps off redemption`,
+    );
+  } else if (absDiscount > LST_STARTUP_FAIL_BPS) {
     throw new Error(
       `lst no-arbitrage check failed at startup: the LST/WETH market sits ${state.discountBps.toFixed(1)}bps ` +
         `off the vault's redemption rate (limit ${LST_STARTUP_FAIL_BPS}bps). The usual cause is the pool's ` +

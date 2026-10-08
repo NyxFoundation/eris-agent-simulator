@@ -11,7 +11,33 @@ import {
   walletSecret,
 } from "../walletKeys.js";
 import { privateKeyForWalletName } from "../config.js";
-import { resolveRunInputs } from "../runConfig.js";
+import { parseCliFlags, resolveRunInputs } from "../runConfig.js";
+import {
+  CheckpointWriter,
+  CHECKPOINT_SCHEMA,
+  chooseCheckpoint,
+  clearNewPeriodRequest,
+  closePeriod,
+  configDiff,
+  configMutable,
+  configWorld,
+  cutArtifactsToCheckpoint,
+  keepResumedCheckpoint,
+  MUTABLE_CONFIG_KEYS,
+  NEW_PERIOD_MARKER,
+  newPeriodRequested,
+  openPeriods,
+  readPeriodBoundaries,
+  readSegmentIndex,
+  resumeUnsupportedReasons,
+  rosterIdentity,
+  segmentFileSizes,
+  type CheckpointAgent,
+  type CutReport,
+  type OpenPeriod,
+  type PeriodCheckpoint,
+} from "./periodResume.js";
+import { basename, join as joinPath, resolve as resolvePath } from "node:path";
 import {
   accountAddress,
   activeStables,
@@ -269,6 +295,7 @@ import {
   type LstRuntime,
 } from "./lst.js";
 import {
+  liquidityPullResumeState,
   reconcileLiquidityPull,
   restoreLiquidityPull,
   setupLiquidityPull,
@@ -318,6 +345,11 @@ import {
 } from "../stressVictims.js";
 
 const GAS_ONLY_WEI = 2_000_000_000_000_000_000_000_000n; // 2,000,000 ETH (gas for admin/keeper)
+
+// The root of an empty transaction trie: a block header carrying any other transactionsRoot had
+// transactions, whatever list the node returns with it.
+const EMPTY_TRIE_ROOT =
+  "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421";
 
 // Look up the WalletRole from a flowWalletMap key (`${protocol}:${kind}`).
 function flowRole(key: string): WalletRole {
@@ -770,74 +802,239 @@ export async function runRealtimeSimulation(
     }
   }
 
-  const runId = new Date().toISOString().replace(/[:.]/g, "-");
+  // batch=true: automatically aggregate same-tick reads (parallel receipt fetches, readState, etc.) into
+  // JSON-RPC array batches / Multicall3, cutting the environment loop's round-trip count.
+  // Made before the run directory: whether this start opens one or continues one is read off the chain.
+  const { chain, publicClient, walletClient } = makeClients(
+    config.rpcUrl,
+    config.chainId,
+    { batch: true },
+  );
+
+  // ---- a practice period: continue the open one, or start one only when asked (periodResume.ts) ----
+  // A period is a segmented continuous run. Its coordinator writes its state down every pass, and a
+  // start that finds an open period resumes it -- the same chain, the same directory, the same
+  // standings. A new period reverts the chain to the setup snapshot, so it is never the default:
+  // `--new-period`, or the NEW_PERIOD file in the run root for the systemd unit, whose command line
+  // is fixed. Neither, and nothing to resume, is a refusal rather than a quiet fresh start -- the
+  // quiet fresh start is what reverted 2.5 days of chain on 2026-10-08.
+  const periodMode =
+    config.segmentHours > 0 && config.resetUnit === "continuous";
+  const cliFlags = parseCliFlags(argv);
+  // What describes the world besides the config's own keys: the key it was realized under, which
+  // keys the environment signs with (by address), the wallet secret (by an address derived from it),
+  // and the config's roster.
+  const worldNow = configWorld(config as unknown as Record<string, unknown>, {
+    scenarioKey: scenarioKeyRecord(scenarioKey).commitment,
+    scenarioStreams: SCENARIO_STREAMS,
+    roleAddresses: {
+      admin: accountAddress(config.privateKeys.admin),
+      keeper: accountAddress(config.privateKeys.keeper),
+      setup: accountAddress(config.privateKeys.setup),
+      deployer: accountAddress(config.privateKeys.deployer),
+    },
+    walletCanary: accountAddress(environmentKey("period", "canary")),
+    roster: agentSpecs.map(rosterIdentity),
+  });
+  let resume: {
+    period: OpenPeriod;
+    checkpoint: PeriodCheckpoint;
+    rewound: boolean;
+    head: number;
+  } | null = null;
+  let newPeriodByMarker = false;
+  if (periodMode) {
+    const markerAsked = newPeriodRequested(config.runDirRoot);
+    const flagAsked = cliFlags["new-period"] !== undefined;
+    const resumeArg = cliFlags.resume;
+    if ((markerAsked || flagAsked) && resumeArg !== undefined)
+      throw new Error(
+        `--resume ${resumeArg} and a new period (${flagAsked ? "--new-period" : joinPath(config.runDirRoot, NEW_PERIOD_MARKER)}) ` +
+          "were both asked for; ask for one",
+      );
+    if (markerAsked || flagAsked) {
+      newPeriodByMarker = markerAsked && !flagAsked;
+    } else {
+      const open = openPeriods(config.runDirRoot).filter(
+        (p) =>
+          resumeArg === undefined ||
+          resolvePath(p.competitionDir) === resolvePath(resumeArg) ||
+          p.competitionId === basename(resumeArg),
+      );
+      if (open.length === 0)
+        throw new Error(
+          resumeArg !== undefined
+            ? `--resume ${resumeArg}: no open period there (it has no resume/state.json, or it finished or was superseded)`
+            : `no open period under ${config.runDirRoot} to resume, and no new one was asked for. ` +
+                `To start a period -- which reverts the chain to the setup snapshot -- pass --new-period, ` +
+                `or create ${joinPath(config.runDirRoot, NEW_PERIOD_MARKER)} and restart the unit (infra/devnet/README.md)`,
+        );
+      const period = open[0];
+      if (open.length > 1)
+        console.warn(
+          `[period] ${open.length} open periods under ${config.runDirRoot}; resuming the newest, ${period.competitionId} ` +
+            `(the others: ${open
+              .slice(1)
+              .map((p) => p.competitionId)
+              .join(", ")})`,
+        );
+      if (!period.state.resumable.ok)
+        throw new Error(
+          `period ${period.competitionId} cannot be resumed: ${period.state.resumable.reasons.join("; ")}. ` +
+            "Start a new period with --new-period",
+        );
+      const head = Number(await publicClient.getBlockNumber({ cacheTime: 0 }));
+      const choice = await chooseCheckpoint(period, {
+        head,
+        hashAt: async (block) => {
+          try {
+            return (await publicClient.getBlock({ blockNumber: BigInt(block) }))
+              .hash;
+          } catch {
+            return null;
+          }
+        },
+      });
+      if (choice.kind === "refused")
+        throw new Error(
+          `${choice.reason}. If the chain was reset on purpose, start a new period with --new-period`,
+        );
+      const diff = configDiff(choice.checkpoint.world, worldNow);
+      if (diff.length > 0)
+        throw new Error(
+          `the config does not describe the world period ${period.competitionId} was started in:\n  ` +
+            `${diff.join("\n  ")}\n` +
+            `Across a restart only ${MUTABLE_CONFIG_KEYS.join(", ")} may change. Put the rest back, or ` +
+            "start a new period with --new-period",
+        );
+      resume = { period, checkpoint: choice.checkpoint, rewound: choice.rewound, head };
+      // The period's length is the one its first start converted run.endsAt into (the date is in the
+      // world; the block count it came to at that start is the checkpoint's). Converted again now, the
+      // windows placed as fractions of it would all move.
+      config.runBlocks = choice.checkpoint.runBlocks;
+    }
+  }
+  const cp = resume?.checkpoint;
+
+  const runId = resume
+    ? resume.period.competitionId
+    : new Date().toISOString().replace(/[:.]/g, "-");
+  // Cut the period's directory back to where the checkpoint was written before anything opens it
+  // (periodResume.cutArtifactsToCheckpoint): a pass that did not finish, a roll the checkpoint did
+  // not see, and -- when the chain went back -- everything past the block it went back to.
+  let cutReport: CutReport | null = null;
+  if (resume) {
+    cutReport = cutArtifactsToCheckpoint(resume.period.competitionDir, resume.checkpoint, {
+      rewound: resume.rewound,
+    });
+    keepResumedCheckpoint(resume.period.competitionDir, resume.checkpoint, cutReport.cutDir);
+  }
   // ADR 0021 §6: a chain that runs for a week cannot write one directory. When segmenting is on,
   // the output is cut into day-sized run directories under one competition, and everything that
   // writes goes through the same interface -- so nothing below this line knows it is happening.
   const segments =
     config.segmentHours > 0
-      ? new SegmentedRun({
-          root: config.runDirRoot,
-          competitionId: runId,
-          hours: config.segmentHours,
-          scenarioSet: config.segmentName || runId,
-        })
+      ? new SegmentedRun(
+          {
+            root: config.runDirRoot,
+            competitionId: runId,
+            hours: config.segmentHours,
+            scenarioSet: config.segmentName || runId,
+          },
+          resume
+            ? {
+                state: resume.checkpoint.segments,
+                index: readSegmentIndex(resume.period.competitionDir),
+              }
+            : undefined,
+        )
       : null;
   const logger: RunArtifactWriter =
     segments ?? new RunLogger(config.runDirRoot, runId);
-  logger.event({
-    type: "run_started_realtime",
-    runId,
-    enabledProtocols: enabledIds,
-    blockTimeSec: config.blockTimeSec,
-    runSeconds: config.runSeconds,
-    runBlocks: config.runBlocks,
-    // Issue #264: whether each agent's state directory is carried across epochs (--agent-state-root,
-    // rules §4.7.1). A reader of the record can tell a week of carried state from one of fresh starts.
-    agentStateCarried: agentStateRootFromEnv() !== undefined,
-    // Issue #136: when the run was stated as a date, the date it was converted from. runBlocks is
-    // what that date came to at this cadence when this process started.
-    ...(config.runEndsAt ? { runEndsAt: config.runEndsAt } : {}),
-    // The evaluation interval (rules §0.1), interim progress only -- the score uses the run's first
-    // and last boundary (ADR 0023). summary.json carries the boundaries, but only after the run
-    // ends -- a live viewer needs the length up front to lay the intervals out. `epochBlocks` is the
-    // same number under its name from before issue #140, for a dashboard that has not caught up.
-    intervalBlocks: config.intervalBlocks,
-    epochBlocks: config.intervalBlocks,
-    scoreEvery: config.scoreEvery,
-    // SEED is the label for this run's market conditions (ADR 0005): the fair-price path and the
-    // stress schedule are both drawn from it. Nothing recorded it, so a stored run could not say
-    // which world it was -- which is the one thing needed to replay it.
-    seed: config.seed,
-    flowSeed: config.flowSeed,
-    // ADR 0027: which key the seed was realized under -- the public one, or the commitment to a
-    // secret one. The seed alone no longer names the world.
-    scenarioKey: scenarioKeyRecord(scenarioKey),
-    // Issue #189: where the environment's wallet keys came from -- a secret made by this process, or
-    // the practice period's file. Never the secret or a hash of it.
-    walletKeys: walletKeysRecord(),
-    // Issue #186: the regime the streams were named by (empty = none, the pre-#186 streams).
-    scenarioRegime: config.scenarioRegime,
-    // ...and the version of that naming (sdk/src/rng.ts), so a stored run says which streams drew it.
-    scenarioStreams: SCENARIO_STREAMS,
-    // ADR 0021 §4: the endpoint the world is on, recorded by the environment. The dashboard's live
-    // mode used to discover it from an agent's `runtime_start` log line, which stops working the
-    // moment the agents are somebody else's processes on somebody else's machine. Reads go to
-    // readRpcUrl, which is the sequencer unless a replica is configured (#36).
-    rpcUrl: config.readRpcUrl,
-    // ADR 0020 §1: whether this run is one epoch of a scenario matrix or a continuous world. The
-    // hosted dashboard's public view reads it before summary.json exists, to decide how much of
-    // the stress schedule an audience may see (none for a scenario: a window's kind names the
-    // regime rules §3.3 does not announce).
-    resetUnit: config.resetUnit,
-    chainId: config.chainId,
-    chainMode: config.chainMode,
-    // Rules §2.6. 0 means the node's own limit was left in place.
-    blockGasLimit: config.blockGasLimit,
-    // Issue #167: the ordinal the agents were handed (ERIS_EPOCH_INDEX / ERIS_EPOCH_COUNT). The
-    // same `s` matrix.json carries; public, since it gives away the epoch's weight and nothing else.
-    ...(epochOrdinal ? { epoch: epochOrdinal } : {}),
-  });
+  if (resume) {
+    const changed = configDiff(
+      resume.checkpoint.mutable,
+      configMutable(config as unknown as Record<string, unknown>),
+    );
+    logger.event({
+      type: "period_resumed",
+      runId,
+      // The pass the period resumes after, and where the chain is now: the blocks between were mined
+      // while the coordinator was down (or are the dump's, after an anvil restart) and the first pass
+      // catches up over them.
+      fromBlock: resume.checkpoint.lastProcessedBlock,
+      chainHead: resume.head,
+      rewound: resume.rewound,
+      start: resume.checkpoint.starts + 1,
+      checkpointWrittenAt: resume.checkpoint.writtenAt,
+      configChanges: changed,
+      ...(cutReport &&
+      (cutReport.truncated.length > 0 ||
+        cutReport.movedSegments.length > 0 ||
+        cutReport.movedFiles.length > 0)
+        ? { cut: cutReport }
+        : {}),
+    });
+    console.error(
+      `[period] resuming ${runId} after block ${resume.checkpoint.lastProcessedBlock} ` +
+        `(chain head ${resume.head}${resume.rewound ? ", the chain went back: artifacts cut to the checkpoint" : ""})` +
+        (changed.length > 0 ? `; config changes: ${changed.join("; ")}` : ""),
+    );
+  } else {
+    logger.event({
+      type: "run_started_realtime",
+      runId,
+      enabledProtocols: enabledIds,
+      blockTimeSec: config.blockTimeSec,
+      runSeconds: config.runSeconds,
+      runBlocks: config.runBlocks,
+      // Issue #264: whether each agent's state directory is carried across epochs (--agent-state-root,
+      // rules §4.7.1). A reader of the record can tell a week of carried state from one of fresh starts.
+      agentStateCarried: agentStateRootFromEnv() !== undefined,
+      // Issue #136: when the run was stated as a date, the date it was converted from. runBlocks is
+      // what that date came to at this cadence when this process started.
+      ...(config.runEndsAt ? { runEndsAt: config.runEndsAt } : {}),
+      // The evaluation interval (rules §0.1), interim progress only -- the score uses the run's first
+      // and last boundary (ADR 0023). summary.json carries the boundaries, but only after the run
+      // ends -- a live viewer needs the length up front to lay the intervals out. `epochBlocks` is the
+      // same number under its name from before issue #140, for a dashboard that has not caught up.
+      intervalBlocks: config.intervalBlocks,
+      epochBlocks: config.intervalBlocks,
+      scoreEvery: config.scoreEvery,
+      // SEED is the label for this run's market conditions (ADR 0005): the fair-price path and the
+      // stress schedule are both drawn from it. Nothing recorded it, so a stored run could not say
+      // which world it was -- which is the one thing needed to replay it.
+      seed: config.seed,
+      flowSeed: config.flowSeed,
+      // ADR 0027: which key the seed was realized under -- the public one, or the commitment to a
+      // secret one. The seed alone no longer names the world.
+      scenarioKey: scenarioKeyRecord(scenarioKey),
+      // Issue #189: where the environment's wallet keys came from -- a secret made by this process, or
+      // the practice period's file. Never the secret or a hash of it.
+      walletKeys: walletKeysRecord(),
+      // Issue #186: the regime the streams were named by (empty = none, the pre-#186 streams).
+      scenarioRegime: config.scenarioRegime,
+      // ...and the version of that naming (sdk/src/rng.ts), so a stored run says which streams drew it.
+      scenarioStreams: SCENARIO_STREAMS,
+      // ADR 0021 §4: the endpoint the world is on, recorded by the environment. The dashboard's live
+      // mode used to discover it from an agent's `runtime_start` log line, which stops working the
+      // moment the agents are somebody else's processes on somebody else's machine. Reads go to
+      // readRpcUrl, which is the sequencer unless a replica is configured (#36).
+      rpcUrl: config.readRpcUrl,
+      // ADR 0020 §1: whether this run is one epoch of a scenario matrix or a continuous world. The
+      // hosted dashboard's public view reads it before summary.json exists, to decide how much of
+      // the stress schedule an audience may see (none for a scenario: a window's kind names the
+      // regime rules §3.3 does not announce).
+      resetUnit: config.resetUnit,
+      chainId: config.chainId,
+      chainMode: config.chainMode,
+      // Rules §2.6. 0 means the node's own limit was left in place.
+      blockGasLimit: config.blockGasLimit,
+      // Issue #167: the ordinal the agents were handed (ERIS_EPOCH_INDEX / ERIS_EPOCH_COUNT). The
+      // same `s` matrix.json carries; public, since it gives away the epoch's weight and nothing else.
+      ...(epochOrdinal ? { epoch: epochOrdinal } : {}),
+    });
+  }
 
   if (roleKeyVerdict.kind === "allowed")
     logger.event({
@@ -846,14 +1043,19 @@ export async function runRealtimeSimulation(
       note: "ERIS_ALLOW_PUBLIC_ROLE_KEYS=1: a private rehearsal only; anyone who can send to this chain can sign with these",
     });
 
-  // batch=true: automatically aggregate same-tick reads (parallel receipt fetches, readState, etc.) into
-  // JSON-RPC array batches / Multicall3, cutting the environment loop's round-trip count.
-  const { chain, publicClient, walletClient } = makeClients(
-    config.rpcUrl,
-    config.chainId,
-    { batch: true },
-  );
-  if (external) {
+  // A new period replaces whatever period was open: once it has started on this chain (reverted
+  // below, on anvil), none of them can be resumed against it, and a later start must not try.
+  if (periodMode && !resume)
+    for (const p of openPeriods(config.runDirRoot)) {
+      if (p.competitionId === runId) continue;
+      closePeriod(p.competitionDir, `superseded by ${runId}`);
+      logger.event({ type: "period_superseded", competitionId: p.competitionId });
+    }
+  if (resume) {
+    // Nothing to reset: the chain is the period. Pause it while the environment comes back, so the
+    // blocks in between are not mined without a price, a flow or a keeper behind them.
+    if (!external) await setIntervalMining(publicClient, 0);
+  } else if (external) {
     // There is nothing to reset (issue #33 (3)). On the practice devnet that is the design: the
     // chain does not stop for the whole period, and a run is a window on it rather than a world of
     // its own (ADR 0021 §1).
@@ -890,8 +1092,10 @@ export async function runRealtimeSimulation(
   // after that boundary and go unscored on the first day -- every participant, after a restart
   // (registrations.ts, startupRegistrations). A file that is missing or malformed right now is the
   // loop's to report: its first poll reads the same file and records what is wrong with it.
+  // A resumed period's roster is the checkpoint's, file entries included; whatever registered while
+  // the coordinator was down is picked up by the loop's first poll, like any mid-period registration.
   let onFile: AgentSpec[] = [];
-  if (config.registrationsFile) {
+  if (config.registrationsFile && !resume) {
     try {
       const read = new RegistrationsWatcher(config.registrationsFile).read();
       if (read.kind === "changed")
@@ -906,9 +1110,41 @@ export async function runRealtimeSimulation(
     });
   }
   const rosterSpecs = [...agentSpecs, ...onFile];
+  // Which entries came from the config's roster rather than the registrations file (a checkpoint
+  // records it: on a resume the config's roster has to be the same, the file's need not).
+  const configAgentIds = new Set(
+    (cp ? cp.agents.filter((a) => a.origin === "config") : agentSpecs).map(
+      (a) => a.id,
+    ),
+  );
 
   // ---- agent wallets (processes start after setup completes; agentSpecs is already resolved from YAML/env) ----
-  const agentRuntimes: RealtimeAgentRuntime[] = rosterSpecs.map((spec) => {
+  // A resumed period's are the checkpoint's: the same addresses, funded with what they were funded
+  // with when the period started (V_0's floor), and the transaction counts so far.
+  const agentRuntimes: RealtimeAgentRuntime[] = cp
+    ? cp.agents.map((a) => {
+        const privateKey = a.spec.address
+          ? null
+          : privateKeyForWalletName(config, a.spec.wallet, a.id);
+        if (privateKey && accountAddress(privateKey).toLowerCase() !== a.address.toLowerCase())
+          throw new Error(
+            `agent ${a.id}'s key now derives ${accountAddress(privateKey)}, not the period's ${a.address}: ` +
+              "the wallet secret changed. Restore it, or start a new period with --new-period",
+          );
+        return {
+          id: a.id,
+          spec: a.spec,
+          privateKey,
+          address: a.address as Address,
+          external: a.external,
+          process: null,
+          initial: a.initial,
+          included: a.included,
+          reverted: a.reverted,
+          ...(a.exitedEarly !== undefined ? { exitedEarly: a.exitedEarly } : {}),
+        };
+      })
+    : rosterSpecs.map((spec) => {
     // An entry registered by address has no key here at all; one registered by wallet still does,
     // even when external, because a practice devnet that issues funded keys is a legitimate way to
     // run one (the manifest hands the key to that participant).
@@ -935,12 +1171,17 @@ export async function runRealtimeSimulation(
 
   // ---- flow-bot process (realtime). Pushes context every block to move the market ----
   // flow is the environment-side market mechanism, so it stays as relay (ADR 0006 "undecided").
+  // A resumed period's bot draws a continuation of its stream rather than the period's first day
+  // again (flow/logic.ts flowRng), one per start.
   const flowProcess = new RealtimeFlowProcess(
     config.flowBotCommand,
     config.flowBotArgs,
     config.flowSeed,
     logger.runDir,
-    scenarioKeyChildEnv(scenarioKey, config.scenarioRegime),
+    {
+      ...scenarioKeyChildEnv(scenarioKey, config.scenarioRegime),
+      ...(cp ? { ERIS_FLOW_STREAM: `resume-${cp.starts}` } : {}),
+    },
   );
   // Issue #159: the bot is the environment's market, and it used to die without a word -- the
   // exporter counts this as an environment failure and the flow-stopped alert follows.
@@ -952,6 +1193,35 @@ export async function runRealtimeSimulation(
     });
     console.error(`[flow] ${info.reason}`);
   };
+
+  // A period's stop (systemd's SIGTERM, a Ctrl-C) pauses the chain on its way out. The next start
+  // resumes the period from its last checkpoint, and until then participants' transactions wait in
+  // the mempool rather than being mined against a price nobody is updating.
+  if (periodMode) {
+    const stop = (signal: NodeJS.Signals): void => {
+      console.error(
+        `[period] ${signal}: pausing the chain and exiting; the next start resumes the period`,
+      );
+      try {
+        logger.event({ type: "coordinator_stopping", signal });
+      } catch {
+        // nothing to do about it on the way out
+      }
+      const pause = external
+        ? Promise.resolve()
+        : setIntervalMining(publicClient, 0).catch(() => undefined);
+      void Promise.race([
+        pause,
+        new Promise((resolve) => setTimeout(resolve, 3_000)),
+      ]).finally(() => {
+        for (const agent of agentRuntimes) agent.process?.close();
+        flowProcess.close();
+        process.exit(signal === "SIGINT" ? 130 : 143);
+      });
+    };
+    process.once("SIGTERM", stop);
+    process.once("SIGINT", stop);
+  }
 
   // ---- flow wallets (per protocol/kind; used by submitIntent / ctx for selection) ----
   const flowWalletMap = new Map<string, FlowWallet>();
@@ -990,6 +1260,7 @@ export async function runRealtimeSimulation(
     config.runBlocks,
   );
   const stressAudit = new StressAudit(schedule.events, event => logger.event(event));
+  if (cp) stressAudit.restore(cp.stressAudit);
   // A dedicated wallet so a whale order does not drain the ordinary flow wallets mid-run (which
   // would quietly change the flow bot's behavior for the rest of the run) and so blocks.csv
   // attributes the print to the event rather than to background flow.
@@ -1081,7 +1352,8 @@ export async function runRealtimeSimulation(
   // signed with, so the last epoch's transactions would be valid again for whoever kept them. Before
   // funding: the agents' venue approvals and every setup transaction after this sign above the floor.
   // The victims are derived here from the same counts setup uses (pure), since they sign at setup.
-  if (!external && !config.skipReset) {
+  // Not on a resume: nothing was reverted, so every nonce is already where the period left it.
+  if (!external && !config.skipReset && !resume) {
     const report = await raiseNonces(
       publicClient,
       [
@@ -1116,6 +1388,7 @@ export async function runRealtimeSimulation(
         ...(LST ? [LST.lstToken.toLowerCase()] : []),
       ]),
   });
+  if (cp) derivedSenders.restore(cp.derivedSenders);
 
   // Top an environment wallet up to a target native balance from the treasury (issue #33 (1)).
   // "Up to", not "by": the practice devnet funds the same admin and keeper on every segment, and
@@ -1142,7 +1415,7 @@ export async function runRealtimeSimulation(
   let latestStateById = new Map<ProtocolId, unknown>();
   // Whether the LST reserve was already reported exhausted (issue #129), so the event fires once per
   // exhaustion rather than every block after it.
-  let lstExhaustedReported = false;
+  let lstExhaustedReported = cp?.lstExhaustedReported ?? false;
   let latestFairPrice = 0;
   const latestHistory: AgentObservation["history"] = [];
 
@@ -1270,8 +1543,10 @@ export async function runRealtimeSimulation(
     ];
     // Progress, because on a real chain this loop is minutes rather than instants, and an
     // environment that prints nothing for ten minutes reads as one that has hung.
+    // A resumed period funds nobody: the balances are the period's, and on anvil funding *assigns*
+    // them (every agent's P would go back to zero). The approvals are standing from its first start.
     let funded = 0;
-    for (const t of fundTargets) {
+    for (const t of resume ? [] : fundTargets) {
       // The whale passes through here too, even though its balances are overwritten a moment later
       // once the fair price is known: this loop is also where each adapter's setupWallet grants the
       // token approvals. Skipping it to avoid the redundant funding left the whale unapproved, and
@@ -1352,7 +1627,11 @@ export async function runRealtimeSimulation(
     }
 
     // The initial fair price is finalized here (used by the local oracle calibration and victim setup below).
-    latestFairPrice = await initialFairPrice(ctx, enabledIds);
+    // A resumed period's is where its walk was: read off the pools now, it would restart the walk
+    // from wherever the market drifted while the coordinator was down.
+    latestFairPrice = cp
+      ? cp.walk.latestFairPrice
+      : await initialFairPrice(ctx, enabledIds);
 
     // Every other base's opening fair, settled here with WETH's rather than after mining starts
     // (issue #94). Until this existed the extra bases were first read after `interval_mining_started`,
@@ -1365,10 +1644,16 @@ export async function runRealtimeSimulation(
     const extraBaseSymbols = baseTokens()
       .map((t) => t.symbol)
       .filter((s) => s !== "WETH");
-    const openingFair: Record<string, number> = { WETH: latestFairPrice };
-    for (const b of extraBaseSymbols)
-      openingFair[b] = await initialFairPriceFor(ctx, b, enabledIds);
+    const openingFair: Record<string, number> = cp
+      ? { ...cp.walk.fairPrices }
+      : { WETH: latestFairPrice };
+    if (!cp)
+      for (const b of extraBaseSymbols)
+        openingFair[b] = await initialFairPriceFor(ctx, b, enabledIds);
     ctx.fairPrices = { ...openingFair };
+    // setupGlobal gave GMX a new oracle provider, which has no price until the first pass writes
+    // one; a resumed period has orders waiting for the keeper, so give it the period's price now.
+    if (cp && ctx.updateGmxOracle) await ctx.updateGmxOracle(ctx, latestFairPrice);
 
     // [Calibration] Local deploy aligns the Aave oracle to the run's initial fair price. On a fork,
     // "oracle ≈ spot ≈ fair0" holds implicitly, but locally the deployer's seed price and fair0 can diverge (a
@@ -1389,7 +1674,7 @@ export async function runRealtimeSimulation(
     // price, which is only known once the pools have been read. A whale's whole job is to place an
     // order far larger than ordinary flow, so flow-sized funding would make it fail on balance and
     // silently turn the regime into calm for that seed.
-    if (whaleEvents.length > 0) {
+    if (whaleEvents.length > 0 && !resume) {
       const wallet = flowWalletMap.get(WHALE_WALLET_KEY);
       if (!wallet) throw new Error("whale wallet missing from flowWalletMap");
       // Fail fast on a whale pointed at a venue this run does not have. Otherwise submitIntent
@@ -1435,7 +1720,7 @@ export async function runRealtimeSimulation(
     // drew for it to spend (nothing for a dud). Flow-sized funding would list a thinner pool than
     // the schedule says and cap the wave at the flow wallet's balance, silently turning the regime
     // into a smaller one for that seed.
-    for (const e of launchEndowments) {
+    for (const e of resume ? [] : launchEndowments) {
       const launchWallet = flowWalletMap.get(e.launchKey);
       const waveWallet = flowWalletMap.get(e.waveKey);
       if (!launchWallet || !waveWallet)
@@ -1524,9 +1809,12 @@ export async function runRealtimeSimulation(
       };
     }
 
-    for (const agent of agentRuntimes) {
-      agent.initial = await getBalances(publicClient, agent.address);
-    }
+    // A resumed period keeps the endowments its agents were funded with (the checkpoint's): they are
+    // V_0's floor, and today's balances are not what anyone was funded with.
+    if (!resume)
+      for (const agent of agentRuntimes) {
+        agent.initial = await getBalances(publicClient, agent.address);
+      }
 
     // What each agent actually starts with (ADR 0021 §2 / issue #33 (1)).
     //
@@ -1539,7 +1827,7 @@ export async function runRealtimeSimulation(
     // two agents bound to a prefunded dev account started with $3.0bn against a fresh address's
     // $34k, and their per-round returns were then a report on one very large ETH holding. Nothing in
     // the artifacts said so.
-    {
+    if (!resume) {
       const fair: Record<string, number> = {
         WETH: latestFairPrice,
         ...(ctx.fairPrices ?? {}),
@@ -1570,19 +1858,31 @@ export async function runRealtimeSimulation(
     // The constructor carries WETH's opening fair; the other bases are written right behind it,
     // before the first boundary is marked (issue #94 -- see setPriceFeedOpeningFor for what V_0
     // looked like when they were left to the first per-block oracle tx).
-    const priceFeedAddress = await deployPriceFeed(ctx, latestFairPrice);
-    for (const b of extraBaseSymbols)
-      await setPriceFeedOpeningFor(
-        ctx,
-        priceFeedAddress,
-        tokenInfo(b).address,
-        openingFair[b],
-      );
-    logger.event({
-      type: "price_feed_deployed",
-      address: priceFeedAddress,
-      openingFair,
-    });
+    // A resumed period keeps its PriceFeed: it is the address every participant's manifest names.
+    const priceFeedAddress: Address = cp
+      ? (cp.priceFeed as Address)
+      : await deployPriceFeed(ctx, latestFairPrice);
+    if (cp) {
+      const code = await publicClient.getCode({ address: priceFeedAddress });
+      if (!code || code === "0x")
+        throw new Error(
+          `the period's PriceFeed ${priceFeedAddress} has no code on this chain, though the chain holds the checkpoint's block`,
+        );
+      logger.event({ type: "price_feed_reused", address: priceFeedAddress });
+    } else {
+      for (const b of extraBaseSymbols)
+        await setPriceFeedOpeningFor(
+          ctx,
+          priceFeedAddress,
+          tokenInfo(b).address,
+          openingFair[b],
+        );
+      logger.event({
+        type: "price_feed_deployed",
+        address: priceFeedAddress,
+        openingFair,
+      });
+    }
 
     // ---- agent-created markets (issue #40): the discovery registry and the lending singleton ----
     // Both are per-*run* contracts, like the PriceFeed: they are deployed here rather than living in
@@ -1686,8 +1986,14 @@ export async function runRealtimeSimulation(
       enabledIds.includes("uniswap") &&
       enabledIds.includes("balancer")
     ) {
-      await deployFlashArb(ctx);
-      logger.event({ type: "flash_arb_deployed", address: FLASH_ARB_ADDRESS });
+      // Deployed from a fixed key's first nonce, so a resumed period finds it where it was.
+      const deployed =
+        cp !== undefined &&
+        ((await publicClient.getCode({ address: FLASH_ARB_ADDRESS })) ?? "0x") !== "0x";
+      if (!deployed) {
+        await deployFlashArb(ctx);
+        logger.event({ type: "flash_arb_deployed", address: FLASH_ARB_ADDRESS });
+      }
     }
 
     // ---- vulnerability-appearance events (ADR 0014): the factory, in *every* run. Pools are deployed through it
@@ -1854,7 +2160,7 @@ export async function runRealtimeSimulation(
     publishRoster();
 
     // ---- pre-warm (anvil cold fetch mitigation of ADR 0006 Risks; see prewarmWorkingSet) ----
-    if (config.prewarmBlocks > 0) {
+    if (config.prewarmBlocks > 0 && !resume) {
       await prewarmWorkingSet(
         ctx,
         adapters,
@@ -1891,7 +2197,7 @@ export async function runRealtimeSimulation(
     // rate oracle would hand every agent the same risk-free arb). Must happen before interval
     // mining starts, since the reconfiguration is a mined setup tx.
     const lstRuntime: LstRuntime | null = enabledIds.includes("lst")
-      ? await setupLst(ctx, logger)
+      ? await setupLst(ctx, logger, { resume: resume !== null })
       : null;
 
     // ---- Liquity venue (issue #39): point the CDP's permanent oracle adapter at this run's
@@ -1901,7 +2207,11 @@ export async function runRealtimeSimulation(
     const liquityRuntime: LiquityRuntime | null = enabledIds.includes("liquity")
       ? await setupLiquity(
           ctx,
-          { priceFeed: priceFeedAddress, fairPrice: latestFairPrice },
+          {
+            priceFeed: priceFeedAddress,
+            fairPrice: latestFairPrice,
+            resume: resume !== null,
+          },
           logger,
         )
       : null;
@@ -2067,6 +2377,20 @@ export async function runRealtimeSimulation(
       fractionAt: (blockIndex: number) => number;
       ownerId: string;
     }> = [];
+    // A resumed period's depegs continue from what they measured when it started (stableDepeg.ts).
+    const depegResume = (symbol: string) => {
+      if (!cp) return undefined;
+      const saved = cp.depegs.find((d) => d.symbol === symbol);
+      if (!saved)
+        throw new Error(
+          `the period's checkpoint has no ${symbol} depeg baseline, though the schedule has a ${symbol} depeg`,
+        );
+      return {
+        seededPoolStableWei: saved.seededPoolStableWei,
+        startStableWei: saved.startStableWei,
+        cappedReported: saved.cappedReported,
+      };
+    };
     if (schedule.hasEusdDepeg()) {
       if (!liquityRuntime) {
         throw new Error(
@@ -2077,7 +2401,11 @@ export async function runRealtimeSimulation(
       depegRuntimes.push({
         runtime: await setupEusdDepeg(
           ctx,
-          { localDeploy: config.localDeploy, actorPk: deployerPk },
+          {
+            localDeploy: config.localDeploy,
+            actorPk: deployerPk,
+            resume: depegResume("EUSD"),
+          },
           logger,
         ),
         fractionAt: (i) => schedule.eusdDepegFractionAt(i),
@@ -2124,6 +2452,7 @@ export async function runRealtimeSimulation(
               `The deploy mints the initial ${symbol} supply to the deployer account and seeds only ` +
               "part of it into the pool, so an empty balance means a different account deployed the " +
               "tokens, or a previous run spent it.",
+            resume: depegResume(symbol),
           },
           logger,
         ),
@@ -2163,6 +2492,17 @@ export async function runRealtimeSimulation(
           // Only the venues this run turned on: an event that names no venue thins every book, and
           // asking for one that is not deployed would fail the discovery check for no reason.
           enabledVenues: PULL_VENUES.filter((v) => enabledIds.includes(v)),
+          ...(cp
+            ? {
+                resume:
+                  cp.liquidityPull ??
+                  (() => {
+                    throw new Error(
+                      "the period's checkpoint has no liquidityPull baseline, though the schedule has a pull",
+                    );
+                  })(),
+              }
+            : {}),
         },
         logger,
       );
@@ -2216,7 +2556,9 @@ export async function runRealtimeSimulation(
         warned: findings.filter((f) => f.profitBps > STARTUP_WARN_BPS),
       });
       const worst = findings[0];
-      if (worst && worst.profitBps > STARTUP_FAIL_BPS) {
+      // A resumed period's market is whatever the period made of it (a crash window may be open), so
+      // the startup guard against a mis-deploy does not apply; the findings are in the event above.
+      if (worst && worst.profitBps > STARTUP_FAIL_BPS && !resume) {
         throw new Error(
           `no-arbitrage check failed at startup: executable ${worst.profitBps.toFixed(1)}bps ` +
             `arb on ${worst.base} (buy ${worst.buyVenue} / sell ${worst.sellVenue}) exceeds ` +
@@ -2363,7 +2705,19 @@ export async function runRealtimeSimulation(
     // Same keys in every regime but the documented exceptions (core/src/realtime/agentEnv.ts).
     assertAgentExtraEnvShape(config, agentExtraEnv, { segmented: Boolean(segments) });
     const agentStateRoot = agentStateRootFromEnv();
+    // Before the first spawn: the readiness wait counts only log lines from these processes.
+    const agentsSpawningAt = Date.now();
     for (const agent of agentRuntimes) {
+      // An agent whose process had already ended before the restart stays ended (rules §2.3: a
+      // process that exited is not started again); the coordinator's own death is not such an exit.
+      if (resume && agent.exitedEarly !== undefined && !agent.external) {
+        logger.event({
+          type: "agent_not_restarted",
+          agentId: agent.id,
+          exitedEarly: agent.exitedEarly,
+        });
+        continue;
+      }
       if (agent.external || !agent.privateKey) {
         // ADR 0021 §2: registered, funded, scored -- and started by whoever registered it. Recorded
         // so a run whose participants never connected is distinguishable from one where the
@@ -2844,7 +3198,12 @@ export async function runRealtimeSimulation(
     // Removed from the realtime loop and scanned in bulk over all blocks after the run ends (the same "off the
     // critical path" move as scoring's history reconstruction). All source data remains on the chain, so a
     // follow-up pass suffices. Consequence: if the run crashes midway, blocks.csv is empty (diagnose via events.jsonl).
-    const logBlock = async (b: number): Promise<void> => {
+    // Returns false for a block whose transactions the node no longer holds. anvil's
+    // --transaction-block-keeper (the practice chain's 300) answers such a block with its header and
+    // an empty list, not an error -- so a catch-up after a long outage would otherwise write the
+    // blocks the coordinator missed as blocks nobody transacted in. The header still says there were
+    // transactions (its transactionsRoot is not the empty trie's), which is what this checks.
+    const logBlock = async (b: number): Promise<boolean> => {
       const block = await publicClient.getBlock({
         blockNumber: BigInt(b),
         includeTransactions: true,
@@ -2852,6 +3211,8 @@ export async function runRealtimeSimulation(
       const txs = block.transactions.filter(
         (tx): tx is Exclude<typeof tx, string> => typeof tx !== "string",
       );
+      if (txs.length === 0 && block.transactionsRoot !== EMPTY_TRIE_ROOT)
+        return false;
       // Note: bulk fetch via eth_getBlockReceipts cannot be used because it hits "Failed to decode receipt" on
       // anvil's Arbitrum fork. Issue per-tx fetches in parallel (the batch transport bundles them into one HTTP).
       // The receipt carries both the status and the gas actually burned (issue #40 T0). The gas is
@@ -2951,6 +3312,7 @@ export async function runRealtimeSimulation(
           ...(derived ? { derivedFrom: derived.fundedBy } : {}),
         });
       });
+      return true;
     };
 
     // How far blocks.csv has been written. The scan is off the critical path (it re-reads mined
@@ -2958,12 +3320,35 @@ export async function runRealtimeSimulation(
     // end and fails twice for a period that does not have one — nothing is written while it runs,
     // and when it finally is, every block lands in whichever segment happened to be current. Both
     // observed: five segments of a devnet period, every blocks.csv empty (ADR 0021 §6).
-    let loggedThroughBlock = 0;
+    let loggedThroughBlock = cp ? cp.loggedThroughBlock : 0;
     const flushBlocks = async (upTo: number): Promise<void> => {
       if (loggedThroughBlock === 0) loggedThroughBlock = runStartBlock - 1;
-      for (let b = loggedThroughBlock + 1; b <= upTo; b++) await logBlock(b);
+      let unrecoverable: { from: number; to: number } | null = null;
+      for (let b = loggedThroughBlock + 1; b <= upTo; b++) {
+        if (await logBlock(b)) continue;
+        if (unrecoverable && unrecoverable.to === b - 1) unrecoverable.to = b;
+        else {
+          if (unrecoverable) reportUnrecoverable(unrecoverable);
+          unrecoverable = { from: b, to: b };
+        }
+      }
+      if (unrecoverable) reportUnrecoverable(unrecoverable);
       loggedThroughBlock = Math.max(loggedThroughBlock, upTo);
       submittedByHash.sweep(loggedThroughBlock);
+    };
+    const reportUnrecoverable = (range: { from: number; to: number }): void => {
+      logger.event({
+        type: "blocks_csv_unrecoverable",
+        fromBlock: range.from,
+        toBlock: range.to,
+        note:
+          "these blocks had transactions the node no longer holds (anvil --transaction-block-keeper), " +
+          "so blocks.csv has no rows for them: not empty blocks, unrecorded ones. Usually the " +
+          "coordinator was down longer than the node keeps transactions for",
+      });
+      console.error(
+        `[blocks] blocks ${range.from}..${range.to}: transactions no longer on the node; not in blocks.csv`,
+      );
     };
 
     // ADR 0010 profile: set the oracle/PriceFeed update fee above the agent cap so --order fees places it at
@@ -3019,6 +3404,7 @@ export async function runRealtimeSimulation(
           })),
           runDir: logger.runDir,
           spawnedAt: agentsSpawnedAt,
+          notBeforeMs: agentsSpawningAt,
           timeoutMs: config.agentsReadyTimeoutSec * 1000,
         });
         logger.event({
@@ -3120,9 +3506,16 @@ export async function runRealtimeSimulation(
     const startTime = Date.now();
     // base/effective separation (ADR 0009 §1): advance the OU state as the base series, and derive the effective
     // price from stress events as a separable distortion. Outside the window, β≈0 as before (maintains ADR 0007).
-    let baseFair = latestFairPrice; // OU state. Not touched by events.
+    // A resumed period's walk carries on from where its last pass left it: the levels, the anchors
+    // and each stream's position (periodResume.ts).
+    let baseFair = cp ? cp.walk.baseFair : latestFairPrice; // OU state. Not touched by events.
     // Center of the mean-reverting price model (the base fair price at competition start). Fixed throughout the run.
-    const fairAnchor = baseFair;
+    const fairAnchor = cp ? cp.walk.fairAnchor : baseFair;
+    if (cp) {
+      if (!cp.walk.rng.WETH)
+        throw new Error("the period's checkpoint has no WETH price stream position");
+      rng.restore(cp.walk.rng.WETH);
+    }
     // ADR 0013: independent OU prices for extra bases (WBTC etc.). Each base advances with its own Rng, so the
     // WETH price path is unchanged (under the fork default, extraBaseSymbols=[] → exactly matches prior = byte-compatible).
     // `extraBaseSymbols` and each base's opening fair were settled at setup, next to WETH's, and
@@ -3135,6 +3528,16 @@ export async function runRealtimeSimulation(
       extraPriceRng[b] = priceRngForAsset(config.seed, b);
       extraBaseFair[b] = openingFair[b];
       extraAnchor[b] = openingFair[b];
+      if (cp) {
+        const position = cp.walk.rng[b];
+        const level = cp.walk.extraBaseFair[b];
+        const anchor = cp.walk.extraAnchor[b];
+        if (!position || level === undefined || anchor === undefined)
+          throw new Error(`the period's checkpoint has no ${b} price walk`);
+        extraPriceRng[b].restore(position);
+        extraBaseFair[b] = level;
+        extraAnchor[b] = anchor;
+      }
     }
     // Passes of the block handler. Not the run's length: one pass covers every block mined since the
     // previous one, so a loop that falls behind makes fewer passes than the chain makes blocks. The
@@ -3146,10 +3549,12 @@ export async function runRealtimeSimulation(
     let inFlight: Promise<void> = Promise.resolve();
     // Fresh, not viem's 4 s cache: this is what runStartBlock is derived from, and a value from
     // before the flush above would put the flushed blocks inside the run.
-    let lastProcessedBlock = Number(
-      await publicClient.getBlockNumber({ cacheTime: 0 }),
-    );
-    const runStartBlock = lastProcessedBlock + 1;
+    // A resumed period carries on after the last pass its checkpoint recorded; the blocks mined since
+    // are the first pass's catch-up.
+    let lastProcessedBlock = cp
+      ? cp.lastProcessedBlock
+      : Number(await publicClient.getBlockNumber({ cacheTime: 0 }));
+    const runStartBlock = cp ? cp.runStartBlock : lastProcessedBlock + 1;
     // The epoch ends on this chain block (epochExtent.ts): processed, valued as the last boundary,
     // and the block every agent sees `blocksRemaining === 0` at, counted from the same declared start.
     // Null for a run bounded only by the wall clock, which ends wherever its last pass got to.
@@ -3157,7 +3562,7 @@ export async function runRealtimeSimulation(
     // One instant for everything that starts the period's clock: run-start.json, the segment grid
     // and the manifest all carry it, so a runtime's day end and the coordinator's roll are computed
     // from the same number rather than from three Date.now() calls a few milliseconds apart.
-    const runStartedAtMs = Date.now();
+    const runStartedAtMs = cp ? cp.runStartedAtMs : Date.now();
     // Issue #117: tell the agents. Their env was built before this block existed, so the run
     // directory (which they already hold as ERIS_RUN_DIR and write their logs to) carries it. An
     // agent that counts `blocksRemaining` from the first block *it* saw charged the backlog flush
@@ -3177,17 +3582,18 @@ export async function runRealtimeSimulation(
         runBlocks: config.runBlocks,
         startedAtMs: runStartedAtMs,
       });
-    logger.event({
-      type: "run_start_declared",
-      runStartBlock,
-      runBlocks: config.runBlocks,
-      ...(endBlock !== null ? { endBlock } : {}),
-      file: RUN_START_FILE,
-      // The origin of the day grid when segmenting (ADR 0021 §6): day k ends at this + (k + 1) x
-      // run.segmentHours.
-      startedAt: runStartRecord.startedAt,
-      writtenAt: runStartRecord.writtenAt,
-    });
+    if (!resume)
+      logger.event({
+        type: "run_start_declared",
+        runStartBlock,
+        runBlocks: config.runBlocks,
+        ...(endBlock !== null ? { endBlock } : {}),
+        file: RUN_START_FILE,
+        // The origin of the day grid when segmenting (ADR 0021 §6): day k ends at this + (k + 1) x
+        // run.segmentHours.
+        startedAt: runStartRecord.startedAt,
+        writtenAt: runStartRecord.writtenAt,
+      });
 
     // ---- live scoring (ADR 0021 §3) ----
     // The interval boundary is read as it goes past rather than swept up afterwards. On a chain that
@@ -3218,6 +3624,13 @@ export async function runRealtimeSimulation(
       // against the agent it was given to (endowmentV0.ts).
       v0Rule: v0RuleFor(config.resetUnit),
     });
+    // A resumed period's series so far: the boundary lines every segment of it appended, cut to the
+    // checkpoint, and the scorer's bookkeeping from the checkpoint.
+    if (resume)
+      liveScorer.restore(
+        resume.checkpoint.scorer,
+        readPeriodBoundaries(resume.period.competitionDir, resume.checkpoint),
+      );
     // Issue #207: how V_0 was derived, for the record beside P. The endowment floor is applied at
     // the period's first boundary only, so a series that opens there reads the live scorer's
     // record for the agent; a segment that opens on a carried boundary, and an agent that was not
@@ -3265,7 +3678,7 @@ export async function runRealtimeSimulation(
           : { v0MeasuredUsdc: v0 }),
       };
     };
-    if (segments) segments.noteFirstBlock(runStartBlock, runStartedAtMs);
+    if (segments && !resume) segments.noteFirstBlock(runStartBlock, runStartedAtMs);
     periodStart = { block: runStartBlock, startedAtMs: runStartedAtMs };
     publishManifest();
 
@@ -3537,7 +3950,8 @@ export async function runRealtimeSimulation(
         `[segment] rolled to ${logger.runDir} at block ${atBlock} (ADR 0021 §6)`,
       );
     };
-    if (schedule.hasEvents()) {
+    // Once per period: a resumed one has it in its segment already (written when the segment opened).
+    if (schedule.hasEvents() && !resume) {
       // Include runStartBlock → the dashboard can judge the window in absolute blocks (ADR 0008/0009).
       logger.event({
         type: "stress_schedule",
@@ -3631,6 +4045,123 @@ export async function runRealtimeSimulation(
         runBlocks: config.runBlocks,
       });
     }
+
+    // ---- the period's checkpoint (periodResume.ts), written at the end of every pass ----
+    // Everything a restart needs that is not on the chain or in the artifacts already. A few KB:
+    // the boundary values are the intervals.jsonl lines, the closed segments are matrix.json.
+    const checkpointWriter =
+      periodMode && segments ? new CheckpointWriter(segments.competitionDir) : null;
+    const resumeBlockers = resumeUnsupportedReasons({
+      agentMarkets: config.agentMarkets,
+      tokenLaunch: schedule.hasTokenLaunch(),
+      vulnEvents: vulnSchedule.hasEvents(),
+      stressVictims: config.stressVictimCount,
+      liquityVictims: config.stressLiquityVictimCount,
+      prewarmBlocks: config.prewarmBlocks,
+    });
+    if (checkpointWriter && !resume && resumeBlockers.length > 0) {
+      logger.event({ type: "period_not_resumable", reasons: resumeBlockers });
+      console.warn(
+        `[period] this period cannot be resumed after a restart: ${resumeBlockers.join("; ")}`,
+      );
+    }
+    // The NEW_PERIOD file is removed once the period it asked for has a checkpoint: a crash during
+    // the setup before that tries the new period again rather than resuming the one it replaced.
+    let newPeriodRequestCleared = !newPeriodByMarker;
+    let checkpointFailures = 0;
+    const writeCheckpoint = async (bn: number): Promise<void> => {
+      if (!checkpointWriter || !segments) return;
+      try {
+        const block = await publicClient.getBlock({ blockNumber: BigInt(bn) });
+        checkpointWriter.write({
+          schema: CHECKPOINT_SCHEMA,
+          writtenAt: new Date().toISOString(),
+          competitionId: runId,
+          chainId: config.chainId,
+          lastProcessedBlock: bn,
+          lastProcessedHash: block.hash,
+          runStartBlock,
+          runBlocks: config.runBlocks,
+          endBlock,
+          runStartedAtMs,
+          world: worldNow,
+          mutable: configMutable(config as unknown as Record<string, unknown>),
+          resumable: { ok: resumeBlockers.length === 0, reasons: resumeBlockers },
+          starts: (cp?.starts ?? 0) + 1,
+          priceFeed: priceFeedAddress,
+          walk: {
+            baseFair,
+            fairAnchor,
+            extraBaseFair: { ...extraBaseFair },
+            extraAnchor: { ...extraAnchor },
+            latestFairPrice,
+            fairPrices: { ...(ctx.fairPrices ?? { WETH: latestFairPrice }) },
+            rng: {
+              WETH: rng.snapshot(),
+              ...Object.fromEntries(
+                Object.entries(extraPriceRng).map(([b, r]) => [b, r.snapshot()]),
+              ),
+            },
+          },
+          agents: agentRuntimes.map(
+            (a): CheckpointAgent => ({
+              id: a.id,
+              origin: configAgentIds.has(a.id) ? "config" : "file",
+              spec: a.spec,
+              address: a.address,
+              external: a.external,
+              initial: a.initial,
+              included: a.included,
+              reverted: a.reverted,
+              ...(a.exitedEarly !== undefined ? { exitedEarly: a.exitedEarly } : {}),
+            }),
+          ),
+          loggedThroughBlock,
+          derivedSenders: derivedSenders.snapshot(),
+          stressAudit: stressAudit.snapshot(),
+          scorer: liveScorer.snapshot(),
+          segments: segments.state(),
+          files: segmentFileSizes(logger.runDir),
+          liquidityPull: liquidityPullRuntime
+            ? liquidityPullResumeState(liquidityPullRuntime)
+            : null,
+          depegs: depegRuntimes.map(({ runtime }) => ({
+            symbol: runtime.symbol,
+            seededPoolStableWei: runtime.seededPoolStableWei,
+            startStableWei: runtime.startStableWei,
+            cappedReported: runtime.cappedReported,
+          })),
+          lstExhaustedReported,
+        });
+        if (!newPeriodRequestCleared) {
+          clearNewPeriodRequest(config.runDirRoot);
+          newPeriodRequestCleared = true;
+          logger.event({
+            type: "new_period_request_cleared",
+            file: joinPath(config.runDirRoot, NEW_PERIOD_MARKER),
+          });
+        }
+        checkpointFailures = 0;
+      } catch (error) {
+        // Not fatal: the pass happened, and the next one writes again. Said on the first failure and
+        // every hundredth after, because a full disk fails every pass.
+        checkpointFailures++;
+        if (checkpointFailures === 1 || checkpointFailures % 100 === 0) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`[period] checkpoint not written at block ${bn}: ${message}`);
+          try {
+            logger.event({
+              type: "period_checkpoint_failed",
+              blockNumber: bn,
+              failures: checkpointFailures,
+              error: message,
+            });
+          } catch {
+            // the same disk, probably
+          }
+        }
+      }
+    };
 
     await new Promise<void>((resolve) => {
       let finished = false;
@@ -4481,6 +5012,9 @@ export async function runRealtimeSimulation(
             totalMs: Date.now() - roundStart,
           });
 
+          // Last, so it records everything this pass did (periodResume.ts).
+          await writeCheckpoint(bn);
+
           loopIterations++;
         } catch (error) {
           logger.event({
@@ -5182,6 +5716,8 @@ export async function runRealtimeSimulation(
         }),
       );
     logger.event({ type: "run_completed", runId, runDir: logger.runDir });
+    // A period that ran to its end is not resumed by the next start.
+    if (checkpointWriter && segments) closePeriod(segments.competitionDir, "completed");
     console.error(
       `realtime simulation completed: ${logger.runDir} (blocks ${runStartBlock}..${finalBlock}, ` +
         `${loopIterations} passes, ${Math.round(elapsedMs / 1000)}s)`,

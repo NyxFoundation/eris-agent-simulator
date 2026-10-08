@@ -23,8 +23,12 @@ const QUOTE_DECIMALS = tokenInfo("USDC").decimals;
 // fair price walked on -- by round 16 it had drawn all 360 of the run's price shocks, in order. And an
 // unhashed LCG seed starts nearby seeds in the same place: the first draw (the first round's
 // uniswap arrival count) came out 0 on every seed from 1 to 200.
-export function flowRng(flowSeed: number): Rng {
-  return Rng.fromSeed(flowSeed, "flow");
+//
+// `stream` names a continuation: a practice period that resumes after a restart starts the bot
+// again, and the same stream from the top would replay the period's first day of orders. Empty is
+// the original stream, byte for byte.
+export function flowRng(flowSeed: number, stream = ""): Rng {
+  return Rng.fromSeed(flowSeed, stream === "" ? "flow" : `flow:${stream}`);
 }
 
 const FLOW_SLIPPAGE_BPS = 100;

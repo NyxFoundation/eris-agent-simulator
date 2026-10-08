@@ -181,10 +181,18 @@ const AUDIENCE_FILES = new Set([
 
 const HIDDEN_REGIME = "hidden";
 
+// `resume/` is a practice period's checkpoint directory (core/src/realtime/periodResume.ts): its
+// state.json carries the seed and the episode plan, and what a resume cut from the artifacts sits
+// under resume/cut-*/ with the artifacts' own file names -- which the list above would admit.
 function audienceAllows(rel: string): boolean {
   const parts = rel.split("/");
   const base = parts[parts.length - 1] ?? "";
-  if (parts.includes("agents") || parts.includes("disclosures")) return false;
+  if (
+    parts.includes("agents") ||
+    parts.includes("disclosures") ||
+    parts.includes("resume")
+  )
+    return false;
   return AUDIENCE_FILES.has(base);
 }
 

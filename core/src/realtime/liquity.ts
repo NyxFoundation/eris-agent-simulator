@@ -36,7 +36,11 @@ import {
 } from "@eris/sdk/protocols/liquity.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
-import { setupStableDepeg, type StableDepegRuntime } from "./stableDepeg.js";
+import {
+  setupStableDepeg,
+  type StableDepegResume,
+  type StableDepegRuntime,
+} from "./stableDepeg.js";
 
 // How far the oracle the venue serves may sit from the run's fair price before the run refuses to
 // start. This is not calibration noise: either the adapter points at this run's PriceFeed or it does
@@ -82,7 +86,10 @@ export type LiquityRuntime = {
 /// would trade against the wrong price or a peg that is already broken.
 export async function setupLiquity(
   ctx: SimContext,
-  opts: { priceFeed: Address; fairPrice: number },
+  // `resume`: a practice period continuing after a restart (periodResume.ts). The oracle wiring is
+  // checked as on any start; the state of the market -- Recovery Mode, a peg an eusdDepeg window is
+  // holding off par -- is the period's own history, so it is reported rather than refused.
+  opts: { priceFeed: Address; fairPrice: number; resume?: boolean },
   logger: RunLogger,
 ): Promise<LiquityRuntime> {
   if (!LIQUITY) {
@@ -193,6 +200,18 @@ export async function setupLiquity(
     discountBps: state.discountBps,
   });
 
+  if (opts.resume) {
+    if (state.recoveryMode || Math.abs(state.discountBps) > LIQUITY_STARTUP_FAIL_BPS)
+      console.warn(
+        `[liquity] resuming with TCR ${state.tcr.toFixed(3)}${state.recoveryMode ? " (Recovery Mode)" : ""} ` +
+          `and eUSD ${state.discountBps.toFixed(1)}bps off par`,
+      );
+    return {
+      troveManager: LIQUITY.troveManager,
+      priceFeedAdapter: LIQUITY.priceFeed,
+      oracleRepointed: true,
+    };
+  }
   // Recovery Mode at block zero would make the whole run about the seeded Troves rather than about
   // the agents: borrowing is restricted and everything under CCR is liquidatable from the start.
   if (state.recoveryMode) {
@@ -414,7 +433,11 @@ export const EUSD_DEPEG_LABEL = "stress_eusd_depeg";
 /// participant and is excluded from scoring, the same arrangement as the ADR 0009 stress victims.
 export async function setupEusdDepeg(
   ctx: SimContext,
-  opts: { localDeploy: boolean; actorPk: Hex },
+  opts: {
+    localDeploy: boolean;
+    actorPk: Hex;
+    resume?: StableDepegResume;
+  },
   logger: RunLogger,
 ): Promise<StableDepegRuntime> {
   if (!opts.localDeploy) {
@@ -442,6 +465,7 @@ export async function setupEusdDepeg(
         "The deploy leaves the genesis Trove's surplus with the deployer account " +
         "(deployer/src/protocols/liquity.ts), so an empty balance means a different account deployed " +
         "the venue, or a previous run spent it.",
+      ...(opts.resume ? { resume: opts.resume } : {}),
     },
     logger,
   );

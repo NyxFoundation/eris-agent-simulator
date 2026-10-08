@@ -20,6 +20,13 @@ export function fnv1a32(text: string): number {
   return h >>> 0;
 }
 
+// Where a stream is, so a process that stops can continue it where it left off instead of starting
+// it over (the practice period's resume, core/src/realtime/periodResume.ts). Says nothing about
+// *which* stream: the caller restores into a stream it built from the same seed and salt.
+export type RngSnapshot =
+  | { kind: "lcg"; state: number }
+  | { kind: "keyed"; draws: number };
+
 export class Rng {
   private state: number;
 
@@ -49,6 +56,16 @@ export class Rng {
   next(): number {
     this.state = (1664525 * this.state + 1013904223) >>> 0;
     return this.state / 0x1_0000_0000;
+  }
+
+  snapshot(): RngSnapshot {
+    return { kind: "lcg", state: this.state };
+  }
+
+  restore(snapshot: RngSnapshot): void {
+    if (snapshot.kind !== "lcg")
+      throw new Error(`cannot restore a ${snapshot.kind} stream position into an LCG stream`);
+    this.state = snapshot.state >>> 0;
   }
 
   int(minInclusive: number, maxExclusive: number): number {
@@ -150,6 +167,8 @@ export function resetScenarioRegime(): void {
 const STREAM_DOMAIN = Buffer.from("eris-rng/v1", "utf8");
 const TWO_POW_21 = 0x20_00_00;
 const TWO_POW_53 = 2 ** 53;
+// A SHA-256 block is 32 bytes, read 8 at a time.
+const DRAWS_PER_BLOCK = 4;
 
 // HMAC-SHA256 in counter mode: block i = HMAC(K, domain || seed || salt || i), read 8 bytes at a
 // time as a 53-bit fraction in [0, 1). The API is Rng's; only the source of `next()` differs.
@@ -159,6 +178,8 @@ class KeyedRng extends Rng {
   private block: Buffer = Buffer.alloc(0);
   private offset = 0;
   private counter = 0n;
+  // next() calls so far: the stream's position (4 per HMAC block).
+  private draws = 0;
 
   constructor(key: Buffer, seed: number, salt: number, regime = "") {
     super(0);
@@ -178,20 +199,45 @@ class KeyedRng extends Rng {
   }
 
   override next(): number {
-    if (this.offset + 8 > this.block.length) {
-      const counter = Buffer.alloc(8);
-      counter.writeBigUInt64BE(this.counter);
-      this.counter += 1n;
-      this.block = createHmac("sha256", this.key)
-        .update(this.id)
-        .update(counter)
-        .digest();
-      this.offset = 0;
-    }
+    if (this.offset + 8 > this.block.length) this.refill();
     const hi = this.block.readUInt32BE(this.offset);
     const lo = this.block.readUInt32BE(this.offset + 4) >>> 11;
     this.offset += 8;
+    this.draws += 1;
     return (hi * TWO_POW_21 + lo) / TWO_POW_53;
+  }
+
+  private refill(): void {
+    const counter = Buffer.alloc(8);
+    counter.writeBigUInt64BE(this.counter);
+    this.counter += 1n;
+    this.block = createHmac("sha256", this.key)
+      .update(this.id)
+      .update(counter)
+      .digest();
+    this.offset = 0;
+  }
+
+  override snapshot(): RngSnapshot {
+    return { kind: "keyed", draws: this.draws };
+  }
+
+  // Counter mode makes this exact and cheap: draw n is word n % 4 of block floor(n / 4), so the
+  // stream is repositioned without replaying it.
+  override restore(snapshot: RngSnapshot): void {
+    if (snapshot.kind !== "keyed")
+      throw new Error(`cannot restore a ${snapshot.kind} stream position into a keyed stream`);
+    if (!Number.isSafeInteger(snapshot.draws) || snapshot.draws < 0)
+      throw new Error(`invalid stream position: ${snapshot.draws}`);
+    this.counter = BigInt(Math.floor(snapshot.draws / DRAWS_PER_BLOCK));
+    this.block = Buffer.alloc(0);
+    this.offset = 0;
+    const within = snapshot.draws % DRAWS_PER_BLOCK;
+    if (within > 0) {
+      this.refill();
+      this.offset = within * 8;
+    }
+    this.draws = snapshot.draws;
   }
 }
 

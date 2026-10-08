@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { safeStringify } from "@eris/sdk/logger.js";
 
@@ -122,14 +122,16 @@ export function txFeeColumns(
 export class RunLogger implements RunArtifactWriter {
   readonly runDir: string;
 
-  constructor(root: string, runId: string) {
+  // `append`: open a directory that already has a run in it and add to it (a practice period that
+  // resumes after a restart, core/src/realtime/periodResume.ts) instead of starting both files over.
+  constructor(root: string, runId: string, opts: { append?: boolean } = {}) {
     this.runDir = join(root, runId);
     mkdirSync(this.runDir, { recursive: true });
-    writeFileSync(join(this.runDir, "events.jsonl"), "");
-    writeFileSync(
-      join(this.runDir, "blocks.csv"),
-      `${BLOCKS_CSV_COLUMNS.join(",")}\n`,
-    );
+    const events = join(this.runDir, "events.jsonl");
+    const blocks = join(this.runDir, "blocks.csv");
+    if (!opts.append || !existsSync(events)) writeFileSync(events, "");
+    if (!opts.append || !existsSync(blocks))
+      writeFileSync(blocks, `${BLOCKS_CSV_COLUMNS.join(",")}\n`);
   }
 
   event(event: Record<string, unknown>): void {
