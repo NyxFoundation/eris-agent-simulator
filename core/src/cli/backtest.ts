@@ -75,6 +75,7 @@ import {
   rpc,
   STATE_DIR_DEFAULT,
   waitUntilAnvilUp,
+  writeFileAtomic,
 } from "../backtest/shared.js";
 import {
   assertFollowable,
@@ -802,7 +803,10 @@ async function main(): Promise<void> {
       [...results].sort((a, b) => a.s - b.s);
     const flush = (): void => {
       if (!outDir) return;
-      writeFileSync(
+      const flushedAt = new Date().toISOString();
+      // Whole or not at all (issue #262): --resume starts from this file, and the week's standings
+      // are read off it while it is being rewritten after every epoch.
+      writeFileAtomic(
         join(outDir, "matrix.json"),
         `${JSON.stringify(
           {
@@ -811,6 +815,8 @@ async function main(): Promise<void> {
             schema: 2,
             createdAt,
             ...(resumedAt !== undefined ? { resumedAt } : {}),
+            // When this file was last rewritten; standings.json carries the same stamp.
+            flushedAt,
             sourceCommit: gitHead(ROOT) ?? "unknown",
             scenarioSet: flags.scenarios,
             // A matrix is a scenario-mode run by construction (ADR 0020 §1). Written out so a later
@@ -848,9 +854,9 @@ async function main(): Promise<void> {
           2,
         )}\n`,
       );
-      writeFileSync(
+      writeFileAtomic(
         join(outDir, "standings.json"),
-        `${JSON.stringify(computeStandings(ordered(), k), null, 2)}\n`,
+        `${JSON.stringify({ flushedAt, ...computeStandings(ordered(), k) }, null, 2)}\n`,
       );
     };
     // Issue #77: the state every scenario starts from is a function of the plan, not of what ran

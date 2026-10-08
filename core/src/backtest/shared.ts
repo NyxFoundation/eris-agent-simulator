@@ -5,7 +5,7 @@
 // (it carries no transitive import into sdk).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 export const STATE_DIR_DEFAULT = "backtest/state";
@@ -249,3 +249,20 @@ export function resolveRegimePath(root: string, regime: string): string {
     `regime not found: ${regime} (${candidate}). available: ${available}`,
   );
 }
+
+// Write a file whole or not at all (issue #262). matrix.json and standings.json are rewritten after
+// every epoch; a process stopped mid-write (a kill, ENOSPC, a host reboot) used to leave a file cut
+// short, and `--resume` starts from matrix.json. The text goes to a sibling temp file, is fsynced,
+// and is renamed over the target: a reader sees the old file or the new one, never a prefix.
+export function writeFileAtomic(path: string, text: string): void {
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, text);
+  const fd = openSync(tmp, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, path);
+}
+

@@ -1,6 +1,6 @@
 // Unit tests for core/src/backtest/shared.ts (pure helpers for ADR 0016 backtest).
 import { strict as assert } from "node:assert";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -15,6 +15,7 @@ import {
   STATE_FILE_NAME,
   validateStateManifest,
   type StateManifest,
+  writeFileAtomic,
 } from "../core/src/backtest/shared.js";
 
 const tmp = mkdtempSync(join(tmpdir(), "backtest-shared-"));
@@ -198,3 +199,30 @@ describe("resolveRegimePath", () => {
     );
   });
 });
+
+// Issue #262: matrix.json is rewritten after every epoch and --resume starts from it, so it is
+// written whole or not at all.
+describe("writeFileAtomic", () => {
+  it("replaces the file in one step and leaves no temp file behind", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eris-atomic-"));
+    const path = join(dir, "matrix.json");
+    writeFileSync(path, "old");
+    writeFileAtomic(path, "new contents\n");
+    assert.equal(readFileSync(path, "utf8"), "new contents\n");
+    assert.deepEqual(readdirSync(dir), ["matrix.json"]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a write that cannot complete leaves the previous file untouched", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eris-atomic-"));
+    const path = join(dir, "matrix.json");
+    writeFileSync(path, "old");
+    // The temp sibling cannot be created: its name is taken by a directory.
+    mkdirSync(`${path}.tmp-${process.pid}`);
+    assert.throws(() => writeFileAtomic(path, "new"));
+    assert.equal(readFileSync(path, "utf8"), "old");
+    assert.ok(existsSync(path));
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
