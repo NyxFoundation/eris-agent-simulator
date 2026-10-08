@@ -50,6 +50,7 @@ tunnel (`ascon-monitor.nyx.foundation`) / registered-users only, per the ASCON `
 |---|---|---|
 | CPU load high | `node_load1 > cores` | node-exporter |
 | Host memory high | host mem used > 85% | node-exporter |
+| Host disk low | root filesystem free < 15% for 5 m (a full disk kills the coordinator, and its next start reverts the chain) | node-exporter |
 | Agent container near OOM | capped agent container mem > 90% of cap | eris-exporter (cgroup, `eris.role=agent`) |
 | Agent crashed | `increase(ascon_agent_crashes_total[2m]) > 0` (OOM=137 etc.) | eris-exporter (events.jsonl `agent_process_exited`) |
 | Chain RPC down | `ascon_chain_up == 0` | eris-exporter (eth_blockNumber probe) |

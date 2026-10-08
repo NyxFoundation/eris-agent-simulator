@@ -7,14 +7,23 @@
 # file through explorer.sh, which passes it with --env-file.
 name: eris-explorer
 
+# Every container's stdout is capped (2026-10-08): Docker's json-file driver keeps it forever by
+# default, and one Blockscout backend stuck in a retry loop wrote 699 GB of it in 2.5 days, filled the
+# disk and took the RPC gateway and the coordinator down with it. 3 x 100 MB is days of a healthy log.
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "100m", max-file: "3" }
+
 services:
   redis-db:
+    logging: *logging
     image: redis:7.4-alpine
     container_name: eris-explorer-redis
     restart: unless-stopped
     command: redis-server
 
   db:
+    logging: *logging
     image: postgres:17
     container_name: eris-explorer-db
     restart: unless-stopped
@@ -37,6 +46,7 @@ services:
       start_period: 10s
 
   backend:
+    logging: *logging
     image: ghcr.io/blockscout/blockscout:${BACKEND_TAG:?set BACKEND_TAG in explorer.env}
     container_name: eris-explorer-backend
     restart: unless-stopped
@@ -64,6 +74,7 @@ services:
       FIRST_BLOCK: ${FIRST_BLOCK:-0}
 
   frontend:
+    logging: *logging
     image: ghcr.io/blockscout/frontend:${FRONTEND_TAG:?set FRONTEND_TAG in explorer.env}
     # The frontend image is published amd64-only (matches the official compose); on Apple
     # Silicon it runs under emulation, which is fine for a local explorer.
@@ -86,6 +97,7 @@ services:
       NEXT_PUBLIC_NETWORK_RPC_URL: ${PUBLIC_RPC_URL:-http://localhost:${RPC_PORT}/}
 
   proxy:
+    logging: *logging
     image: nginx:1.27-alpine
     container_name: eris-explorer-proxy
     restart: unless-stopped

@@ -28,8 +28,28 @@ const LOG_FILE = process.env.LOG_FILE || "";
 // reason eris-exporter can't be scraped directly), so when METRICS_FILE is set we also dump the
 // exposition to the shared textfile dir that node-exporter serves. HTTP /metrics still works locally.
 const METRICS_FILE = process.env.METRICS_FILE || "";
-const logStream = LOG_FILE ? createWriteStream(LOG_FILE, { flags: "a" }) : null;
-const logline = (o) => { const s = JSON.stringify(o) + "\n"; logStream ? logStream.write(s) : process.stdout.write(s); };
+// The request log must never take the gateway down. A WriteStream with no 'error' listener throws on
+// the first failed write, so a full disk killed the process -- and with it every participant's RPC --
+// over a log line (2026-10-08). A failed stream is dropped, its lines are counted instead of written,
+// and the file is reopened at most once a minute.
+const LOG_REOPEN_MS = 60_000;
+let logStream = null, logFailedAt = 0, logLinesDropped = 0;
+function openLog() {
+  const ws = createWriteStream(LOG_FILE, { flags: "a" });
+  ws.on("error", (e) => {
+    if (logStream !== ws) return;
+    logStream = null; logFailedAt = Date.now();
+    process.stderr.write(`rpc-gateway: request log ${LOG_FILE}: ${e.message}; dropping lines, retrying in ${LOG_REOPEN_MS / 1000}s\n`);
+  });
+  logStream = ws;
+}
+if (LOG_FILE) openLog();
+const logline = (o) => {
+  const s = JSON.stringify(o) + "\n";
+  if (!LOG_FILE) { process.stdout.write(s); return; }
+  if (!logStream && Date.now() - logFailedAt >= LOG_REOPEN_MS) openLog();
+  if (logStream) logStream.write(s); else logLinesDropped++;
+};
 
 const BUCKETS = [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
 const MAX_METHODS = 200;                                  // cardinality guard (rpc methods are bounded)
@@ -333,6 +353,7 @@ function observeBatch(n) {
 function metricsText() {
   const L = `env="${ENV_NAME}"`;
   let o = "";
+  o += `# TYPE rpc_log_lines_dropped_total counter\nrpc_log_lines_dropped_total{${L}} ${logLinesDropped}\n`;
   o += `# TYPE rpc_requests_total counter\n`;
   for (const [k, v] of reqTotal) { const [m, s] = k.split("|"); o += `rpc_requests_total{${L},method="${m}",status="${s}"} ${v}\n`; }
   o += `# TYPE rpc_request_duration_seconds histogram\n`;

@@ -2,6 +2,9 @@ import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { freePort, rpc, startGateway } from "./helpers/localRpc.js";
 
 // Issue #216 (3). Two gateway behaviours that need no chain: the request body cap, and sealing an
@@ -137,4 +140,22 @@ test("a request body over the cap is refused with 413 and never reaches the upst
   assert.equal(upstream.bytes(), bytesAfterSmall, "oversized bodies were not forwarded");
   const metrics = await (await fetch(`${gateway}/metrics`)).text();
   assert.match(metrics, /rpc_body_denied_total\{[^}]+\} 2\n/);
+});
+
+// 2026-10-08: the disk filled and the first failed write to the request log killed the gateway, and
+// every participant's RPC with it. A log file that cannot be written (here: a path that is a
+// directory, which fails the same way on every platform) must cost log lines, not service.
+test("a request log that cannot be written drops lines and keeps serving", { timeout: 20_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-gw-log-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const upstream = await startFakeUpstream(t);
+  const gateway = await startGateway(t, upstream.url, { LOG_FILE: dir });
+
+  for (let i = 0; i < 5; i++) {
+    assert.equal((await rpc(gateway, "eth_blockNumber")).body.result, "0x1");
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const metrics = await (await fetch(`${gateway}/metrics`)).text();
+  const dropped = Number(/rpc_log_lines_dropped_total\{[^}]+\} (\d+)\n/.exec(metrics)?.[1]);
+  assert.ok(dropped >= 1, `dropped lines are counted (got ${dropped})`);
 });
