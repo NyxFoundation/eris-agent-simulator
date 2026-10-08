@@ -90,6 +90,7 @@ import { checkRevisedRawTx, rawTxAllowlist } from "./rawTxGuard.js";
 import { AgentStateStore, capBytesFromEnv, STATE_DIR_ENV } from "./state.js";
 import { preflightChain } from "./preflight.js";
 import { Reader } from "./read.js";
+import { blockWatchTiming, watchBlocks } from "./blockWatch.js";
 import { manifestRunOverrides } from "./runClock.js";
 import { readOnlyClient } from "./readOnlyClient.js";
 import { StrategyRunner } from "./strategyRunner.js";
@@ -735,13 +736,27 @@ async function main(): Promise<void> {
   // before the first observation, so a new epoch cannot trade the shipped version during resume.
   if (mode === "improve") await runImproveLoop();
 
-  publicClient.watchBlockNumber({
-    emitOnBegin: true,
-    pollingInterval: Math.max(
-      100,
-      Math.floor((config.blockTimeSec * 1000) / 4),
-    ),
-    onBlockNumber: (bn) => void onBlock(Number(bn)),
+  // Polled on a client of its own, unbatched and uncached: on the batched client a poll that shares
+  // a tick with the observation's reads waits for the whole batch, and viem caches getBlockNumber for
+  // seconds by default. When a block is noticed decides who goes first among equal bids, so it is
+  // kept apart from everything else this process reads (issue #275, blockWatch.ts).
+  const { publicClient: headClient } = makeClients(rpcUrl, config.chainId);
+  let headPollFailing = false;
+  watchBlocks({
+    getBlockNumber: () => headClient.getBlockNumber({ cacheTime: 0 }),
+    timing: blockWatchTiming(config.blockTimeSec * 1000),
+    onBlock: (bn) => {
+      headPollFailing = false;
+      void onBlock(bn);
+    },
+    // Once per failing stretch, not once per poll: inside the window that would be every 25 ms.
+    onError: (error) => {
+      if (headPollFailing) return;
+      headPollFailing = true;
+      process.stderr.write(
+        `[bot] block-number poll failed (said once until a block is seen again): ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    },
   });
 
   logMempool({ event: "runtime_start", mode, address, agentDir, rpcUrl });
