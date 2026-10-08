@@ -1369,6 +1369,11 @@ function validate(
 
 export const uniswapAdapter: ProtocolAdapter = {
   id: "uniswap",
+  // The stable leg the bundle validator moves on a swap or a mint (action.ts applyLeafSpend). It was
+  // missing here alone, so a uniswap leg moved no USDC at all: a bundle that sold on uniswap and
+  // bought elsewhere with the proceeds was refused, and two uniswap buys passed over the balance
+  // and the second reverted on chain (issue #276).
+  stableToken: TOKENS.USDC.address,
   parse,
   bundleable: () => true,
   validate,
