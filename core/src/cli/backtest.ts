@@ -677,7 +677,7 @@ async function main(): Promise<void> {
       for (const scenario of scenarios) {
         if (checked.has(scenario.regimePath)) continue;
         checked.add(scenario.regimePath);
-        preflightLiveWeek(runOverridesFor(), [
+        await preflightLiveWeek(runOverridesFor(), [
           process.execPath,
           "sim-realtime",
           "--config",
