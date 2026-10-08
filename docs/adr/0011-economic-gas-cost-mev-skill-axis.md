@@ -98,7 +98,7 @@ venue ごとの扱い:
 | `PriceFeed`（全 base） | storage 直書き（`writePriceFeedStorage`） | 済 |
 | Aave aggregator（全 base + LST 担保） | storage 直書き（`writeAaveOraclesStorage`） | 済 |
 | GMX `MockOracleProvider` の価格 | 以前は admin 鍵からの `setPrice` tx（通常 fee） | **storage 直書き**（`updateGmxOracle(…, {storage: true})`。実施済み） |
-| GMX keeper（`executeOrder` / 清算） | tx（通常 fee） | **tx のまま**。keeper は実行時に provider を読むだけなので、価格が storage で確定していればブロック内の位置で約定価格は変わらない |
+| GMX keeper（`executeOrder` / 清算） | tx（通常 fee） | **tx のまま、ただし 50 gwei 固定**（`ECONOMIC_KEEPER_FEE_WEI`）。keeper は実行時に provider を読むだけなので、ブロック内の位置で約定価格は変わらない。固定するのは**ブロックから締め出されない**ため: 0.1 gwei のままだと、参加者数体が 0.11 gwei で 30M のブロックを埋めれば（1 体 10M まで、約 0.003 ETH）約定と清算を何ブロックでも遅らせられた（2026-10-08 のレビューで指摘）。keeper は anvil で 200 万 ETH を持つ |
 | LST `accrueRewards` / `setRewardRate` | admin 鍵からの tx | **tx のまま**。利用者関数の accrue-first 化（§5-2）は見送った |
 | flow bot | mempool tx | 変更なし（env の市場機構で採点対象外） |
 | stress の売買（liquidityPull / depeg） | deployer 鍵の tx | 変更なし（市場に対する取引であって価格の確定ではない） |
@@ -114,13 +114,22 @@ venue ごとの扱い:
 **1 tx ごとに先回りの価値に比例した乱数の額を入札する**（`core/src/realtime/envBid.ts`）:
 
 ```
-priority fee / gas = U × V / gas,   U ~ lognormal(中央値 0.86, σ 0.6)   → P(U < 1) ≈ 0.60
+priority fee / gas = U × V / 150,000,   U ~ lognormal(中央値 0.86, σ 0.6)   → P(U < 1) ≈ 0.60
 ```
 
 - **V** は環境が送信前に見積もる「先回りで取られうる額」。買い波・depeg は自分の注文の価格影響コスト
   （限界レートでの受取額 − 実際の見積もり。プール手数料は比で相殺）。引き抜きは参照サイズ $10,000 の取引が
   厚い板で約定して得するスリッページの差（N²/2 × (1/D_後 − 1/D_前)、D は deploy 時の片側 $3M を今のプールの
   規模で縮めた値）。戻し（深さが戻る側）は先回りしても得しないので V = 0。
+- **割る gas は先回りする側の tx の gas**（参照値 15 万 = `FRONT_RUN_REFERENCE_GAS`。Uniswap の exactInputSingle や
+  Curve の exchange が 11〜25 万）。先回りする側は 1 gas あたりの額を上回ればよく、自分の gas 分だけ払う。当初は
+  環境の tx の gas 上限（60〜90 万）で割っていて、実効の入札が U × V の約 2 割になり、先回りが約 99.8% で得に
+  なっていた（同日のレビューで指摘、修正）。
+- **V は価格影響のコストで、サンドイッチで取れる上限（環境の注文の許容スリッページ。launch の波は 15%）より小さい。**
+  そのため実際の先回りの価値は V より大きくなりうるが、そのままにした（2026-10-08 判断）。
+- **環境のイベント取引が mempool で待っていることは、`eth_getTransactionCount(deployer, "pending")` で外から分かる**
+  （ゲートウェイは自分の nonce を取るためにこの 1 つを通している）。分かるのは「待っている」ことだけで、額も中身も
+  1 ブロック後には誰でも見えるので、塞がないことにした（2026-10-08 判断）。
 - **U** はシナリオの鍵付きストリーム（`env-bid:<種類>`）から引くので、再現でき、事前には読めない。
   約 6 割は V 未満（先回りが得）、約 4 割は V 以上（積みすぎると損）。参加者の腕は V の見積もりと、
   過去のブロックで環境が実際に払った手数料（チェーン上で見える）から U の分布を読むこと。
@@ -198,6 +207,10 @@ priority fee / gas = U × V / gas,   U ~ lognormal(中央値 0.86, σ 0.6)   →
      間隔は中央値 2.01 秒）。30 体以上の構成で pass 時間を測ること。
    - 書き込みの一部が失敗したら 1 回だけやり直す（storage への set なので冪等）。終了ブロックを処理したら
      採掘をすぐ止める（`halt`）。
+   - **miner は tick ごとにチェーンの head を読み直す。**採掘がタイムアウト後に遅れて成功した、採掘後の head の読み取りが
+     失敗した、再開時の setup がブロックを掘った、のどれでも miner の知る head がチェーンより遅れ、待ちを 1 回飛ばして
+     古い価格でブロックを掘っていた。**最初のブロックも最初の pass の段取りを待つ**（setup の価格は段取りではない）。
+   - 最終評価 V_K は、終了ブロックの履歴（= 鐘の後の 1 ステップ分の価格）で評価される。全員同じなので順位には効かない。
 
 5. **coinbase — 確認 + 起動時検査。**anvil の coinbase はゼロアドレス（anvil 1.5.1 で実測。fee はそこへ
    入り、誰も引き出せない）。coordinator は起動時に coinbase を読み、agent のアドレスなら起動を拒否し、

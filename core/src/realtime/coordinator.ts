@@ -347,6 +347,10 @@ import {
 } from "../stressVictims.js";
 
 const GAS_ONLY_WEI = 2_000_000_000_000_000_000_000_000n; // 2,000,000 ETH (gas for admin/keeper)
+// ADR 0011: the GMX keeper's (executions and liquidations) priority fee under economicGas. Not an
+// ordering lever -- it keeps the keeper in the block when agents fill it (30M gas at 50 gwei is 1.5 ETH
+// a block to crowd it out).
+export const ECONOMIC_KEEPER_FEE_WEI = 50_000_000_000n; // 50 gwei
 
 // The root of an empty transaction trie: a block header carrying any other transactionsRoot had
 // transactions, whatever list the node returns with it.
@@ -3364,15 +3368,18 @@ export async function runRealtimeSimulation(
     // txIndex 0. Place the keeper just below it, fixing the "oracle update → order execution" order within the
     // same block (even with parallel submission, fee decides ordering regardless of arrival order).
     // ADR 0011 economic-gas profile (economicGas): price finalization moves to a direct storage write (the
-    // front-run target mechanically disappears), so the env fee ordering guarantee is unnecessary. The keeper only
-    // needs to run after agent order placement and does not need front-row fixing, so env txs go out at the normal
-    // fee (defaultPriorityFeeWei).
+    // front-run target mechanically disappears), so the env fee ordering guarantee is unnecessary for ordering.
+    // The keeper's position in the block does not matter (GMX fills at the provider's stored price), but its
+    // inclusion does: at the 0.1 gwei default, a few agents filling the block above it (each may declare 10M
+    // gas a block) would hold back every GMX execution and liquidation, their own underwater perp's included.
+    // So the keeper bids ECONOMIC_KEEPER_FEE_WEI, far above what filling a block is worth; on anvil the keeper
+    // holds 2,000,000 ETH (GAS_ONLY_WEI), which at ~0.12 ETH an execution lasts well over a year.
     const economicGas = config.economicGas;
     const oracleFee = economicGas
       ? config.defaultPriorityFeeWei
       : config.maxPriorityFeeWei + 1_000_000_000n;
     const keeperFee = economicGas
-      ? config.defaultPriorityFeeWei
+      ? ECONOMIC_KEEPER_FEE_WEI
       : config.maxPriorityFeeWei + 500_000_000n;
     if (economicGas) {
       // ADR 0011 §5-5: with no cap the fees become real money, and at base fee 0 every wei of it
@@ -5128,6 +5135,8 @@ export async function runRealtimeSimulation(
             await mine(publicClient);
             return Number(await publicClient.getBlockNumber({ cacheTime: 0 }));
           },
+          readHead: async () =>
+            Number(await publicClient.getBlockNumber({ cacheTime: 0 })),
           // The pass starts on the miner's word rather than the watcher's next poll (a quarter
           // block later): under gated mining the pass is what the next block waits for. The
           // watcher stays as the fallback.

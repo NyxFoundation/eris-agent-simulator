@@ -4,6 +4,7 @@ import { Rng } from "@eris/sdk/rng.js";
 import {
   ENV_BID_MEDIAN,
   EnvBidder,
+  FRONT_RUN_REFERENCE_GAS,
   PULL_REFERENCE_TRADE_USD,
   SEEDED_SPOT_DEPTH_USD,
   impactValueUsd,
@@ -21,7 +22,7 @@ test("about 60% of bids are below the front-running value", () => {
   let below = 0;
   const us: number[] = [];
   for (let i = 0; i < n; i++) {
-    const { u } = bidder.bid({ valueUsd: 100, gas: 200_000n, ethUsd: 3000 });
+    const { u } = bidder.bid({ valueUsd: 100, gasLimit: 200_000n, ethUsd: 3000 });
     us.push(u);
     if (u < 1) below++;
   }
@@ -32,13 +33,14 @@ test("about 60% of bids are below the front-running value", () => {
   assert.ok(Math.abs(median - ENV_BID_MEDIAN) < 0.02, `median ${median}`);
 });
 
-test("the bid is U × V in wei per gas, never below the floor", () => {
+test("the bid is U × V per gas of a front-runner's transaction, never below the floor", () => {
   const bidder = new EnvBidder(Rng.fromSeed(7, "env-bid:test"), FLOOR);
-  const b = bidder.bid({ valueUsd: 300, gas: 150_000n, ethUsd: 3000 });
-  // U × $300 at $3,000/ETH over 150k gas.
-  const expected = BigInt(Math.floor(((b.u * 300) / 3000) * 1e18)) / 150_000n;
+  // A 600k limit: the bid does not depend on it, only on the reference a front-runner pays on.
+  const b = bidder.bid({ valueUsd: 300, gasLimit: 600_000n, ethUsd: 3000 });
+  const expected =
+    BigInt(Math.floor(((b.u * 300) / 3000) * 1e18)) / FRONT_RUN_REFERENCE_GAS;
   assert.equal(b.priorityFeeWei, expected > FLOOR ? expected : FLOOR);
-  const zero = bidder.bid({ valueUsd: 0, gas: 150_000n, ethUsd: 3000 });
+  const zero = bidder.bid({ valueUsd: 0, gasLimit: 600_000n, ethUsd: 3000 });
   assert.equal(zero.priorityFeeWei, FLOOR);
 });
 
@@ -46,7 +48,7 @@ test("a fee the sender cannot cover is capped at half its balance", () => {
   const bidder = new EnvBidder(Rng.fromSeed(7, "env-bid:test"), FLOOR);
   const b = bidder.bid({
     valueUsd: 1_000_000,
-    gas: 100_000n,
+    gasLimit: 100_000n,
     ethUsd: 3000,
     balanceWei: 10n ** 18n,
   });

@@ -8,7 +8,11 @@
 // Neither is something to be good at. So each such transaction bids a random fraction of what
 // getting ahead of it is worth:
 //
-//   priority fee per gas = U × V / gas,   U ~ lognormal(median ENV_BID_MEDIAN, σ ENV_BID_SIGMA)
+//   priority fee per gas = U × V / FRONT_RUN_REFERENCE_GAS,   U ~ lognormal(median ENV_BID_MEDIAN, σ ENV_BID_SIGMA)
+//
+// Per gas of a *front-runner's* transaction, not of this one's gas limit: a front-runner only has to
+// beat the fee per gas and pays it on its own gas, so dividing by the padded limit (600k–900k against
+// ~150k used) put the real bid at a fifth of U × V and made getting ahead pay in ~99.8% of draws.
 //
 // V is the environment's own estimate of what a front-runner can take: the price-impact cost of
 // its trade (a sandwich takes at most about that), or for a pull the slippage a reference trade
@@ -24,6 +28,8 @@ import type { Rng, RngSnapshot } from "@eris/sdk/rng.js";
 // ln(1/0.86) / 0.6 = 0.251 → Φ(0.251) = 0.599. (0.29 put it at 0.98; changed the same day.)
 export const ENV_BID_MEDIAN = 0.86;
 export const ENV_BID_SIGMA = 0.6;
+// What a front-running swap uses (a Uniswap exactInputSingle or a Curve exchange: ~110k–250k).
+export const FRONT_RUN_REFERENCE_GAS = 150_000n;
 
 // A liquidity pull has no trade of its own to sandwich: what being ahead of it is worth depends on
 // the trade that gets ahead. Valued at this reference size.
@@ -58,26 +64,27 @@ export class EnvBidder {
     return this.rng.snapshot();
   }
 
-  // `balanceWei` bounds the fee so the transaction stays affordable: a fee the sender cannot cover
-  // is refused by the node, which would delay the event rather than price it. Half the balance, so
-  // the next block's transaction is affordable too.
+  // `balanceWei` bounds the fee so the transaction stays affordable: the node checks the gas *limit*
+  // times the fee against the balance and refuses what the sender cannot cover, which would delay the
+  // event rather than price it. Half the balance, so the next block's transaction is affordable too.
   bid(input: {
     valueUsd: number;
-    gas: bigint;
+    // This transaction's gas limit: only for the affordability cap.
+    gasLimit: bigint;
     ethUsd: number;
     balanceWei?: bigint;
   }): EnvBid {
     const u = ENV_BID_MEDIAN * Math.exp(ENV_BID_SIGMA * this.rng.gaussian());
     const valueUsd = Number.isFinite(input.valueUsd) ? Math.max(0, input.valueUsd) : 0;
     let fee = this.floorWei;
-    if (valueUsd > 0 && input.ethUsd > 0 && input.gas > 0n) {
+    if (valueUsd > 0 && input.ethUsd > 0) {
       const totalWei = BigInt(Math.floor(((u * valueUsd) / input.ethUsd) * 1e18));
-      const perGas = totalWei / input.gas;
+      const perGas = totalWei / FRONT_RUN_REFERENCE_GAS;
       if (perGas > fee) fee = perGas;
     }
     let balanceCapped = false;
-    if (input.balanceWei !== undefined && input.gas > 0n) {
-      const cap = input.balanceWei / 2n / input.gas;
+    if (input.balanceWei !== undefined && input.gasLimit > 0n) {
+      const cap = input.balanceWei / 2n / input.gasLimit;
       if (fee > cap) {
         fee = cap > this.floorWei ? cap : this.floorWei;
         balanceCapped = true;

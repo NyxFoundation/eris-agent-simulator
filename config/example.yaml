@@ -47,7 +47,7 @@ run:
   # are all enabled. `lst` (issue #38) and `liquity` (issue #39) are local-only and fail fast on a
   # fork.
   protocols: [uniswap, balancer, curve, aave, lst, liquity]
-  economicGas: false
+  economicGas: true # ADR 0011: the same as the official regimes and the practice period
   # Deploy the FlashArb receiver (ADR 0015 §1's "a participant may bring their own contract"). It is
   # a setup-phase deploy at a deterministic address, so it costs the block loop nothing and an agent
   # that never calls it is unaffected. Without this the flash-arb agent's rawTx lands on an address

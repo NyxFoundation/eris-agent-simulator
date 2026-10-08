@@ -356,7 +356,7 @@ The more mainnet (production public chain) experience you have, the more you des
 that this environment does not have. None of the following exists here. **If blockchains are new to
 you, skip this section**: each item is "a problem on mainnet that does not arise here".
 
-- **Reorgs (a written block later replaced by different contents) and unconfirmed blocks.** The chain is a single Anvil node on interval mining. A block is
+- **Reorgs (a written block later replaced by different contents) and unconfirmed blocks.** The chain is a single Anvil node; the environment makes a block every 2 seconds. A block is
   final the moment it is mined; it does not roll back and a mined transaction does not disappear. The
   world is rebuilt only at the start of an epoch (rules §4.7.1) — that is an initialization, not a reorg
 - **Gas price spikes.** The base fee is pinned at 0. What you pay is the priority fee you choose to

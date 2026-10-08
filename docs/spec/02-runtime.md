@@ -104,7 +104,7 @@
 
 1. **エージェントを止める**（採点より前。direct モードのエージェントは止めない限り注文を出し続ける）
 2. flow プロセスを止める
-3. interval mining を止める（external では行わない）
+3. interval mining を止める（economicGas では gated miner を止め、保留中の価格の書き込みを適用する。external では行わない）
 4. **`finalBlock` を確定**（teardown より前）— これ以降は環境が世界を元に戻す作業であり、そこを採点すると **teardown を採点する**ことになる。デペグの買い戻しは stable を par に戻すので、手仕舞わなかったエージェントが par で評価されてしまう
 5. liquidityPull の restore / depeg の restore
 6. `flushBlocks(finalBlock)` — blocks.csv を書き切る（`resetFork` が歴史を消す前）
@@ -152,10 +152,10 @@
 
 ### 手数料プロファイル
 
-| プロファイル | oracle / PriceFeed | keeper | 上限強制 |
-|---|---|---|---|
-| 既定（ADR 0010） | `maxPriorityFee + 1 gwei` → `--order fees` で txIndex 0 | `maxPriorityFee + 0.5 gwei` | あり（事後検査） |
-| `economicGas: true`（ADR 0011） | `defaultPriorityFee`（価格確定は storage 書き込みなので front-run の的が消える） | 同左 | 上限は**なし**（自由入札）。maxFeePerGas ≤ tip は残る（[03 §3.1.6](03-market.md)） |
+| プロファイル | oracle / PriceFeed | keeper | 環境のイベント取引（launch の波・depeg・引き抜き） | 上限強制 |
+|---|---|---|---|---|
+| `economicGas: true`（ADR 0011。**公式 12 レジームと練習期間の既定**） | storage 直書き（PriceFeed・Aave・GMX）。block pass が段取りし、`GatedMiner` が書いてから掘る（`core/src/realtime/gatedMiner.ts`） | 50 gwei 固定（`ECONOMIC_KEEPER_FEE_WEI`。順序ではなくブロックから締め出されないため） | 先回りの価値 V の乱数倍（`core/src/realtime/envBid.ts`） | 上限は**なし**（自由入札）。maxFeePerGas ≤ tip は残る（[03 §3.1.6](03-market.md)） |
+| `economicGas: false`（ADR 0010、Superseded） | `maxPriorityFee + 1 gwei` → `--order fees` で txIndex 0 | `maxPriorityFee + 0.5 gwei` | oracle と同じ | あり（事後検査） |
 
 ## 2.3 時間の扱い
 

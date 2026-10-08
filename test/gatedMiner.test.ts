@@ -11,6 +11,10 @@ function harness(
     gateTimeoutMs?: number;
     // Throw on these mine calls (1-based), to stand in for an RPC failure.
     failMines?: Set<number>;
+    // Stage the start head before the miner starts, as the first pass does. Off to test the wait.
+    primed?: boolean;
+    // A chain head that moved without the miner (a mine that landed after its timeout, a resume).
+    chainHead?: () => number;
   } = {},
 ) {
   let t = 0;
@@ -40,7 +44,11 @@ function harness(
     },
     onGateTimeout: (info) => timeouts.push(info),
     onMineError: ({ error }) => errors.push(String(error)),
+    ...(opts.chainHead
+      ? { readHead: async () => Math.max(head, opts.chainHead!()) }
+      : {}),
   });
+  if (opts.primed !== false) miner.stage(100, async () => {});
   return {
     miner,
     log,
@@ -194,4 +202,30 @@ test("halt stops mining at once; stop still flushes the last stage", async () =>
   });
   await h.miner.stop();
   assert.deepEqual(h.log, ["mine 101 @2000", "write for 101"]);
+});
+
+test("the first block waits for the first pass, like every other", async () => {
+  const h = harness({ primed: false });
+  h.miner.start();
+  await until(() => h.now() >= 3_000);
+  assert.equal(h.log.length, 0, "no block before the first pass staged");
+  h.miner.stage(100, async () => {
+    h.log.push("write for 100");
+  });
+  await until(() => h.log.length === 2);
+  await h.miner.stop();
+  assert.equal(h.log[0], "write for 100");
+  assert.match(h.log[1], /^mine 101 @/);
+  assert.equal(h.timeouts.length, 0);
+});
+
+test("a head that moved without the miner is gated on, not skipped", async () => {
+  // The chain is at 105 (say a mine that timed out here landed anyway); the miner thought 100.
+  const h = harness({ chainHead: () => 105 });
+  h.miner.start();
+  await until(() => h.now() >= 3_000);
+  assert.equal(h.log.length, 0, "105's prices are not staged, so nothing is mined");
+  h.miner.stage(105, async () => {});
+  await until(() => h.log.length === 1);
+  await h.miner.stop();
 });

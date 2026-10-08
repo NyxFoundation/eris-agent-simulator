@@ -20,10 +20,16 @@ export type GatedMinerOptions = {
   blockTimeMs: number;
   // How long a tick waits for the head block's prices before mining without them.
   gateTimeoutMs: number;
-  // The chain head the miner starts from. Its prices are the ones setup already wrote.
+  // The chain head the miner starts from. The first block waits for the first pass's stage like
+  // every other: setup's prices are not a stage, and a resume starts on a catch-up pass.
   startHead: number;
   // Mine one block; resolves to the new head.
   mine: () => Promise<number>;
+  // The chain's head, read before each gate. `mine` is not the only way the head moves -- a mine
+  // that timed out here can still land, a head read after a successful mine can fail, and a resumed
+  // period's setup mines blocks -- and a head the miner does not know about is a gate it skips: the
+  // next block would go out before the pass for the real head staged.
+  readHead?: () => Promise<number>;
   // A mine that has not answered in this long is given up on and retried at the next tick, so a hung
   // RPC cannot hold the chain (or the teardown, which waits for the loop) forever. Default 10 blocks.
   mineTimeoutMs?: number;
@@ -74,7 +80,7 @@ export class GatedMiner {
     };
     this.head = opts.startHead;
     this.staged = {
-      forBlock: opts.startHead,
+      forBlock: opts.startHead - 1,
       apply: async () => {},
       applied: true,
     };
@@ -187,6 +193,13 @@ export class GatedMiner {
         Math.max(onSchedule, lastMine + blockTimeMs * MIN_GAP_FRACTION),
       );
       if (this.stopped) break;
+      if (this.opts.readHead) {
+        try {
+          this.head = Math.max(this.head, await this.opts.readHead());
+        } catch {
+          // The gate runs on the head it knows; the next tick reads again.
+        }
+      }
 
       const gateStart = now();
       while (

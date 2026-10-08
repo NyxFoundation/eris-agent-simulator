@@ -734,7 +734,7 @@ async function sendSwap(
         usdDecimals: TOKENS.USDC.decimals,
         usdSide: kind === "buy" ? "in" : "out",
       }),
-      gas: GAS_SWAP,
+      gasLimit: GAS_SWAP,
       ethUsd: opts.bid.ethUsd,
       balanceWei: await ctx.publicClient.getBalance({ address: account.address }),
     });

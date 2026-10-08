@@ -376,7 +376,7 @@ export async function reconcileLiquidityPull(
                     seededDepth: pos.seededShare,
                   })
                 : 0,
-            gas: RECONCILE_GAS,
+            gasLimit: RECONCILE_GAS,
             ethUsd: opts.bid.ethUsd,
             balanceWei: await ctx.publicClient.getBalance({ address: runtime.owner }),
           })

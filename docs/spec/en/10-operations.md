@@ -173,7 +173,7 @@ The endpoint, chain id and the fork's `FIRST_BLOCK` live in `infra/blockscout/ex
 | No arguments | A post-hoc inspection of `blocks.csv` |
 | `--live` | **Bids against the chain to measure it** (the load-bearing assumption of #35) |
 
-The default profile stacks the oracle above every agent to pin it at txIndex 0, so **on a chain that does not honour fee ordering the environment's price becomes front-runnable**.
+The `economicGas: false` profile stacks the oracle above every agent to pin it at txIndex 0 (under economicGas prices are storage writes), so **on a chain that does not honour fee ordering the environment's price becomes front-runnable**.
 
 **The bids are sent in ascending order**, so arrival order and fee order disagree. A builder that merely preserves arrival order passes a descending probe and fails this one. The ascending probe signs maxFeePerGas = tip, so it measures fee order and nothing else.
 

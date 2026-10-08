@@ -307,7 +307,9 @@ export function buildManifest(opts: {
         "No per-order size cap, no bundle-length cap and no open-position cap on any venue. A " +
         "trade is bounded by your balance and by the depth you are trading into.",
       defaultPriorityFeeWei: config.defaultPriorityFeeWei.toString(),
-      maxPriorityFeeWei: config.maxPriorityFeeWei.toString(),
+      // "none" under economicGas (ADR 0011): the cap is retired, and the number still in the config
+      // (fees.maxPriorityFeeWei, 5 gwei) would read as one to a self-signer.
+      maxPriorityFeeWei: config.economicGas ? "none" : config.maxPriorityFeeWei.toString(),
       // For whoever signs their own transactions (sdk/src/feeRule.ts). The node orders the block on
       // maxFeePerGas while a tx pays min(maxFeePerGas, tip) at base fee 0, so this is the one rule a
       // self-signer can break without noticing -- stated here, where the cap it goes with is.

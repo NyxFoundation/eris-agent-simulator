@@ -262,7 +262,7 @@ export async function reconcileStableDepeg(
     const bid = opts.bid
       ? opts.bid.bidder.bid({
           valueUsd: call.valueUsd,
-          gas: DEPEG_GAS,
+          gasLimit: DEPEG_GAS,
           ethUsd: opts.bid.ethUsd,
           balanceWei: await ctx.publicClient.getBalance({ address: runtime.actor }),
         })

@@ -74,3 +74,20 @@ test("a directory without a manifest, or a file that is not one, is refused", ()
   );
   assert.throws(() => readRunManifest(empty), /not an environment manifest/);
 });
+
+test("the manifest publishes no fee cap under economicGas, and the cap under the capped profile", () => {
+  // ADR 0011: the config keeps fees.maxPriorityFeeWei (5 gwei), which is not a cap once economicGas
+  // retires it -- published as a number, a self-signer would read it as one.
+  const build = (economicGas: string) =>
+    buildManifest({
+      config: {
+        ...loadConfig({ ENABLED_PROTOCOLS: "uniswap", ERIS_ECONOMIC_GAS: economicGas }),
+        stressEvents: [],
+        vulnEvents: [],
+      },
+      priceFeed: "0x2222222222222222222222222222222222222222",
+      participants: [],
+    } as Parameters<typeof buildManifest>[0]);
+  assert.equal(build("1").limits.maxPriorityFeeWei, "none");
+  assert.equal(build("0").limits.maxPriorityFeeWei, "5000000000");
+});
