@@ -30,7 +30,7 @@ import type { RunLogger } from "../logger.js";
 import { tokenInfoByAddress } from "@eris/sdk/markets.js";
 import {
   DEPEG_SLIPPAGE_BPS as ENV_DEPEG_SLIPPAGE_BPS,
-  FRONT_RUN_GAS,
+  FLAT_FEE_MEDIAN_WEI,
   impactValueUsd,
   probeAmount,
   type DeferredSend,
@@ -273,14 +273,10 @@ export async function reconcileStableDepeg(
         ? await buildSell(ctx, runtime, delta, slippageBps)
         : await buildBuyBack(ctx, runtime, delta, slippageBps);
     if (!call) return [];
+    // An ordinary seller's fee (ADR 0011 §1c): the trade is protected by its slippage limit, not
+    // by outbidding whoever might get ahead of it. Its impact (V) is recorded, not bid.
     const bid = opts.bid
-      ? opts.bid.bidder.bid({
-          valueUsd: call.valueUsd,
-          frontRunGas: FRONT_RUN_GAS.curve,
-          gasLimit: DEPEG_GAS,
-          ethUsd: opts.bid.ethUsd,
-          balanceWei: await ctx.publicClient.getBalance({ address: runtime.actor }),
-        })
+      ? { ...opts.bid.bidder.flatBid(FLAT_FEE_MEDIAN_WEI), valueUsd: call.valueUsd }
       : null;
     const priorityFeeWei = bid?.priorityFeeWei ?? opts.priorityFeeWei;
     const send = async (): Promise<Hex | null> => {
@@ -321,8 +317,6 @@ export async function reconcileStableDepeg(
         ? {
             priorityFeeWei: bid.priorityFeeWei.toString(),
             frontRunValueUsd: Number(bid.valueUsd.toFixed(4)),
-            bidFraction: Number(bid.u.toFixed(4)),
-            ...(bid.balanceCapped ? { bidBalanceCapped: true } : {}),
           }
         : {}),
       });

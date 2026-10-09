@@ -3476,7 +3476,7 @@ export async function runRealtimeSimulation(
         bidder = new EnvBidder(rng, config.defaultPriorityFeeWei);
         envBidders.set(stream, bidder);
       }
-      return { bidder, ethUsd: latestFairPrice };
+      return { bidder };
     };
 
     // ---- start the competition phase: switch to interval mining every N real seconds ----

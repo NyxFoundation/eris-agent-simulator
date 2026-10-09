@@ -154,7 +154,7 @@
 
 | プロファイル | oracle / PriceFeed | keeper | 環境のイベント取引（launch の波・depeg・引き抜き） | 上限強制 |
 |---|---|---|---|---|
-| `economicGas: true`（ADR 0011。**公式 12 レジームと練習期間の既定**） | storage 直書き（PriceFeed・Aave・GMX）。block pass が段取りし、`GatedMiner` が書いてから掘る（`core/src/realtime/gatedMiner.ts`） | 50 gwei 固定（`ECONOMIC_KEEPER_FEE_WEI`。順序ではなくブロックから締め出されないため） | 先回りの価値 V の乱数倍（`core/src/realtime/envBid.ts`） | 上限は**なし**（自由入札）。maxFeePerGas ≤ tip は残る（[03 §3.1.6](03-market.md)） |
+| `economicGas: true`（ADR 0011。**公式 12 レジームと練習期間の既定**） | storage 直書き（PriceFeed・Aave・GMX）。block pass が段取りし、`GatedMiner` が書いてから掘る（`core/src/realtime/gatedMiner.ts`） | 50 gwei 固定（`ECONOMIC_KEEPER_FEE_WEI`。順序ではなくブロックから締め出されないため） | 普通の手数料（中央値 1.4 gwei）+ slippage の許容幅（`core/src/realtime/envBid.ts`、ADR 0011 §1c） | 上限は**なし**（自由入札）。maxFeePerGas ≤ tip は残る（[03 §3.1.6](03-market.md)） |
 | `economicGas: false`（ADR 0010、Superseded） | `maxPriorityFee + 1 gwei` → `--order fees` で txIndex 0 | `maxPriorityFee + 0.5 gwei` | oracle と同じ | あり（事後検査） |
 
 ## 2.3 時間の扱い

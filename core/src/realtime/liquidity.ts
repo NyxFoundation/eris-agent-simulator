@@ -435,8 +435,6 @@ export async function reconcileLiquidityPull(
           ? {
               priorityFeeWei: bid.priorityFeeWei.toString(),
               frontRunValueUsd: Number(bid.valueUsd.toFixed(4)),
-              bidFraction: Number(bid.u.toFixed(4)),
-              ...(bid.balanceCapped ? { bidBalanceCapped: true } : {}),
             }
           : {}),
         });
