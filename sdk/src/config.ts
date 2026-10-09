@@ -354,6 +354,12 @@ export type SimConfig = {
   // aaveFlowActorSizeSigma: >0 makes each Aave actor's target collateral lognormal-heterogeneous (whale/minnow. default 1.0).
   gmxFlowArrivalRate: number;
   gmxFlowSizeSigma: number;
+  // The share of each side's open-interest cap the GMX flow wallet may hold in the WETH market
+  // (0..1, default 0.4). Past it, an order drawn for that side closes instead of opening. 0 = never
+  // close (the flow before this knob). The flow only opened, so over a practice day its positions
+  // reached the reserve cap on both sides and every agent's increase was refused. A 360-block
+  // epoch opens about a sixth of the target, so the official regimes never reach it.
+  gmxFlowOiTargetFrac: number;
   aaveFlowActorSizeSigma: number;
   // ADR 0013: per-leg AMM flow cap for non-WETH bases (base units). Empty/0 default = WBTC flow off.
   baseFlowMax: Record<string, bigint>;
@@ -640,6 +646,10 @@ export function loadConfig(env = process.env): SimConfig {
     // Extends amm-challenge retail to GMX/Aave (default on. 0 reverts to legacy behavior).
     gmxFlowArrivalRate: Math.max(0, floatEnv(env.ERIS_GMX_ARRIVAL_RATE, 0.75)),
     gmxFlowSizeSigma: Math.max(0, floatEnv(env.ERIS_GMX_SIZE_SIGMA, 1)),
+    gmxFlowOiTargetFrac: Math.min(
+      1,
+      Math.max(0, floatEnv(env.ERIS_GMX_FLOW_OI_TARGET_FRAC, 0.4)),
+    ),
     aaveFlowActorSizeSigma: Math.max(
       0,
       floatEnv(env.ERIS_AAVE_ACTOR_SIZE_SIGMA, 1),
