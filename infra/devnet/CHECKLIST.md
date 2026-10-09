@@ -53,7 +53,7 @@ box 上のリポジトリのルート（本番は `~/workspace/eris-agent-simula
 ```sh
 # 期間ディレクトリ（current-segment を持つ最新の runs/<id>）と、今のセグメント
 P=$(for d in $(ls -td runs/*/); do [ -f "$d/current-segment" ] && { echo "${d%/}"; break; }; done)
-S="$P/$(cat "$P/current-segment")"
+S=$(cat "$P/current-segment")   # リポジトリのルートからのパス（runs/<id>/<segment>）が入っている
 
 # 環境の失敗: 1 行も出なければ合格
 envfail() { sed -nE 's/^\{"ts":"[^"]*","type":"([a-z0-9_]+)".*/\1/p' "$@" \
@@ -150,7 +150,7 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
   ```
 - [ ] `config/registrations.yaml` に、開始時に登録する 6 体（上の表）を書く。形は
   [config/registrations.example.yaml](../../config/registrations.example.yaml)
-- [ ] 前提 2 つを測る（agent を繋ぐ前に。[practice-devnet](../../docs/guide/practice-devnet.md#running-a-period)）:
+- [ ] 前提 2 つを測る（coordinator を起動してブロックが進んでから、agent を繋ぐ前に。compose の anvil は自分では採掘しない。[practice-devnet](../../docs/guide/practice-devnet.md#running-a-period)）:
   `npm run check:ordering -- --live --rounds 5` / `npm run stress:rpc -- --agents 30 --seconds 60 --write`
   → 記録: 両方の結果
 
