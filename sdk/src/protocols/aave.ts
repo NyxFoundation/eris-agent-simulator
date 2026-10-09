@@ -321,7 +321,11 @@ async function reserveLastUpdate(
 // underflows the uint (panic 0x11), so getUserAccountData / getReserveData revert
 // and the whole sim crashes on the first observe.
 // Fix: read the lastUpdateTimestamp of the WETH/USDC reserves we use, and if block.timestamp is
-// at or below it (dt<=0), advance EVM time until it exceeds it. This keeps Aave reads during the
+// below it (dt<0), advance EVM time past it. dt == 0 is not the hazard: Aave's ReserveLogic
+// returns early when the reserve was updated in the current second, and anvil's automine during
+// setup puts several blocks in one second. Warping on equality moved the practice chain an hour
+// forward in one block (block 45262 -> 45263, +3600s exactly, in the middle of the period: setup on
+// a running chain touches the reserves in the head's second). This keeps Aave reads during the
 // round loop always at dt>0, so aave strategies can be evaluated over long runs (without intermittent crashes).
 // If resetFork does a re-fork with forking, block.timestamp is normally after lastUpdate so this
 // does not fire, but depending on the fork block the order can rarely invert, so we keep it as a guard.
@@ -344,6 +348,12 @@ const AAVE_WARP_BUFFER_SECONDS = 3600n; // 1h. Margin to keep dt>0 stable when i
 // crisis-level rate on top of failing. That is a change to the environment's economics, not just to
 // its capacity.
 const LOCAL_FLASH_LIQUIDITY_USDC_UNITS = 2_000_000n * 10n ** 6n;
+/** Seconds to warp so no reserve's lastUpdateTimestamp is ahead of the clock; 0 when none is. */
+export function aaveReserveWarpSeconds(maxLastUpdate: bigint, now: bigint): number {
+  if (now >= maxLastUpdate) return 0;
+  return Number(maxLastUpdate - now + AAVE_WARP_BUFFER_SECONDS);
+}
+
 async function warpPastReserveLastUpdate(ctx: SimContext): Promise<void> {
   // Issue #33 (4): the warp is a fork artifact. A reserve's lastUpdateTimestamp can only sit ahead
   // of block.timestamp because anvil pinned a fork block whose clock predates the state it copied;
@@ -359,11 +369,9 @@ async function warpPastReserveLastUpdate(ctx: SimContext): Promise<void> {
   );
   const maxUpdate = updates.reduce((m, u) => (u > m ? u : m), 0n);
   const now = (await ctx.publicClient.getBlock()).timestamp;
-  if (now > maxUpdate) return; // dt>0 already (healthy fork block) -> nothing to do
-  await increaseTime(
-    ctx.publicClient,
-    Number(maxUpdate - now + AAVE_WARP_BUFFER_SECONDS),
-  );
+  const seconds = aaveReserveWarpSeconds(maxUpdate, now);
+  if (seconds === 0) return; // dt>=0 already -> nothing to do
+  await increaseTime(ctx.publicClient, seconds);
   await mine(ctx.publicClient);
 }
 
