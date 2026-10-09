@@ -273,13 +273,38 @@ let bodyDenied = 0;
 // so it costs one upstream receipt lookup. Failure to look up seals (fail closed).
 const TX_BY_HASH_METHODS = new Set(["eth_getTransactionByHash", "eth_getRawTransactionByHash"]);
 let pendingSealed = 0;
+let dupIdDenied = 0;
+
+// The seal matches each reply to its call by id, so a batch in which a read by hash shares its id
+// with another member made it judge one reply by the other call: a raw reply checked as an object
+// read, or an unmined hash checked by a mined hash's receipt, and the unmined transaction went out
+// unsealed. Such a batch is refused before it reaches the node (the id of the first collision, or
+// null). Only a read by hash takes part: a batch of other calls under one id is the client's own
+// business and never passes through the seal. Ids compare as the seal keys them, so 1 and "1" are
+// one id, and a missing id is the same as null.
+const idKey = (c) => String(c.id ?? null);
+function sharedTxByHashId(parsed) {
+  if (!Array.isArray(parsed)) return null;
+  const counts = new Map();
+  for (const c of parsed) if (c && typeof c === "object") counts.set(idKey(c), (counts.get(idKey(c)) || 0) + 1);
+  for (const c of parsed) if (c && TX_BY_HASH_METHODS.has(c.method) && counts.get(idKey(c)) > 1) return idKey(c);
+  return null;
+}
 
 // Rewrites the upstream reply for the tx-by-hash calls in `parsed`, then hands the body to `cb`.
 // Untouched bodies are passed through as received, so nothing else is re-serialized.
 function sealPending(parsed, upBody, cb) {
   const calls = Array.isArray(parsed) ? parsed : [parsed];
   const byId = new Map();
-  for (const c of calls) if (c && TX_BY_HASH_METHODS.has(c.method)) byId.set(String(c.id), c);
+  // A reply whose id two calls claim cannot be told apart, so it is sealed rather than judged
+  // (`handle` refuses such a batch first; this keeps the seal closed if that check ever misses).
+  const AMBIGUOUS = {};
+  const members = calls.filter((c) => c && typeof c === "object");
+  const counts = new Map();
+  for (const c of members) counts.set(idKey(c), (counts.get(idKey(c)) || 0) + 1);
+  for (const c of members) {
+    if (TX_BY_HASH_METHODS.has(c.method)) byId.set(idKey(c), counts.get(idKey(c)) > 1 ? AMBIGUOUS : c);
+  }
   if (byId.size === 0) return cb(upBody);
   let reply;
   try { reply = JSON.parse(upBody.toString("utf8")); } catch { return cb(upBody); }
@@ -288,8 +313,9 @@ function sealPending(parsed, upBody, cb) {
   const lookups = [];
   for (const r of responses) {
     if (!r || r.result === null || r.result === undefined) continue;
-    const c = byId.get(String(r.id));
+    const c = byId.get(idKey(r));
     if (!c) continue;
+    if (c === AMBIGUOUS) { r.result = null; changed = true; pendingSealed++; continue; }
     if (c.method === "eth_getTransactionByHash") {
       if (typeof r.result === "object" && r.result.blockNumber === null) { r.result = null; changed = true; pendingSealed++; }
       continue;
@@ -378,6 +404,7 @@ function metricsText() {
   o += `# TYPE rpc_params_denied_total counter\nrpc_params_denied_total{${L}} ${paramsDenied}\n`;
   o += `# TYPE rpc_body_denied_total counter\nrpc_body_denied_total{${L}} ${bodyDenied}\n`;
   o += `# TYPE rpc_pending_sealed_total counter\nrpc_pending_sealed_total{${L}} ${pendingSealed}\n`;
+  o += `# TYPE rpc_dup_id_denied_total counter\nrpc_dup_id_denied_total{${L}} ${dupIdDenied}\n`;
   o += `# TYPE rpc_key_denied_total counter\nrpc_key_denied_total{${L}} ${keyDenied}\n`;
   o += `# TYPE rpc_keys_loaded gauge\nrpc_keys_loaded{${L}} ${keyMap.size}\n`;
   return o;
@@ -499,6 +526,16 @@ function handle(req, res, chunks) {
     // An omitted block parameter that the node would read as pending becomes "latest" (above).
     // Re-serialized only when something changed, so every other body is forwarded byte for byte.
     if (calls.map(defaultBlockTag).some(Boolean)) bodyBuf = Buffer.from(JSON.stringify(parsed));
+  }
+
+  // a read by hash sharing its id within a batch -> refuse; the seal could not tell its reply apart
+  const sharedId = sharedTxByHashId(parsed);
+  if (sharedId !== null) {
+    dupIdDenied++;
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, status: "dup_id_denied", id: sharedId, client, ip });
+    res.writeHead(400, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ jsonrpc: "2.0", id: null,
+      error: { code: -32600, message: `batch members share id ${sharedId}; a transaction read by hash needs an id of its own` } }));
   }
 
   // per-tx gas cap (issue #40 T0) -> refuse before the transaction can starve a block
