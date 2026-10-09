@@ -75,6 +75,17 @@ const SCHEDULE_HEAD_BYTES = 4 * 1024 * 1024;
 // in memory at once. The client keeps polling with the returned offset until it catches up.
 const TAIL_CHUNK_BYTES = 4 * 1024 * 1024;
 
+// A byte count from the query string, as a whole number fs will take. `?offset=0.5` reached
+// createReadStream as `start: 0.5`, which throws synchronously inside the stat callback -- nothing
+// caught it, so one unauthenticated request took the whole server down, audience mode included.
+// Not-a-number is "absent" (the caller's fallback); everything else is floored and clamped.
+export function queryByteCount(raw: string | null, fallback: number): number {
+  if (raw === null) return fallback;
+  const n = Math.floor(Number(raw));
+  if (Number.isNaN(n)) return fallback;
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, n));
+}
+
 // The index walks runs/ with a stat per directory. One viewer polling it is nothing; an audience
 // polling it every few seconds is the same walk repeated for the same answer, so it is held for a
 // moment. Short enough that a run appearing or going live shows up within a poll interval.
@@ -1202,14 +1213,14 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
         return true;
       }
       const params = new URLSearchParams(query ?? "");
-      const offset = Math.max(0, Number(params.get("offset") ?? 0) || 0);
+      const offset = queryByteCount(params.get("offset"), 0);
       // An explicit cap, for readers that only want the head of a file. The run-start and
       // stress-schedule events are written before the first block, so they sit in the first few KB
       // of events.jsonl — reading 128KB of each of a matrix's 35 scenarios costs 4MB where reading
       // the files costs 102MB, for exactly the same answer.
       const limit = Math.min(
         TAIL_CHUNK_BYTES,
-        Math.max(1, Number(params.get("limit") ?? 0) || TAIL_CHUNK_BYTES),
+        Math.max(1, queryByteCount(params.get("limit"), 0) || TAIL_CHUNK_BYTES),
       );
       const redactEvents =
         mode.audience && path.basename(file) === "events.jsonl";
@@ -1231,68 +1242,85 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
         }
         const end = Math.min(stat.size, start + limit) - 1;
         const chunks: Buffer[] = [];
-        fs.createReadStream(file, { start, end })
-          .on("data", (c) => chunks.push(c as Buffer))
-          .on("end", () => {
-            const raw = Buffer.concat(chunks);
-            if (!redactEvents && !redactBlocks) {
-              res.end(
-                JSON.stringify({ offset: end + 1, text: raw.toString("utf8") }),
-              );
-              return;
-            }
-            // Whole lines only: a line cut mid-way cannot be inspected, and half of a schedule is
-            // still a schedule. The client polls again from the returned offset.
-            const cut = raw.lastIndexOf(0x0a);
-            if (cut < 0) {
-              res.end(JSON.stringify({ offset: start, text: "" }));
-              return;
-            }
-            if (redactBlocks) {
-              const rows = raw.subarray(0, cut).toString("utf8").split("\n");
-              res.end(
-                JSON.stringify({
-                  offset: start + cut + 1,
-                  text: `${rows.map(redactBlocks).join("\n")}\n`,
-                }),
-              );
-              return;
-            }
-            const policy = schedulePolicyOf(file);
-            const cursor: RedactionCursor = {
-              lastBlock: null,
-              lookback: () => headBlockBefore(file, start),
-            };
-            const kept: string[] = [];
-            // Walked by byte offset, so that a held line can be the next request's start: the tail
-            // stops in front of it (and of everything after it -- the stream is ordered) and the
-            // client asks again from there. Skipping it instead would lose it for good.
-            let next = start + cut + 1;
-            let from = 0;
-            while (from < cut) {
-              const nl = raw.indexOf(0x0a, from);
-              const stop = nl < 0 || nl > cut ? cut : nl;
-              const line = raw.subarray(from, stop).toString("utf8");
-              if (line.trim()) {
-                const out = redactEvent(line, policy, cursor);
-                if (out === HOLD) {
-                  next = start + from;
-                  break;
-                }
-                if (out !== null) kept.push(out);
-              }
-              from = stop + 1;
-            }
+        // A throw here is in a callback, out of reach of the request handler's caller: answer with
+        // an empty chunk at the same offset rather than let it end the process.
+        const failed = () => {
+          if (!res.writableEnded) res.end(JSON.stringify({ offset: start, text: "" }));
+        };
+        const finish = () => {
+          const raw = Buffer.concat(chunks);
+          if (!redactEvents && !redactBlocks) {
+            res.end(
+              JSON.stringify({ offset: end + 1, text: raw.toString("utf8") }),
+            );
+            return;
+          }
+          // Whole lines only: a line cut mid-way cannot be inspected, and half of a schedule is
+          // still a schedule. The client polls again from the returned offset.
+          const cut = raw.lastIndexOf(0x0a);
+          if (cut < 0) {
+            res.end(JSON.stringify({ offset: start, text: "" }));
+            return;
+          }
+          if (redactBlocks) {
+            const rows = raw.subarray(0, cut).toString("utf8").split("\n");
             res.end(
               JSON.stringify({
-                offset: next,
-                text: kept.length > 0 ? `${kept.join("\n")}\n` : "",
+                offset: start + cut + 1,
+                text: `${rows.map(redactBlocks).join("\n")}\n`,
               }),
             );
+            return;
+          }
+          const policy = schedulePolicyOf(file);
+          const cursor: RedactionCursor = {
+            lastBlock: null,
+            lookback: () => headBlockBefore(file, start),
+          };
+          const kept: string[] = [];
+          // Walked by byte offset, so that a held line can be the next request's start: the tail
+          // stops in front of it (and of everything after it -- the stream is ordered) and the
+          // client asks again from there. Skipping it instead would lose it for good.
+          let next = start + cut + 1;
+          let from = 0;
+          while (from < cut) {
+            const nl = raw.indexOf(0x0a, from);
+            const stop = nl < 0 || nl > cut ? cut : nl;
+            const line = raw.subarray(from, stop).toString("utf8");
+            if (line.trim()) {
+              const out = redactEvent(line, policy, cursor);
+              if (out === HOLD) {
+                next = start + from;
+                break;
+              }
+              if (out !== null) kept.push(out);
+            }
+            from = stop + 1;
+          }
+          res.end(
+            JSON.stringify({
+              offset: next,
+              text: kept.length > 0 ? `${kept.join("\n")}\n` : "",
+            }),
+          );
+        };
+        let stream: fs.ReadStream;
+        try {
+          stream = fs.createReadStream(file, { start, end });
+        } catch {
+          failed();
+          return;
+        }
+        stream
+          .on("data", (c) => chunks.push(c as Buffer))
+          .on("end", () => {
+            try {
+              finish();
+            } catch {
+              failed();
+            }
           })
-          .on("error", () => {
-            res.end(JSON.stringify({ offset: start, text: "" }));
-          });
+          .on("error", failed);
       });
       return true;
     }
