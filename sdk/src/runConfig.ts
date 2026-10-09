@@ -173,6 +173,9 @@ const SCHEMA: Record<string, string> = {
   "flow.uninformedSizeClampMult": "ERIS_UNINFORMED_SIZE_CLAMP_MULT",
   "flow.gmxArrivalRate": "ERIS_GMX_ARRIVAL_RATE",
   "flow.gmxSizeSigma": "ERIS_GMX_SIZE_SIGMA",
+  // The GMX flow wallet's ceiling, as a share of each side's open-interest cap (default 0.4, 0 = the
+  // flow never closes). Long runs only: a 360-block epoch does not reach it.
+  "flow.gmxOiTargetFrac": "ERIS_GMX_FLOW_OI_TARGET_FRAC",
   "flow.aaveActorSizeSigma": "ERIS_AAVE_ACTOR_SIZE_SIGMA",
   "flow.seed": "FLOW_SEED",
   // Issue #130: top the flow wallets back up every N blocks (0 = never, the default -- the official

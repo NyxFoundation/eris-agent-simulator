@@ -12,6 +12,7 @@ import { FlowProcess, type FlowOrderWire } from "./flowProcess.js";
 import type { FlowTrendOverride } from "./realtime/events.js";
 import type { FlowContextWire } from "./flow/logic.js";
 import { readAaveFlowReserves } from "@eris/sdk/protocols/aave.js";
+import { readGmxFlowExposure } from "@eris/sdk/protocols/gmx.js";
 import { stableBalanceOf, TOKENS } from "@eris/sdk/constants.js";
 
 // The stable a venue actually trades against. usdcUnits used to be every stable summed, which was a
@@ -82,7 +83,11 @@ export async function buildFlowContext(
       kind,
     })),
   );
-  const [aaveActorReads, flowWalletBalances] = await Promise.all([
+  // The GMX flow's own book, for its OI target. Read only when the target is on, so a run with it
+  // off reads what it always did.
+  const readGmxExposure =
+    enabledIds.includes("gmx") && ctx.config.gmxFlowOiTargetFrac > 0;
+  const [aaveActorReads, flowWalletBalances, gmxExposure] = await Promise.all([
     Promise.all(
       aaveActorKeys.map(async (key) => {
         const wallet = ctx.flowWalletByKey(key);
@@ -98,6 +103,13 @@ export async function buildFlowContext(
         getBalances(ctx.publicClient, ctx.flowWallet(protocol, kind).address),
       ),
     ),
+    readGmxExposure
+      ? readGmxFlowExposure(
+          ctx,
+          ctx.flowWallet("gmx", "uninformed").address,
+          fairPrice,
+        )
+      : Promise.resolve(undefined),
   ]);
   const aaveActors: FlowContextWire["aaveActors"] = enabledIds.includes("aave")
     ? aaveActorReads.map(({ key, reserves, balances }) => ({
@@ -185,6 +197,18 @@ export async function buildFlowContext(
     usdcOnlyFlow:
       ctx.config.initialWethWei === 0n && ctx.config.flowWethWei === 0n,
     ...(extraBases.length > 0 ? { extraBases } : {}),
+    ...(gmxExposure
+      ? {
+          gmxFlowExposure: {
+            longSizeUsd: gmxExposure.long.sizeUsd.toString(),
+            longCollateralWei: gmxExposure.long.collateralWei.toString(),
+            shortSizeUsd: gmxExposure.short.sizeUsd.toString(),
+            shortCollateralWei: gmxExposure.short.collateralWei.toString(),
+            longCapUsd: gmxExposure.longCapUsd.toString(),
+            shortCapUsd: gmxExposure.shortCapUsd.toString(),
+          },
+        }
+      : {}),
     limits: {
       // The three uninformed-flow knobs are the ones a flowTrend episode leans on: how big the
       // orders are, how long a direction is held, and whether the venues lean together. The bot
@@ -228,6 +252,7 @@ export async function buildFlowContext(
       uninformedSizeClampMult: String(ctx.config.uninformedFlowSizeClampMult),
       gmxArrivalRate: String(ctx.config.gmxFlowArrivalRate),
       gmxSizeSigma: String(ctx.config.gmxFlowSizeSigma),
+      gmxOiTargetFrac: String(ctx.config.gmxFlowOiTargetFrac),
       aaveActorSizeSigma: String(ctx.config.aaveFlowActorSizeSigma),
       defaultPriorityFeeWei: ctx.config.defaultPriorityFeeWei.toString(),
     },

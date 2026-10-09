@@ -27,8 +27,13 @@ import {
   gmxFundingFeeAmountPerSizeKey,
   gmxFundingFields,
   gmxFundingIncreaseFactorKey,
+  gmxMaxOpenInterestKey,
   gmxOpenInterestKey,
+  gmxOpenInterestReserveFactorKey,
+  gmxPoolAmountKey,
+  gmxReserveFactorKey,
   gmxSavedFundingKey,
+  gmxSideCapUsd,
   type GmxFundingFields,
 } from "./gmxKeys.js";
 import {
@@ -1568,6 +1573,111 @@ function positionExitValueUsd(
     value += (Number(amount) / 10 ** u.decimals) * u.usd;
   }
   return value;
+}
+
+/** One side of an account's WETH-collateral position in the ETH/USD market. */
+export type GmxSideExposure = { sizeUsd: bigint; collateralWei: bigint };
+
+/**
+ * The background flow's own ETH/USD book against what the market can carry (the flow's OI target).
+ *
+ * The flow opened perps and never closed them, so over a practice day its positions grew until
+ * both sides sat at the reserve cap and every agent's increase on either side was refused. The
+ * flow reads this to close instead of open once its side passes a share of the cap. USD at 30
+ * decimals; `undefined` when a read fails, which the flow treats as "no target" (the old flow)
+ * rather than as a full or an empty book.
+ */
+export type GmxFlowExposure = {
+  long: GmxSideExposure;
+  short: GmxSideExposure;
+  longCapUsd: bigint;
+  shortCapUsd: bigint;
+};
+
+export async function readGmxFlowExposure(
+  ctx: SimContext,
+  account: Address,
+  fairPrice: number,
+): Promise<GmxFlowExposure | undefined> {
+  const market = resolveGmxMarket(ctx, "WETH");
+  let props: MarketProps | undefined;
+  try {
+    props = (await resolveMarketProps(ctx.publicClient, [market])).get(
+      market.toLowerCase(),
+    );
+  } catch {
+    return undefined;
+  }
+  if (!props) return undefined;
+  const getUint = (key: Hex) => ({
+    address: GMX.DataStore,
+    abi: gmxDataStoreReadAbi,
+    functionName: "getUint",
+    args: [key],
+  });
+  const m = props.marketToken;
+  let results: Array<{ status: "success" | "failure"; result?: unknown }>;
+  try {
+    results = (await ctx.publicClient.multicall({
+      contracts: [
+        gmxAccountPositionsCall(account),
+        getUint(gmxPoolAmountKey(m, props.longToken)),
+        getUint(gmxPoolAmountKey(m, props.shortToken)),
+        ...[true, false].flatMap((isLong) => [
+          getUint(gmxReserveFactorKey(m, isLong)),
+          getUint(gmxOpenInterestReserveFactorKey(m, isLong)),
+          getUint(gmxMaxOpenInterestKey(m, isLong)),
+        ]),
+      ] as never,
+      allowFailure: true,
+    })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+  } catch {
+    return undefined;
+  }
+  const uint = (i: number): bigint | undefined => {
+    const r = results[i];
+    return r?.status === "success" && typeof r.result === "bigint"
+      ? r.result
+      : undefined;
+  };
+  if (results[0]?.status !== "success") return undefined;
+  const positions = results[0].result as readonly Position[];
+  const side = (isLong: boolean): GmxSideExposure => {
+    const out: GmxSideExposure = { sizeUsd: 0n, collateralWei: 0n };
+    for (const p of positions) {
+      if (
+        p.addresses.market.toLowerCase() !== market.toLowerCase() ||
+        p.addresses.collateralToken.toLowerCase() !==
+          props.longToken.toLowerCase() ||
+        p.flags.isLong !== isLong
+      )
+        continue;
+      out.sizeUsd += p.numbers.sizeInUsd;
+      out.collateralWei += p.numbers.collateralAmount;
+    }
+    return out;
+  };
+  const longToken = tokenInfoByAddress(props.longToken);
+  const shortToken = tokenInfoByAddress(props.shortToken);
+  if (!longToken || !shortToken) return undefined;
+  const longCapUsd = gmxSideCapUsd({
+    poolAmount: uint(1),
+    tokenPriceUsd: fairPrice,
+    tokenDecimals: longToken.decimals,
+    reserveFactor: uint(3),
+    openInterestReserveFactor: uint(4),
+    maxOpenInterest: uint(5),
+  });
+  const shortCapUsd = gmxSideCapUsd({
+    poolAmount: uint(2),
+    tokenPriceUsd: 1,
+    tokenDecimals: shortToken.decimals,
+    reserveFactor: uint(6),
+    openInterestReserveFactor: uint(7),
+    maxOpenInterest: uint(8),
+  });
+  if (longCapUsd === undefined || shortCapUsd === undefined) return undefined;
+  return { long: side(true), short: side(false), longCapUsd, shortCapUsd };
 }
 
 // ---------------------------------------------------------------------------

@@ -449,7 +449,11 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   上限は `setTimeout` の 32bit を超えて 1ms に化けていた（イベント無しの run が 0 ブロックで終了）→ `setLongTimeout`。
   ②**背景フローの財布は補充する**（`flow.topUpEveryBlocks`、練習は 300。公式は 0 = 1 回配り）。実測で
   1 財布の在庫が 1 日に元の数倍揺れ、合計価値は 1 日 1 割強減る。`flow_balances` / `flow_guard` /
-  `flow_wallet_topped_up` が記録。③**LST の利回りはチェーンの時計**（ADR 0028。旧既定 1 時間/ブロックだと 35 日が 170 年分で
+  `flow_wallet_topped_up` が記録。**GMX の flow は自分の建玉を cap の一定割合までに抑える**（`flow.gmxOiTargetFrac`、
+  既定 0.4、0 = 閉じない旧 flow。期間中も変更可）。以前は開くだけで、2026-10-08 開始の練習期間では WETH 市場の
+  両側が reserve 上限（プール価値 × 0.5）まで flow の建玉で埋まり、参加者はどちら向きにも開けなかった。目標を超えた側に
+  引いた注文は同じ乱数のまま close になる（担保は比例分）ので、**目標未満なら flow は乱数単位で以前と同一**。
+  360 ブロックのエポックは目標の 1/6 程度しか積まないので公式レジームでは発火しない。③**LST の利回りはチェーンの時計**（ADR 0028。旧既定 1 時間/ブロックだと 35 日が 170 年分で
   原資 50 WETH が 3.3 日で尽き、#129 で 30 秒/ブロックにしていた）。尽きたら観測の `apyBps` は 0、`lst_reward_reserve_exhausted`。
   ④**coordinator の送信記録は flush で消す**（`SubmittedLedger`。以前は 1 日 ~200MB 増えた。soak で 180MB 一定）。
   ⑤**練習チェーンの anvil は `--transaction-block-keeper 300 --prune-history 300`**。無いと全 tx（1 件 ~37KB、

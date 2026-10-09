@@ -123,6 +123,7 @@ const ENVIRONMENT_ONLY = new Set([
   "uninformedFlowSizeClampMult",
   "gmxFlowArrivalRate",
   "gmxFlowSizeSigma",
+  "gmxFlowOiTargetFrac",
   "aaveFlowActorSizeSigma",
   "baseFlowMax",
   "baseInformedFlowMax",
