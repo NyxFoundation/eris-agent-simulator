@@ -90,6 +90,7 @@ import { checkRevisedRawTx, rawTxAllowlist } from "./rawTxGuard.js";
 import { AgentStateStore, capBytesFromEnv, STATE_DIR_ENV } from "./state.js";
 import { preflightChain } from "./preflight.js";
 import { Reader } from "./read.js";
+import { type AccountMark, AccountValue } from "./accountValue.js";
 import { manifestRunOverrides } from "./runClock.js";
 import { readOnlyClient } from "./readOnlyClient.js";
 import { StrategyRunner } from "./strategyRunner.js";
@@ -445,6 +446,24 @@ async function main(): Promise<void> {
     // still wins when set -- env over the manifest, as for every other value it carries.
     ...(period && process.env.ERIS_RUN_BLOCKS === undefined ? { period } : {}),
   });
+  // Wallet plus every venue, for the revision context and the per-trade marks (issue #274). The
+  // observation's inventory.valueUsdc is the wallet alone. A venue whose read fails is said once,
+  // not every block: the valuation retries on the next block anyway.
+  const venueReadFailures = new Set<string>();
+  const accountValue = new AccountValue({
+    ctx: simCtx,
+    adapters,
+    address,
+    headBlock: () => publicClient.getBlockNumber({ cacheTime: 0 }),
+    onError: (block, venue, error) => {
+      if (venueReadFailures.has(venue)) return;
+      venueReadFailures.add(venue);
+      process.stderr.write(
+        `[bot] block ${block}: valuing the ${venue} position failed, so that block has no account ` +
+          `value (said once per venue): ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    },
+  });
 
   // ---- resolve the agent module (1 agent = 1 directory) ----
   // agent.ts is always the strategy (ADR 0015 §2). If prompt.md sits beside it, the same strategy
@@ -687,11 +706,31 @@ async function main(): Promise<void> {
       // the revision context reports, and the marked value each landed transaction is judged
       // against a few blocks later.
       marketHistory.push(snap.observation);
-      tradeLedger.mark(
-        bn,
-        snap.observation.inventory?.valueUsdc ?? null,
-        marketHistory.at(bn),
-      );
+      const sample = marketHistory.at(bn);
+      if (mode === "improve") {
+        // The value the model reads is wallet plus venues (issue #274), and the venue reads are kept
+        // off the trading path (accountValue.ts). Until they land, the block has no value rather than
+        // the wallet's: a series that mixes the two would show every posted collateral as a drop.
+        if (sample) sample.valueUsdc = null;
+        tradeLedger.mark(bn, null, sample);
+        void accountValue
+          .mark(bn, snap)
+          .then((mark) => {
+            if (!mark) return;
+            if (sample) sample.valueUsdc = mark.valueUsdc;
+            tradeLedger.mark(bn, mark.valueUsdc, sample);
+          })
+          .catch((error: unknown) =>
+            process.stderr.write(
+              `[bot] block ${bn} account valuation failed: ${error instanceof Error ? error.message : String(error)}\n`,
+            ),
+          );
+      } else
+        tradeLedger.mark(
+          bn,
+          snap.observation.inventory?.valueUsdc ?? null,
+          sample,
+        );
       // gas manager: after the observation is settled, check the ETH balance and if low enqueue a refill tx (every run).
       void sender.maybeRefillGas(
         bn,
@@ -936,26 +975,20 @@ async function main(): Promise<void> {
     // every cadence tick whether or not the call got through, so it is the wrong window to report
     // evidence over. Null means "everything so far", which is what the first revision gets.
     let lastRevisionAt: number | null = null;
-    // Value at the moment of the last revision, to judge whether that revision helped.
-    let valueAtRevision: number | null = null;
-    let initialValue: number | null = null;
-    // The sample the PnL baseline was taken from, so the do-nothing counterfactual on the same line
-    // starts from the same observation. The block loop's first sample can be dozens of blocks
-    // earlier (it runs before this loop subscribes), and a counterfactual from there against a PnL
-    // from here is a difference between two different starts.
-    let initialSample: MarketSample | null = null;
-    ctx.onObservation((obs) => {
-      const value = obs.inventory?.valueUsdc;
-      if (typeof value === "number" && initialValue === null) {
-        initialValue = value;
-        initialSample = marketHistory.at(obs.round) ?? null;
-      }
-    });
-
-    const valueNow = (): number | null => {
-      const v = latestObservation?.inventory?.valueUsdc;
-      return typeof v === "number" ? v : null;
+    // The account at the moment of the last install or revert, to judge whether that revision
+    // helped. Kept as the whole mark, not just its value: the do-nothing counterfactual on the same
+    // line has to start from the same block, and how much sat in venue positions then is part of
+    // what that counterfactual cannot see.
+    let markAtRevision: AccountMark | null = null;
+    // The PnL baseline is the first block the account was valued at, wallet plus venues (issue
+    // #274), and the do-nothing counterfactual on the same line starts from that block's sample, so
+    // both are differences from the same start.
+    const initialMark = () => accountValue.first();
+    const initialSample = (): MarketSample | null => {
+      const first = initialMark();
+      return first ? (marketHistory.at(first.block) ?? null) : null;
     };
+
 
     const record = (outcome: RevisionOutcome, block: number): void => {
       // `state`, not `signals`: signals is numeric-only, and a revision record is mostly text
@@ -990,7 +1023,15 @@ async function main(): Promise<void> {
         // Nothing is judged here. Whether a revision helped, and whether to undo it, is the model's
         // call -- an automatic revert needs a threshold and there is no defensible one (ADR 0018 §5).
         // What the harness owes the model is the evidence: the history, and the value at each point.
-        const value = valueNow();
+        const markNow = accountValue.latest();
+        const value = markNow?.valueUsdc ?? null;
+        // Running totals, so a post-run reader can tell whether the PnL and the per-trade marks the
+        // model was shown rest on most blocks or on a few (accountValue.ts).
+        agentLog({
+          round: block,
+          reason: "account valuation coverage",
+          signals: { ...accountValue.stats() },
+        });
         const system = buildRevisionSystem(
           improveAgent,
           current().source,
@@ -1008,15 +1049,22 @@ async function main(): Promise<void> {
             : null;
         const context = buildRevisionContext({
           block,
-          valueUsdc: value ?? 0,
-          initialValueUsdc: initialValue ?? 0,
+          valueUsdc: value,
+          initialValueUsdc: initialMark()?.valueUsdc ?? null,
           sinceLastRevisionUsdc:
-            valueAtRevision !== null && value !== null
-              ? value - valueAtRevision
+            markAtRevision !== null && value !== null
+              ? value - markAtRevision.valueUsdc
               : null,
-          holdSinceStartUsdc: holdFrom(initialSample),
+          holdSinceStartUsdc: holdFrom(initialSample()),
+          // From the block the last revision's value was taken at, which is what the PnL above is a
+          // difference from. It used to start at the last *call* -- a declined revision moves that
+          // and not the value -- so the two halves of "what trading did" had different starts.
           holdSinceLastRevisionUsdc:
-            since === null ? null : holdFrom(marketHistory.at(since)),
+            markAtRevision === null
+              ? null
+              : holdFrom(marketHistory.at(markAtRevision.block)),
+          venuesAtStartUsdc: initialMark()?.venuesUsdc ?? null,
+          venuesAtLastRevisionUsdc: markAtRevision?.venuesUsdc ?? null,
           // What is *running*, not what has been numbered.
           currentVersion: active.version,
           history: versions.map(({ executor: _executor, ...v }) => v),
@@ -1120,7 +1168,7 @@ async function main(): Promise<void> {
           runningVersion = reinstalled.version;
           if (parsed.revision.memory !== null) memory = parsed.revision.memory;
           persist();
-          valueAtRevision = value;
+          markAtRevision = markNow;
           record(
             {
               kind: "reverted",
@@ -1165,7 +1213,7 @@ async function main(): Promise<void> {
         runningVersion = installed.version;
         if (parsed.revision.memory !== null) memory = parsed.revision.memory;
         persist();
-        valueAtRevision = value;
+        markAtRevision = markNow;
         record(
           {
             kind: "installed",

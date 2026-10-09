@@ -99,7 +99,14 @@ export async function observationFor(
         ? { stables: buildStableBalances(balances.stables, stablePrices) }
         : {}),
     },
-    inventory: balanceToInventory(balances, fairPrice, stablePrices),
+    // Every base at its own fair price. Passing `fairPrice` alone (the WETH number) priced WBTC and
+    // every other base at zero, so an agent holding the basket's 0.4 WBTC was told its wallet was
+    // ~24k USDC lighter than it was, and buying WBTC read as losing the whole USDC paid (issue #274).
+    inventory: balanceToInventory(
+      balances,
+      ctx.fairPrices ?? fairPrice,
+      stablePrices,
+    ),
     history: history.slice(-20),
     // No order-size caps: the competition removed them outright rather than raising them, so the
     // only thing bounding a trade is the balance behind it. What is left here is the fee/slippage

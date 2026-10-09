@@ -985,6 +985,9 @@ export type AgentObservation = {
     >;
   };
   inventory: {
+    // The wallet: loose ETH, every base at its fair price and every stable at its own price. Venue
+    // positions -- LP, GMX collateral and PnL, Aave supply net of debt, LST, Liquity, lending -- are
+    // not in it. The scorer adds each venue's own valuation on top (issue #274).
     valueUsdc: number;
     weth: number;
     usdc: number;

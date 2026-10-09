@@ -51,8 +51,10 @@ export type VenueSample = {
 // What one block looked like. Small on purpose: this is kept for every block of the interval.
 export type MarketSample = {
   block: number;
-  // Marked value of everything the agent holds, from the observation. Null when the observation did
-  // not carry one.
+  // Marked value of the account. sampleObservation fills in the wallet (inventory.valueUsdc); a
+  // self-improving runtime replaces it with wallet plus venue positions once accountValue.ts has
+  // read them, and with null until then -- the two are different quantities and one series must
+  // not mix them (issue #274). Null also when the observation carried no value.
   valueUsdc: number | null;
   // Base symbol -> fair price in USD, as the PriceFeed published it.
   fair: Record<string, number>;
