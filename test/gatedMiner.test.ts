@@ -302,3 +302,47 @@ test("a stage with a commit writes and mines in one call; a failed commit falls 
   assert.deepEqual(log, ["commit 100 -> 101", "apply 101", "mine 102"]);
   assert.equal(miner.stats().mined, 2);
 });
+
+test("a commit that reports the head from before its mine still moves the miner on, and gates the next block", async () => {
+  // anvil answers a batch's members concurrently: an eth_blockNumber read in the commit's batch came
+  // back with the pre-mine number (PR #287 review). The miner must still count the block, report the
+  // new head, and not mine another one until a new stage arrives -- even with no head read to fix it.
+  let t = 0;
+  let chain = 100;
+  const mined: number[] = [];
+  const timeouts: number[] = [];
+  const miner: GatedMiner = new GatedMiner({
+    blockTimeMs: 2_000,
+    gateTimeoutMs: 6_000,
+    startHead: chain,
+    now: () => t,
+    sleep: async (ms) => {
+      t += ms;
+      await new Promise((r) => setImmediate(r));
+    },
+    mine: async () => {
+      chain++;
+      return chain;
+    },
+    onMined: (h) => mined.push(h),
+    onGateTimeout: (info) => timeouts.push(info.head),
+  });
+  miner.stage(
+    100,
+    async () => {},
+    async () => {
+      const before = chain;
+      chain++;
+      return before; // the stale answer
+    },
+  );
+  miner.start();
+  await until(() => mined.length === 1);
+  assert.deepEqual(mined, [101], "onMined gets the block the commit mined");
+  // No stage for 101: the next tick waits the whole gate rather than mining on no new prices.
+  await until(() => t >= 7_000);
+  assert.equal(chain, 101, "nothing mined while 101's prices are missing");
+  await until(() => timeouts.length === 1);
+  await miner.stop();
+  assert.deepEqual(timeouts, [101]);
+});

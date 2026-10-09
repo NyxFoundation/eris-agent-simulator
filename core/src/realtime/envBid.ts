@@ -158,19 +158,29 @@ export function probeAmount(amountIn: bigint): bigint {
   return small > 0n ? small : 1n;
 }
 
-// The price-impact cost of a trade of `notionalUsd` on a seeded spot book (constant product, about
-// N² / (2D)), for a trade whose own quote the environment does not take before sending: the whale's
-// print goes out through the flow path. An estimate of V like the pull's, from the seeded depth.
+// What a trade of N dollars gives up to price impact on a constant-product book with y dollars on
+// the side it trades into: it receives x·N/(y+N) where the marginal price would give x·N/y, a
+// shortfall of N²/(y+N) dollars. y is ONE side of the book: SEEDED_SPOT_DEPTH_USD counts both, and an
+// earlier N²/(2D) with D = both sides put V at a quarter of this (PR #287 review).
+export function constantProductShortfallUsd(notionalUsd: number, sideDepthUsd: number): number {
+  if (!(notionalUsd > 0) || !(sideDepthUsd > 0)) return 0;
+  return (notionalUsd * notionalUsd) / (sideDepthUsd + notionalUsd);
+}
+
+// V for a trade whose own quote the environment does not take before sending -- the whale's print
+// goes out through the flow path -- on a seeded spot book (half of SEEDED_SPOT_DEPTH_USD a side).
+// Constant product is exact for Uniswap's full-range seed and Balancer's 50/50 pool; Curve's
+// twocrypto concentrates liquidity near its price scale, so there it overstates the impact, which
+// errs toward the environment bidding more, not less.
 export function seededImpactValueUsd(notionalUsd: number): number {
-  if (!(notionalUsd > 0)) return 0;
-  return (notionalUsd * notionalUsd) / (2 * SEEDED_SPOT_DEPTH_USD);
+  return constantProductShortfallUsd(notionalUsd, SEEDED_SPOT_DEPTH_USD / 2);
 }
 
 // What a reference trade saves by executing before a pull takes depth from `depthBefore` to
-// `depthAfter` (pool units; only the ratio is used), on a constant-product book of
-// SEEDED_SPOT_DEPTH_USD scaled by `depthBefore / seededDepth`. Slippage of a trade N on depth D is
-// about N² / (2D), so the saving is N²/2 × (1/D_after − 1/D_before). Zero for a restore: depth coming
-// back makes it better to be after, not before.
+// `depthAfter` (pool units; only the ratio is used), on a constant-product book whose side is half
+// of SEEDED_SPOT_DEPTH_USD scaled by `depthBefore / seededDepth`: the shortfall N²/(y+N) after the
+// pull minus the shortfall before it. Zero for a restore: depth coming back makes it better to be
+// after, not before.
 export function pullFrontRunValueUsd(input: {
   depthBefore: bigint;
   depthAfter: bigint;
@@ -178,8 +188,10 @@ export function pullFrontRunValueUsd(input: {
 }): number {
   const { depthBefore, depthAfter, seededDepth } = input;
   if (depthAfter >= depthBefore || depthAfter <= 0n || seededDepth <= 0n) return 0;
-  const before = SEEDED_SPOT_DEPTH_USD * (Number(depthBefore) / Number(seededDepth));
-  const after = before * (Number(depthAfter) / Number(depthBefore));
+  const sideBefore = (SEEDED_SPOT_DEPTH_USD / 2) * (Number(depthBefore) / Number(seededDepth));
+  const sideAfter = sideBefore * (Number(depthAfter) / Number(depthBefore));
   const n = PULL_REFERENCE_TRADE_USD;
-  return ((n * n) / 2) * (1 / after - 1 / before);
+  return (
+    constantProductShortfallUsd(n, sideAfter) - constantProductShortfallUsd(n, sideBefore)
+  );
 }

@@ -9,6 +9,7 @@ import {
   SEEDED_SPOT_DEPTH_USD,
   impactValueUsd,
   pullFrontRunValueUsd,
+  seededImpactValueUsd,
   sendByBid,
 } from "../core/src/realtime/envBid.js";
 
@@ -121,12 +122,34 @@ test("impact value: what the trade loses against the marginal rate, in dollars",
   );
 });
 
+// A trade on a constant-product book, done literally: x·y = k, the trade adds N dollars to the side
+// it pays into, and what it receives is valued at the marginal price before the trade.
+function simulatedShortfall(notionalUsd: number, sideDepthUsd: number): number {
+  const y = sideDepthUsd; // dollars on the side paid into
+  const x = sideDepthUsd; // the other side, in dollars at the marginal price
+  const out = (x * notionalUsd) / (y + notionalUsd);
+  return notionalUsd - out;
+}
+
+test("seeded impact value is the constant-product shortfall on one side of the book", () => {
+  // PR #287 review: the old N²/(2D) used both sides for D and came out a quarter of this.
+  const side = SEEDED_SPOT_DEPTH_USD / 2;
+  for (const n of [10_000, 150_000, 500_000]) {
+    const v = seededImpactValueUsd(n);
+    const truth = simulatedShortfall(n, side);
+    assert.ok(Math.abs(v - truth) / truth < 0.01, `${n}: ${v} vs ${truth}`);
+  }
+  // The review's example: a $150k whale buy on a $3M side gives up about $7,143.
+  assert.ok(Math.abs(seededImpactValueUsd(150_000) - 7_142.857) < 0.01);
+});
+
 test("pull value: a withdrawal is worth getting ahead of, a restore is not", () => {
-  // Halving a seeded book: N²/2 × (1/D_after − 1/D_before).
+  // Halving a seeded book: the reference trade's shortfall after the pull minus before it.
   const n = PULL_REFERENCE_TRADE_USD;
-  const d = SEEDED_SPOT_DEPTH_USD;
+  const side = SEEDED_SPOT_DEPTH_USD / 2;
   const v = pullFrontRunValueUsd({ depthBefore: 1000n, depthAfter: 500n, seededDepth: 1000n });
-  assert.ok(Math.abs(v - ((n * n) / 2) * (1 / (d / 2) - 1 / d)) < 1e-9);
+  const truth = simulatedShortfall(n, side / 2) - simulatedShortfall(n, side);
+  assert.ok(Math.abs(v - truth) / truth < 0.01, `${v} vs ${truth}`);
   assert.equal(
     pullFrontRunValueUsd({ depthBefore: 500n, depthAfter: 1000n, seededDepth: 1000n }),
     0,

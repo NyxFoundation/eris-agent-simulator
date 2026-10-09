@@ -255,16 +255,16 @@ export class GatedMiner {
         }
       }
 
+      // Open when the head's prices are staged and not yet written. The second half matters when the
+      // head is wrong: a stage already applied is the previous block's, and mining on it would put a
+      // block on no new prices (PR #287 review).
+      const ready = (): boolean => this.staged.forBlock >= this.head && !this.staged.applied;
       const gateStart = now();
-      while (
-        !this.stopped &&
-        this.staged.forBlock < this.head &&
-        now() - gateStart < gateTimeoutMs
-      ) {
+      while (!this.stopped && !ready() && now() - gateStart < gateTimeoutMs) {
         await sleep(POLL_MS);
       }
       if (this.stopped) break;
-      if (this.staged.forBlock < this.head) {
+      if (!ready()) {
         this.gateTimeouts++;
         this.opts.onGateTimeout?.({
           head: this.head,
@@ -290,7 +290,8 @@ export class GatedMiner {
             }),
           ]);
           staged.applied = true;
-          this.head = Math.max(this.head, head);
+          // A commit mines exactly one block, so the head moves by at least one whatever the read says.
+          this.head = Math.max(this.head + 1, head);
           this.heldTicks = 0;
           this.mined++;
           if (this.windows.length >= WINDOW_SAMPLES) this.windows.shift();
@@ -325,7 +326,8 @@ export class GatedMiner {
       this.heldTicks = 0;
 
       try {
-        this.head = await this.mineOnce();
+        // anvil_mine mines exactly one block: never let a stale read leave the head where it was.
+        this.head = Math.max(this.head + 1, await this.mineOnce());
         if (this.windows.length >= WINDOW_SAMPLES) this.windows.shift();
         this.windows.push(now() - applyStart);
       } catch (error) {
