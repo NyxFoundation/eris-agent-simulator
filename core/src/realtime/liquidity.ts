@@ -26,7 +26,7 @@ import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
 import type { EventSchedule } from "./events.js";
 import {
-  FRONT_RUN_GAS,
+  FLAT_FEE_MEDIAN_WEI,
   pullFrontRunValueUsd,
   type DeferredSend,
   type EnvBidContext,
@@ -373,8 +373,13 @@ export async function reconcileLiquidityPull(
               target - applied,
               deadline,
             );
+      // An ordinary LP's fee, not one priced at what getting ahead of the pull is worth: being ahead
+      // of a pull is a trade on a deeper book, not a victim's loss, and a fee priced at that value
+      // was paid on the pull's own gas (up to 2.6× a swap's) and came out above it (PR #287
+      // follow-up). The value is still recorded, for reading what the ordering was worth.
       const bid = opts.bid
-        ? opts.bid.bidder.bid({
+        ? {
+            ...opts.bid.bidder.flatBid(FLAT_FEE_MEDIAN_WEI),
             valueUsd:
               depthBefore !== undefined && target < applied
                 ? pullFrontRunValueUsd({
@@ -384,11 +389,7 @@ export async function reconcileLiquidityPull(
                     seededDepth: pos.seededShare,
                   })
                 : 0,
-            frontRunGas: FRONT_RUN_GAS[pos.venue],
-            gasLimit: RECONCILE_GAS,
-            ethUsd: opts.bid.ethUsd,
-            balanceWei: await ctx.publicClient.getBalance({ address: runtime.owner }),
-          })
+          }
         : null;
       const priorityFeeWei = bid?.priorityFeeWei ?? opts.priorityFeeWei;
       const send = async (): Promise<Hex | null> => {

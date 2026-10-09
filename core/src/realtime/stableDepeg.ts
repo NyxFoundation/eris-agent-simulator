@@ -29,6 +29,7 @@ import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
 import { tokenInfoByAddress } from "@eris/sdk/markets.js";
 import {
+  DEPEG_SLIPPAGE_BPS as ENV_DEPEG_SLIPPAGE_BPS,
   FRONT_RUN_GAS,
   impactValueUsd,
   probeAmount,
@@ -262,10 +263,15 @@ export async function reconcileStableDepeg(
     return [];
 
   try {
+    // Under economicGas the limit is drawn per trade and tight (ADR 0011 §1b): with the old 5% a
+    // sandwich around the sell could take most of its impact.
+    const slippageBps = opts.bid
+      ? BigInt(opts.bid.bidder.drawSlippageBps(...ENV_DEPEG_SLIPPAGE_BPS))
+      : DEPEG_SLIPPAGE_BPS;
     const call =
       target > sold
-        ? await buildSell(ctx, runtime, delta)
-        : await buildBuyBack(ctx, runtime, delta);
+        ? await buildSell(ctx, runtime, delta, slippageBps)
+        : await buildBuyBack(ctx, runtime, delta, slippageBps);
     if (!call) return [];
     const bid = opts.bid
       ? opts.bid.bidder.bid({
@@ -354,6 +360,7 @@ async function buildSell(
   ctx: SimContext,
   runtime: StableDepegRuntime,
   amountStable: bigint,
+  slippageBps: bigint,
 ): Promise<DepegCall | null> {
   const small = probeAmount(amountStable);
   const [quoted, smallQuoted] = (await Promise.all(
@@ -384,7 +391,7 @@ async function buildSell(
         BigInt(runtime.stableIndex),
         BigInt(runtime.quoteIndex),
         amountStable,
-        (quoted * (10_000n - DEPEG_SLIPPAGE_BPS)) / 10_000n,
+        (quoted * (10_000n - slippageBps)) / 10_000n,
       ],
     }),
   };
@@ -398,6 +405,7 @@ async function buildBuyBack(
   ctx: SimContext,
   runtime: StableDepegRuntime,
   amountStable: bigint,
+  slippageBps: bigint,
 ): Promise<DepegCall | null> {
   const [needed, quoteBalance] = (await Promise.all([
     ctx.publicClient.readContract({
@@ -448,7 +456,7 @@ async function buildBuyBack(
         BigInt(runtime.quoteIndex),
         BigInt(runtime.stableIndex),
         spend,
-        (quoted * (10_000n - DEPEG_SLIPPAGE_BPS)) / 10_000n,
+        (quoted * (10_000n - slippageBps)) / 10_000n,
       ],
     }),
   };
@@ -529,7 +537,8 @@ export async function restoreStableDepeg(
       return;
     }
     try {
-      const call = await buildBuyBack(ctx, runtime, sold);
+      // After the bell, with the agents stopped: nothing to protect against, so the loose limit.
+      const call = await buildBuyBack(ctx, runtime, sold, DEPEG_SLIPPAGE_BPS);
       if (!call) break;
       await sendAndMine(
         ctx.publicClient,

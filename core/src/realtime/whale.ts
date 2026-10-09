@@ -86,6 +86,9 @@ export function buildWhaleOrder(
   event: ResolvedStressEvent,
   fairPriceUsdcPerBase: number,
   priorityFeeWei: bigint,
+  // The print's slippage limit (ADR 0011 §1b, economicGas): what a sandwich around it can take at
+  // most. Omitted, the venue adapter's default applies (50 bps).
+  slippageBps?: number,
 ): FlowOrderWire {
   if (event.type !== "whale")
     throw new Error(`buildWhaleOrder called with a ${event.type} event`);
@@ -112,9 +115,11 @@ export function buildWhaleOrder(
       type: SWAP_TYPE[venue],
       tokenIn: side === "buy" ? "USDC" : base,
       amountIn: amount.toString(),
-      // A whale takes whatever the book gives: the whole content of this event is the impact, so
-      // capping slippage would cap the event itself. minAmountOut 0 is deliberate.
-      minAmountOut: "0",
+      // The limit is on the quote at build time, not on the impact: a whale still moves the book by
+      // its whole size, and a sandwich can take at most this share of what it receives. (This used
+      // to say `minAmountOut: "0"`, a field no adapter reads, so the print ran at each adapter's
+      // default 50 bps all along.)
+      ...(slippageBps !== undefined ? { slippageBps } : {}),
       // Non-WETH bases need the market tag so the adapter can resolve the right pool; WETH omits it
       // to keep the action byte-identical to ordinary WETH flow.
       ...(base === "WETH" ? {} : { base }),

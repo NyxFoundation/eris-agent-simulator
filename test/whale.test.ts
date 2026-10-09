@@ -97,13 +97,15 @@ test("a sell spends the base and a buy spends USDC, at the venue asked for", () 
   assert.equal(buyAction.amountIn, (80_000n * 10n ** 6n).toString());
 });
 
-test("a whale accepts any fill: capping slippage would cap the event itself", () => {
+test("a whale's slippage limit rides on the order; without one the adapter's default applies", () => {
+  // The order used to carry `minAmountOut: "0"`, a field no adapter reads: the print ran at each
+  // adapter's default 50 bps. Under economicGas the limit is drawn per print (ADR 0011 §1b).
   const ev = new EventSchedule([WHALE], 42, 100).events[0];
-  const action = buildWhaleOrder(ev, 2000, 1n).action as unknown as Record<
-    string,
-    string
-  >;
-  assert.equal(action.minAmountOut, "0");
+  const withLimit = buildWhaleOrder(ev, 2000, 1n, 75).action as unknown as Record<string, unknown>;
+  assert.equal(withLimit.slippageBps, 75);
+  assert.equal("minAmountOut" in withLimit, false);
+  const without = buildWhaleOrder(ev, 2000, 1n).action as unknown as Record<string, unknown>;
+  assert.equal("slippageBps" in without, false);
 });
 
 const whaleEvent = (over: Record<string, unknown>) => ({

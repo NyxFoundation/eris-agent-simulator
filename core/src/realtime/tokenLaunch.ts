@@ -45,7 +45,13 @@ import {
 } from "@eris/sdk/protocols/uniswap.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
-import { FRONT_RUN_GAS, impactValueUsd, probeAmount, type EnvBidContext } from "./envBid.js";
+import {
+  FRONT_RUN_GAS,
+  LAUNCH_WAVE_SLIPPAGE_BPS,
+  impactValueUsd,
+  probeAmount,
+  type EnvBidContext,
+} from "./envBid.js";
 import type {
   EventSchedule,
   ResolvedStressEvent,
@@ -704,7 +710,12 @@ async function sendSwap(
     return;
   }
   if (quoted <= 0n) return;
-  const minOut = (quoted * (10_000n - WAVE_SLIPPAGE_BPS)) / 10_000n;
+  // Under economicGas the limit is drawn per trade and tight (ADR 0011 §1b): the old 15% let a
+  // sandwich around a wave buy take most of its impact.
+  const slippageBps = opts.bid
+    ? BigInt(opts.bid.bidder.drawSlippageBps(...LAUNCH_WAVE_SLIPPAGE_BPS))
+    : WAVE_SLIPPAGE_BPS;
+  const minOut = (quoted * (10_000n - slippageBps)) / 10_000n;
   // economicGas (ADR 0011): bid a random fraction of what getting ahead of this trade is worth
   // (envBid.ts). The approve, when there is one, goes at the same fee: it is the same sender, so the
   // swap cannot be placed ahead of it anyway.

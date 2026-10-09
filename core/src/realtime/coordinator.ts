@@ -183,12 +183,12 @@ import { waitForAgentsReady } from "./agentsReady.js";
 import { GatedMiner } from "./gatedMiner.js";
 import {
   EnvBidder,
-  FRONT_RUN_GAS,
+  FLAT_FEE_MEDIAN_WEI,
+  WHALE_SLIPPAGE_BPS,
   seededImpactValueUsd,
   sendByBid,
   type DeferredSend,
   type EnvBidContext,
-  type FrontRunVenue,
 } from "./envBid.js";
 import { epochNonceFloor, raiseNonces } from "./nonceFloor.js";
 import {
@@ -4479,23 +4479,24 @@ export async function runRealtimeSimulation(
                 // capacity before any print. That is deliberate — reading the tape is part of the
                 // regime — but it does mean the event is anticipatable, not just reactable.
                 try {
-                  // Under economicGas the print bids like the other event trades: a random share of
-                  // what getting ahead of it is worth (envBid.ts), V from its notional on a seeded book.
+                  // Under economicGas the print is protected the way a real large trader protects one:
+                  // an ordinary fee (drawn per print) and a 0.5% slippage limit (envBid.ts), so a
+                  // sandwich can take at most that share of what it receives and pushing further
+                  // reverts it. V (its impact on a seeded book) is recorded, not bid.
                   const basePrice = fairPrices[ev.base] ?? latestFairPrice;
                   const whaleBid = envBid("whale");
-                  const whaleVenue = (ev.venue ?? "uniswap") as FrontRunVenue;
                   const bid = whaleBid
-                    ? whaleBid.bidder.bid({
+                    ? {
+                        ...whaleBid.bidder.flatBid(FLAT_FEE_MEDIAN_WEI),
                         valueUsd: seededImpactValueUsd(ev.magnitude * basePrice),
-                        frontRunGas: FRONT_RUN_GAS[whaleVenue] ?? FRONT_RUN_GAS.uniswap,
-                        gasLimit: 1_000_000n,
-                        ethUsd: whaleBid.ethUsd,
-                      })
+                      }
                     : null;
+                  const whaleSlippageBps = whaleBid ? WHALE_SLIPPAGE_BPS : undefined;
                   const order = buildWhaleOrder(
                     ev,
                     basePrice,
                     bid?.priorityFeeWei ?? config.defaultPriorityFeeWei,
+                    whaleSlippageBps,
                   );
                   logger.event({
                     type: "stress_whale",
@@ -4509,7 +4510,7 @@ export async function runRealtimeSimulation(
                       ? {
                           priorityFeeWei: bid.priorityFeeWei.toString(),
                           frontRunValueUsd: Number(bid.valueUsd.toFixed(4)),
-                          bidFraction: Number(bid.u.toFixed(4)),
+                          ...(whaleSlippageBps !== undefined ? { slippageBps: whaleSlippageBps } : {}),
                         }
                       : {}),
                   });

@@ -72,6 +72,20 @@ export async function sendByBid(sends: DeferredSend[]): Promise<Array<`0x${strin
   return out;
 }
 
+// An ordinary sender's fee for the environment's pulls and whale prints: median 1.4 gwei, σ 0.35,
+// so the mean is about 1.5 gwei and nine in ten draws fall between about 0.8 and 2.5 gwei.
+export const FLAT_FEE_MEDIAN_WEI = 1_400_000_000n;
+export const FLAT_FEE_SIGMA = 0.35;
+
+// Slippage limits for the environment's trades under economicGas, in basis points. The whale's is a
+// fixed 0.5% (what the venue adapters already defaulted to; decided 2026-10-09). The launch wave's and
+// the depeg's are drawn log-uniform over a factor-of-two range per trade: tight enough that a
+// sandwich takes only a small share, where the old limits (launch 15%, depeg 5%) let it take most of
+// a wave's impact.
+export const WHALE_SLIPPAGE_BPS = 50;
+export const LAUNCH_WAVE_SLIPPAGE_BPS: [number, number] = [300, 600];
+export const DEPEG_SLIPPAGE_BPS: [number, number] = [100, 200];
+
 export type EnvBidContext = {
   bidder: EnvBidder;
   // USD per ETH, to turn V into wei.
@@ -91,6 +105,30 @@ export class EnvBidder {
     private readonly rng: Rng,
     private readonly floorWei: bigint,
   ) {}
+
+  // A fee that does not depend on what getting ahead is worth: what an ordinary sender pays, drawn
+  // around `medianWei` (lognormal, σ `sigma`). For the environment's transactions that are not
+  // trades worth protecting with the fee -- a liquidity pull, and a whale whose protection is its
+  // slippage limit (drawSlippageBps) -- because a fee priced at the front-running value was paid on
+  // the environment's own, larger gas and came out above that value (PR #287 follow-up).
+  flatBid(medianWei: bigint, sigma = FLAT_FEE_SIGMA): EnvBid {
+    const u = Math.exp(sigma * this.rng.gaussian());
+    const fee = BigInt(Math.max(1, Math.round(Number(medianWei) * u)));
+    return {
+      priorityFeeWei: fee > this.floorWei ? fee : this.floorWei,
+      u,
+      valueUsd: 0,
+      balanceCapped: false,
+    };
+  }
+
+  // A slippage limit in basis points, log-uniform in [minBps, maxBps]: a sender's tolerance, so a
+  // sandwich can take at most this share of what the trade receives (and a deeper push reverts it).
+  drawSlippageBps(minBps: number, maxBps: number): number {
+    const lo = Math.log(minBps);
+    const hi = Math.log(maxBps);
+    return Math.round(Math.exp(lo + (hi - lo) * this.rng.next()));
+  }
 
   // The stream's position, for a practice period's checkpoint (periodResume.ts): a resumed period
   // continues the draws instead of repeating them from the start.

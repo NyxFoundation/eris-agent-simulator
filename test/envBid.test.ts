@@ -11,6 +11,10 @@ import {
   pullFrontRunValueUsd,
   seededImpactValueUsd,
   sendByBid,
+  FLAT_FEE_MEDIAN_WEI,
+  WHALE_SLIPPAGE_BPS,
+  LAUNCH_WAVE_SLIPPAGE_BPS,
+  DEPEG_SLIPPAGE_BPS,
 } from "../core/src/realtime/envBid.js";
 
 // ADR 0011 §1b: the environment's event transactions bid U × V per gas of the front-runner's swap.
@@ -176,4 +180,40 @@ test("one key's deferred sends go out highest bid first, ties in the callers' or
   assert.deepEqual(sent, ["depeg", "pull-b", "pull-c", "pull-a"]);
   // Results stay in the callers' order.
   assert.deepEqual(hashes, ["0xpull-a", "0xpull-b", "0xdepeg", "0xpull-c"]);
+});
+
+test("the flat fee averages 1-2 gwei and does not depend on the trade", () => {
+  // Pulls and whale prints pay what an ordinary sender pays (PR #287 follow-up), not a share of V.
+  const bidder = new EnvBidder(Rng.fromSeed(101, "env-bid:flat"), FLOOR);
+  const n = 20_000;
+  let sum = 0;
+  const fees: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const gwei = Number(bidder.flatBid(FLAT_FEE_MEDIAN_WEI).priorityFeeWei) / 1e9;
+    sum += gwei;
+    fees.push(gwei);
+  }
+  const mean = sum / n;
+  assert.ok(mean > 1 && mean < 2, `mean ${mean} gwei`);
+  fees.sort((a, b) => a - b);
+  const p05 = fees[Math.floor(n * 0.05)];
+  const p95 = fees[Math.floor(n * 0.95)];
+  assert.ok(p05 > 0.6 && p95 < 3, `p05 ${p05}, p95 ${p95}`);
+});
+
+test("slippage limits are drawn over a factor-of-two range, inside it; the whale's is a fixed 0.5%", () => {
+  assert.equal(WHALE_SLIPPAGE_BPS, 50);
+  const bidder = new EnvBidder(Rng.fromSeed(7, "env-bid:slippage"), FLOOR);
+  for (const [lo, hi] of [LAUNCH_WAVE_SLIPPAGE_BPS, DEPEG_SLIPPAGE_BPS]) {
+    assert.equal(hi, lo * 2);
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = 0; i < 2_000; i++) {
+      const bps = bidder.drawSlippageBps(lo, hi);
+      min = Math.min(min, bps);
+      max = Math.max(max, bps);
+    }
+    assert.ok(min >= lo && max <= hi, `[${lo}, ${hi}]: drew ${min}..${max}`);
+    assert.ok(min < lo * 1.05 && max > hi * 0.95, `the whole range is used: ${min}..${max}`);
+  }
 });

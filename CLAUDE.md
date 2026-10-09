@@ -204,10 +204,13 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   帰結: 「ブロック B の価値」は B+1 の取引が約定する価格で評価される。agent の観測は従来どおり 1 ブロック遅れ
 - **keeper（GMX の約定・清算）は 50 gwei 固定**（`ECONOMIC_KEEPER_FEE_WEI`）。順序のためではなく、上限なしの
   ブロックで参加者に埋められて締め出されないため。keeper/admin は anvil で 200 万 ETH（`GAS_ONLY_WEI`）
-- **環境のイベント取引**（launch の波・depeg の売買・流動性の引き抜き・whale）は `U × V / G` を入札
+- **環境のイベント取引**: launch の波と depeg の売買は `U × V / G` を入札
   （`core/src/realtime/envBid.ts`。V = 先回りの価値、G = 同じ venue で先回りする swap の gas = `FRONT_RUN_GAS`（Uniswap 100k /
   Balancer 95k / Curve 135k）、U ~ lognormal(中央値 0.86, σ 0.6) で P(U<1) ≈ 0.6、鍵付きストリーム `env-bid:<種類>`、練習期間の
-  チェックポイントに位置を保存）。deployer の鍵の tx は入札の高い順に送る（`sendByBid`。nonce 順の足引っ張りを防ぐ）。
+  チェックポイントに位置を保存）。**流動性の引き抜きと whale は普通の手数料**（`flatBid`: 中央値 1.4 gwei、平均約 1.5 gwei）。
+  環境の取引の slippage の許容幅は whale 0.5% 固定、launch の波 3〜6%・depeg 1〜2% は取引ごとに乱数（ADR 0011 §1c）で、
+  サンドイッチで取れる額はこれで上が決まる。whale の旧 `minAmountOut: "0"` はどのアダプタも読まず、実際は既定 50 bps だった。
+  deployer の鍵の tx は入札の高い順に送る（`sendByBid`。nonce 順の足引っ張りを防ぐ）。
   **lstSlash は 100 gwei 固定**（`ECONOMIC_LST_SLASH_FEE_WEI`）。数字は参加者に公開しない（更新履歴は仕組みだけ）
 - **練習期間の再開**: SIGTERM で miner の保留中の書き込みを適用してから止める。再開時は setup が掘る前に PriceFeed を
   チェックポイントの価格へ書き直す（`price_feed_restored`）
