@@ -295,7 +295,13 @@ import {
   logGuardAudit,
   unprotectedFindings,
 } from "./ownerGuards.js";
-import { buildWhaleOrder, whaleFunding, WHALE_WALLET_KEY } from "./whale.js";
+import {
+  buildWhaleOrder,
+  whaleFunding,
+  WHALE_WALLET_KEY,
+  WhaleResubmits,
+  type WhaleReceiptStatus,
+} from "./whale.js";
 import {
   setupTokenLaunch,
   stepTokenLaunch,
@@ -1335,6 +1341,11 @@ export async function runRealtimeSimulation(
   // would quietly change the flow bot's behavior for the rest of the run) and so blocks.csv
   // attributes the print to the event rather than to background flow.
   const whaleEvents = schedule.events.filter((e) => e.type === "whale");
+  // Under economicGas a print carries a slippage limit, and one that reverts is sent again
+  // (whale.ts WhaleResubmits): a whale is a single event, and a reverted print with no second
+  // attempt would turn the epoch into calm.
+  const whaleResubmits =
+    whaleEvents.length > 0 && config.economicGas ? new WhaleResubmits() : null;
   if (whaleEvents.length > 0) {
     const key = WHALE_WALLET_KEY;
     const privateKey = environmentKey("flow", key);
@@ -4447,6 +4458,121 @@ export async function runRealtimeSimulation(
           // and matching one index exactly let a dropped block swallow the whole event.
           {
             const fromIndex = Math.max(0, fromBlock - runStartBlock);
+            // One whale print: the first attempt, or a resend of one that reverted.
+            const sendWhalePrint = async (
+              ev: (typeof whaleEvents)[number],
+              attempt: number,
+              revertedHashes: string[] = [],
+            ): Promise<void> => {
+              // Relayed through the ordinary flow path so the print is signed, ordered and
+              // attributed exactly like any other flow order, and competes for the same block
+              // space. It is not hidden: the whale trades from a dedicated address endowed during
+              // setup, so an agent watching balances at block 0 can identify the wallet and its
+              // capacity before any print. That is deliberate — reading the tape is part of the
+              // regime — but it does mean the event is anticipatable, not just reactable.
+              try {
+                // Under economicGas the print is protected the way a real large trader protects one:
+                // an ordinary fee (drawn per print) and a 0.5% slippage limit (envBid.ts), so a
+                // sandwich can take at most that share of what it receives and pushing further
+                // reverts it. V (its impact on a seeded book) is recorded, not bid.
+                const basePrice = fairPrices[ev.base] ?? latestFairPrice;
+                const whaleBid = envBid("whale");
+                const bid = whaleBid
+                  ? {
+                      ...whaleBid.bidder.flatBid(FLAT_FEE_MEDIAN_WEI),
+                      valueUsd: seededImpactValueUsd(ev.magnitude * basePrice),
+                    }
+                  : null;
+                const whaleSlippageBps = whaleBid ? WHALE_SLIPPAGE_BPS : undefined;
+                const order = buildWhaleOrder(
+                  ev,
+                  basePrice,
+                  bid?.priorityFeeWei ?? config.defaultPriorityFeeWei,
+                  whaleSlippageBps,
+                );
+                logger.event({
+                  type: attempt === 1 ? "stress_whale" : "stress_whale_resubmitted",
+                  blockIndex,
+                  ...(attempt === 1 ? {} : { attempt, revertedHashes }),
+                  blockNumber: bn,
+                  venue: ev.venue,
+                  side: ev.side,
+                  base: ev.base,
+                  magnitude: ev.magnitude,
+                  ...(bid
+                    ? {
+                        priorityFeeWei: bid.priorityFeeWei.toString(),
+                        frontRunValueUsd: Number(bid.valueUsd.toFixed(4)),
+                        ...(whaleSlippageBps !== undefined ? { slippageBps: whaleSlippageBps } : {}),
+                      }
+                    : {}),
+                });
+                const hashes = await handleFlowOrders([order]);
+                if (hashes.length > 0) stressAudit.record(ev, blockIndex, bn, { stage: "tx_submitted", hashes });
+                whaleResubmits?.sent(ev, hashes, attempt, bn);
+              } catch (error) {
+                whaleResubmits?.sent(ev, [], attempt, bn);
+                logger.event({
+                  type: "stress_whale_failed",
+                  blockIndex,
+                  ...(attempt === 1 ? {} : { attempt }),
+                  error:
+                    error instanceof Error ? error.message : String(error),
+                });
+              }
+            };
+            if (whaleResubmits && whaleResubmits.unresolved > 0) {
+              const polled = await whaleResubmits.poll(
+                bn,
+                async (hash): Promise<WhaleReceiptStatus> => {
+                  try {
+                    const receipt = await ctx.publicClient.getTransactionReceipt({
+                      hash: hash as Hex,
+                    });
+                    return receipt.status === "success" ? "success" : "reverted";
+                  } catch {
+                    return null;
+                  }
+                },
+              );
+              const where = (e: (typeof whaleEvents)[number]) => ({
+                venue: e.venue,
+                side: e.side,
+                base: e.base,
+                magnitude: e.magnitude,
+              });
+              for (const f of polled.filled)
+                if (f.attempt > 1)
+                  logger.event({
+                    type: "stress_whale_filled",
+                    blockIndex,
+                    blockNumber: bn,
+                    attempt: f.attempt,
+                    hash: f.hash,
+                    ...where(f.event),
+                  });
+              for (const a of polled.abandoned)
+                logger.event({
+                  type: "stress_whale_abandoned",
+                  blockIndex,
+                  blockNumber: bn,
+                  attempts: a.attempts,
+                  revertedHashes: a.revertedHashes,
+                  ...where(a.event),
+                  note: "every attempt reverted; this print did not happen",
+                });
+              for (const u of polled.unconfirmed)
+                logger.event({
+                  type: "stress_whale_unconfirmed",
+                  blockIndex,
+                  blockNumber: bn,
+                  attempt: u.attempt,
+                  hashes: u.hashes,
+                  ...where(u.event),
+                });
+              for (const r of polled.resubmit)
+                await sendWhalePrint(r.event, r.attempt, r.revertedHashes);
+            }
             for (const ev of schedule.pointEventsAt(fromIndex, blockIndex)) {
               if (ev.type === "lstSlash") {
                 if (!lstRuntime) continue;
@@ -4472,58 +4598,7 @@ export async function runRealtimeSimulation(
                   });
                 }
               } else if (ev.type === "whale") {
-                // Relayed through the ordinary flow path so the print is signed, ordered and
-                // attributed exactly like any other flow order, and competes for the same block
-                // space. It is not hidden: the whale trades from a dedicated address endowed during
-                // setup, so an agent watching balances at block 0 can identify the wallet and its
-                // capacity before any print. That is deliberate — reading the tape is part of the
-                // regime — but it does mean the event is anticipatable, not just reactable.
-                try {
-                  // Under economicGas the print is protected the way a real large trader protects one:
-                  // an ordinary fee (drawn per print) and a 0.5% slippage limit (envBid.ts), so a
-                  // sandwich can take at most that share of what it receives and pushing further
-                  // reverts it. V (its impact on a seeded book) is recorded, not bid.
-                  const basePrice = fairPrices[ev.base] ?? latestFairPrice;
-                  const whaleBid = envBid("whale");
-                  const bid = whaleBid
-                    ? {
-                        ...whaleBid.bidder.flatBid(FLAT_FEE_MEDIAN_WEI),
-                        valueUsd: seededImpactValueUsd(ev.magnitude * basePrice),
-                      }
-                    : null;
-                  const whaleSlippageBps = whaleBid ? WHALE_SLIPPAGE_BPS : undefined;
-                  const order = buildWhaleOrder(
-                    ev,
-                    basePrice,
-                    bid?.priorityFeeWei ?? config.defaultPriorityFeeWei,
-                    whaleSlippageBps,
-                  );
-                  logger.event({
-                    type: "stress_whale",
-                    blockIndex,
-                    blockNumber: bn,
-                    venue: ev.venue,
-                    side: ev.side,
-                    base: ev.base,
-                    magnitude: ev.magnitude,
-                    ...(bid
-                      ? {
-                          priorityFeeWei: bid.priorityFeeWei.toString(),
-                          frontRunValueUsd: Number(bid.valueUsd.toFixed(4)),
-                          ...(whaleSlippageBps !== undefined ? { slippageBps: whaleSlippageBps } : {}),
-                        }
-                      : {}),
-                  });
-                  const hashes = await handleFlowOrders([order]);
-                  if (hashes.length > 0) stressAudit.record(ev, blockIndex, bn, { stage: "tx_submitted", hashes });
-                } catch (error) {
-                  logger.event({
-                    type: "stress_whale_failed",
-                    blockIndex,
-                    error:
-                      error instanceof Error ? error.message : String(error),
-                  });
-                }
+                await sendWhalePrint(ev, 1);
               }
             }
           }
@@ -5641,18 +5716,31 @@ export async function runRealtimeSimulation(
         logger.runDir,
         `flow-${WHALE_WALLET_KEY}`,
       );
-      if (whaleTxs.reverted > 0)
+      // Under economicGas a reverted print is sent again (whale.ts), so a reverted transaction is not a
+      // lost print: what degrades the regime is a print that never filled.
+      const outcomes = whaleResubmits?.counts;
+      const lost = outcomes ? outcomes.abandoned + outcomes.unconfirmed : whaleTxs.reverted;
+      if (whaleTxs.reverted > 0 || lost > 0)
         logger.event({
           type: "stress_whale_reverted",
           reverted: whaleTxs.reverted,
           total: whaleTxs.total,
-          note: "whale orders landed but reverted on-chain; this regime degraded toward calm",
+          ...(outcomes
+            ? { ...outcomes, unresolvedAtEnd: whaleResubmits!.unresolved }
+            : {}),
+          note:
+            lost > 0
+              ? "whale orders landed but reverted on-chain; this regime degraded toward calm"
+              : "reverted whale orders were sent again and filled",
         });
       console.error(
-        whaleTxs.reverted > 0
-          ? `[stress] WARNING: ${whaleTxs.reverted}/${whaleTxs.total} whale orders reverted on-chain — ` +
-              `the whale regime did not actually shock this run`
-          : `[stress] ${whaleTxs.total} whale orders executed`,
+        lost > 0
+          ? `[stress] WARNING: ${whaleTxs.reverted}/${whaleTxs.total} whale orders reverted on-chain` +
+              (outcomes ? `, ${lost} of ${outcomes.prints} prints never filled` : "") +
+              ` — the whale regime did not fully shock this run`
+          : whaleTxs.reverted > 0
+            ? `[stress] ${whaleTxs.total} whale orders, ${whaleTxs.reverted} reverted and sent again; every print filled`
+            : `[stress] ${whaleTxs.total} whale orders executed`,
       );
     }
     if (config.economicGas) {

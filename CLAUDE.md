@@ -210,6 +210,9 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   V 以上を払っていたので廃止した（ADR 0011 §1c）。V は記録だけする（`frontRunValueUsd`）。先回りの競争は参加者どうしに任せる。
   環境の取引の slippage の許容幅は whale 0.5% 固定、launch の波 3〜6%・depeg 1〜2% は取引ごとに乱数で、
   サンドイッチで取れる額はこれで上が決まる。whale の旧 `minAmountOut: "0"` はどのアダプタも読まず、実際は既定 50 bps だった。
+  **whale は revert したら次の pass で出し直す**（`WhaleResubmits`。最大 3 回）。一発の事象なので出し直さないと
+  そのエポックが calm になる。参加者は未採掘の tx を見られないので whale を狙うサンドイッチは成り立たず、revert させるのは
+  同じブロックで高く積んだ普通の裁定。結果は `stress_whale_resubmitted` / `_filled` / `_abandoned` / `_unconfirmed`
   deployer の鍵の tx は入札の高い順に送る（`sendByBid`。nonce 順の足引っ張りを防ぐ）。
   **lstSlash は 100 gwei 固定**（`ECONOMIC_LST_SLASH_FEE_WEI`）。数字は参加者に公開しない（更新履歴は仕組みだけ）
 - **練習期間の再開**: SIGTERM で miner の保留中の書き込みを適用してから止める。再開時は setup が掘る前に PriceFeed を

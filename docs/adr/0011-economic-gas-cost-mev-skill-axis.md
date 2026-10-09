@@ -173,7 +173,17 @@ G = 先回りする側の swap の gas（venue ごと: Uniswap 100k / Balancer 9
 
 - **サンドイッチで取れる額は、slippage の許容幅で上が決まる。**押し込みすぎると環境の取引が revert し、先回りした側は
   在庫を抱えて残る。どこまで押すかの読み合いになる。launch と depeg は毎ブロック目標に向けて reconcile するので、
-  revert した分は次のブロックで買い直す・売り直す。whale は一発の事象なので、revert するとその print は起きない。
+  revert した分は次のブロックで買い直す・売り直す。
+- **whale は revert したら出し直す**（`WhaleResubmits`、`core/src/realtime/whale.ts`。最大 3 回 = 出し直し 2 回）。
+  whale は一発の事象なので、出し直さないと revert した print はそのまま消え、そのエポックは calm になる
+  （run 後の警告が出るだけ）。しかも whale を revert させるのはサンドイッチとは限らない。参加者は未採掘の tx を
+  見られず（ゲートウェイが pool の閲覧をすべて拒否する）、print のブロック・venue・向きは seed が決めるので、
+  whale を狙ったサンドイッチは成り立たない。revert させるのは、同じブロックで whale より高く積んだ普通の裁定が
+  プールを動かした場合がほとんどになる。現実の大口も、注文が revert すれば新しい見積もりで出し直す。次の pass で
+  receipt を読み、revert なら同じ量・同じ venue・同じ向きを、その時点の見積もりと新しく引いた手数料で送る。
+  3 回とも revert したら `stress_whale_abandoned`、10 ブロック receipt が無ければ `stress_whale_unconfirmed`
+  （出し直さない）。run 後の `stress_whale_reverted` は、revert した tx の数と、最後まで約定しなかった print の数を分けて出す。
+  出し直しの状態はメモリにだけ持つので、練習期間で print と receipt の間に再起動すると出し直さない。
 - whale の注文の `minAmountOut: "0"` は、どの venue のアダプタも読まないフィールドだった。実際には各アダプタの既定
   50 bps で約定していた（「slippage を付けないのは意図的」というコメントは実態と違っていた）。今は `slippageBps` を渡す。
 - V（各取引の価格影響、引き抜きなら参照サイズの取引の得）は、入札には使わず記録だけする（`frontRunValueUsd`）。
