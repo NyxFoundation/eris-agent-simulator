@@ -57,6 +57,10 @@ run:
   blockGasLimit: 320000000
   protocols: [uniswap, balancer, curve, gmx, aave, lst, liquity]
   localDeploy: true
+  # ADR 0011, the same as the official regimes: no priority-fee cap. Prices are storage writes and the
+  # coordinator mines each block once they are in, so the environment stays first without one. The
+  # gateway's own cap has to go with it: RPC_MAX_PRIORITY_FEE_WEI=0 (infra/monitoring/docker-compose.yml).
+  economicGas: true
   # One world from start to finish, which is what a practice period is. The official competition
   # runs `scenario` (ADR 0020 §2), and only the matrix runner can declare it.
   resetUnit: continuous

@@ -66,10 +66,11 @@ export interface SimContext {
   pendingGmxOrders: Hex[];
   // GMX mock oracle update (set by gmx.setupGlobal; called from oracles.updateOracles)
   // opts.noMine=true submits to the mempool without mining for realtime (bids via priorityFeeWei).
+  // opts.storage=true writes the provider's storage instead of sending a tx (ADR 0011 §1).
   updateGmxOracle?: (
     ctx: SimContext,
     fairPrice: number,
-    opts?: { noMine?: boolean; priorityFeeWei?: bigint },
+    opts?: { noMine?: boolean; priorityFeeWei?: bigint; storage?: boolean },
   ) => Promise<void>;
   // Issue #40: contracts the environment deploys per *run* rather than per deployment, so they
   // cannot live in constants.local.ts the way a venue address does. Both are undefined in a run

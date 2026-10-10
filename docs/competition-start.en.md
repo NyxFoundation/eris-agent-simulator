@@ -93,7 +93,7 @@ trades on it at the same time. These are the only words the rest of this guide n
 | transaction (tx) | One instruction, such as "sell 1 WETH into this pool". You sign and send it, and **it only executes once it is included in a block** (usually the next one; when blocks are busy and your fee is low, a later one). Someone else's transaction can land ahead of yours in between |
 | contract | A program deployed on the chain. Exchanges and lenders are contracts, and anyone can call their functions. **The rules are the code itself, not a legal agreement**: a call that does not meet the code's conditions is undone partway through (a revert) |
 | revert | A transaction that fails a contract's condition (insufficient balance, a worse price than you allowed, …) and is undone. No assets move, but you still pay the fee (the gas used × your priority fee; tiny at the default 0.1 gwei). A transaction already known to fail is stopped by the runtime's simulation before sending and never reaches the chain (logged as `submit_failed`). A revert on chain is one whose conditions broke after it was sent, because of someone else's trade or a price change |
-| gas / priority fee | The fee for having a transaction executed, paid in ETH. Here the base fee is 0; you pay only the extra you add to be executed earlier (the priority fee). **Within a block, transactions execute highest priority fee first** (ties in arrival order; one wallet's transactions in nonce order). The environment's reference-price update is sent at a fee above the participants' cap, so it always comes first in the block |
+| gas / priority fee | The fee for having a transaction executed, paid in ETH. Here the base fee is 0; you pay only the extra you add to be executed earlier (the priority fee). **Within a block, transactions execute highest priority fee first** (ties in arrival order; one wallet's transactions in nonce order). **There is no cap on the priority fee** (what you pay comes off your assets). The environment's reference price is not a transaction: it is written into the contracts just before the block is made, so no bid gets ahead of it |
 | hash | A transaction's ID (a long string starting with `0x`). Whether your transaction made it into a block is checked by this value |
 | nonce | A per-wallet sequence number for transactions. Only one transaction with a given number executes, so sending from the same key in two places makes the numbers collide. The runtime manages it |
 | mempool | Where transactions wait after being sent and before landing in a block |
@@ -356,11 +356,12 @@ The more mainnet (production public chain) experience you have, the more you des
 that this environment does not have. None of the following exists here. **If blockchains are new to
 you, skip this section**: each item is "a problem on mainnet that does not arise here".
 
-- **Reorgs (a written block later replaced by different contents) and unconfirmed blocks.** The chain is a single Anvil node on interval mining. A block is
+- **Reorgs (a written block later replaced by different contents) and unconfirmed blocks.** The chain is a single Anvil node; the environment makes a block every 2 seconds. A block is
   final the moment it is mined; it does not roll back and a mined transaction does not disappear. The
   world is rebuilt only at the start of an epoch (rules §4.7.1) — that is an initialization, not a reorg
 - **Gas price spikes.** The base fee is pinned at 0. What you pay is the priority fee you choose to
-  stack (default 0.1 gwei, capped by `obs.limits.maxPriorityFeePerGasWei`); other people's congestion
+  stack (default 0.1 gwei, no cap; `obs.limits.maxPriorityFeePerGasWei` is a nominal guard against a
+  broken value); other people's congestion
   never raises your bill. Gas ETH is part of your asset value (rules §4.2), so fees do reach the PnL
 - **An edge from arriving first.** Order within a block is by priority fee, highest first (rules §2.6;
   Anvil runs with `--order fees`). A faster line or an earlier call wins nothing — if you want the

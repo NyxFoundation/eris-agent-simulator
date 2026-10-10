@@ -26,7 +26,7 @@ run:
   seconds: 1800 # end by block count (must stay well above blocks x blockTimeSec = 720s)
   blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
   protocols: [uniswap, balancer, curve, gmx, aave, lst, liquity]
-  economicGas: false
+  economicGas: true # ADR 0011: no priority-fee cap; prices are storage writes the environment mines on
   localDeploy: true # backtest runs on a local anvil loaded with the distributed state
   reportDir: ./runs
   # Rules §4.1: a mark is the median over the 5 blocks ending at the valuation block, so an

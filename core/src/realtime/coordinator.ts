@@ -56,6 +56,11 @@ import {
   setChainMode,
   setEthBalance,
   setIntervalMining,
+  setStorageAt,
+  setStorageBatch,
+  commitStorageBatch,
+  batchServedInOrder,
+  type StorageWrite,
   transferEth,
   waitForMiningToSettle,
 } from "@eris/sdk/chain.js";
@@ -130,10 +135,12 @@ import type {
   SimContext,
 } from "@eris/sdk/protocols/types.js";
 import {
+  aaveOracleWrites,
   updateOracles,
   updateOraclesMempool,
   writeAaveOraclesStorage,
 } from "@eris/sdk/protocols/oracles.js";
+import { gmxOracleStorageWrites } from "@eris/sdk/protocols/gmx.js";
 import { AAVE, GMX_MARKETS, LST, TOKENS } from "@eris/sdk/constants.js";
 import {
   baseTokens,
@@ -173,6 +180,16 @@ import {
   type LiquityVictimTrove,
 } from "../liquityVictims.js";
 import { waitForAgentsReady } from "./agentsReady.js";
+import { GatedMiner } from "./gatedMiner.js";
+import {
+  EnvBidder,
+  FRONT_RUN_GAS,
+  seededImpactValueUsd,
+  sendByBid,
+  type DeferredSend,
+  type EnvBidContext,
+  type FrontRunVenue,
+} from "./envBid.js";
 import { epochNonceFloor, raiseNonces } from "./nonceFloor.js";
 import {
   agentStateRootFromEnv,
@@ -202,6 +219,8 @@ import {
   setPriceFeedOpeningFor,
   updatePriceFeedForMempool,
   updatePriceFeedMempool,
+  priceFeedWrites,
+  priceFeedWritesFor,
   writePriceFeedStorage,
   writePriceFeedStorageFor,
 } from "./priceFeed.js";
@@ -346,6 +365,13 @@ import {
 } from "../stressVictims.js";
 
 const GAS_ONLY_WEI = 2_000_000_000_000_000_000_000_000n; // 2,000,000 ETH (gas for admin/keeper)
+// ADR 0011: the GMX keeper's (executions and liquidations) priority fee under economicGas. Not an
+// ordering lever -- it keeps the keeper in the block when agents fill it (30M gas at 50 gwei is 1.5 ETH
+// a block to crowd it out).
+export const ECONOMIC_KEEPER_FEE_WEI = 50_000_000_000n; // 50 gwei
+// ADR 0011: an LST slash under economicGas. Not priced by envBid: it is the environment's event on
+// the vault, like a price, so it goes at a fixed fee far above an ordinary bid (decided 2026-10-09).
+export const ECONOMIC_LST_SLASH_FEE_WEI = 100_000_000_000n; // 100 gwei
 
 // The root of an empty transaction trie: a block header carrying any other transactionsRoot had
 // transactions, whatever list the node returns with it.
@@ -976,6 +1002,37 @@ export async function runRealtimeSimulation(
         ? { cut: cutReport }
         : {}),
     });
+    // The checkpoint's prices back into the PriceFeed, every base, before anything below mines a
+    // block (the resume's setup does: a new GMX provider, approvals). A stop between the checkpoint
+    // and the miner's apply -- a SIGTERM that could not flush, a kill -9 -- leaves the PriceFeed one
+    // step behind the checkpoint, and every setup block would be mined on it (measured: 40 blocks on a
+    // local resume; PR #287 review). Aave and GMX are rewritten below, where their addresses are known.
+    if (config.chainMode !== "external") {
+      const cpWalk = resume.checkpoint.walk;
+      const writes = [
+        ...Object.entries(cpWalk.fairPrices)
+          .filter(([b, p]) => b !== "WETH" && Number.isFinite(p) && p > 0)
+          .flatMap(([b, p]) =>
+            priceFeedWritesFor(
+              resume!.checkpoint.priceFeed as Address,
+              tokenInfo(b).address,
+              p,
+              BigInt(resume!.checkpoint.lastProcessedBlock),
+            ),
+          ),
+        ...priceFeedWrites(
+          resume.checkpoint.priceFeed as Address,
+          cpWalk.latestFairPrice,
+          BigInt(resume.checkpoint.lastProcessedBlock),
+        ),
+      ];
+      for (const w of writes) await setStorageAt(publicClient, w.address, w.slot, w.value);
+      logger.event({
+        type: "price_feed_restored",
+        address: resume.checkpoint.priceFeed,
+        fairPrices: cpWalk.fairPrices,
+      });
+    }
     console.error(
       `[period] resuming ${runId} after block ${resume.checkpoint.lastProcessedBlock} ` +
         `(chain head ${resume.head}${resume.rewound ? ", the chain went back: artifacts cut to the checkpoint" : ""})` +
@@ -1195,6 +1252,13 @@ export async function runRealtimeSimulation(
     console.error(`[flow] ${info.reason}`);
   };
 
+  // ADR 0011 §5-3/4: under economicGas the environment mines, and only on a complete price set.
+  // Declared before the stop handler below (a SIGTERM right after start must not hit the temporal
+  // dead zone) and out here so every exit, the failing ones included, stops it before the teardown.
+  let gatedMiner: GatedMiner | null = null;
+  // Set at the start of mining: whether a pass's writes and the next block go in one batch.
+  let batchCommit = false;
+
   // A period's stop (systemd's SIGTERM, a Ctrl-C) pauses the chain on its way out. The next start
   // resumes the period from its last checkpoint, and until then participants' transactions wait in
   // the mempool rather than being mined against a price nobody is updating.
@@ -1208,9 +1272,15 @@ export async function runRealtimeSimulation(
       } catch {
         // nothing to do about it on the way out
       }
+      // Under economicGas the environment mines (gatedMiner.ts): stop it and apply the stage it
+      // holds, so the head carries the prices the checkpoint was written against.
+      const miner = gatedMiner as GatedMiner | null;
       const pause = external
         ? Promise.resolve()
-        : setIntervalMining(publicClient, 0).catch(() => undefined);
+        : Promise.all([
+            miner ? miner.stop().catch(() => undefined) : undefined,
+            setIntervalMining(publicClient, 0).catch(() => undefined),
+          ]);
       void Promise.race([
         pause,
         new Promise((resolve) => setTimeout(resolve, 3_000)),
@@ -1660,7 +1730,9 @@ export async function runRealtimeSimulation(
     ctx.fairPrices = { ...openingFair };
     // setupGlobal gave GMX a new oracle provider, which has no price until the first pass writes
     // one; a resumed period has orders waiting for the keeper, so give it the period's price now.
-    if (cp && ctx.updateGmxOracle) await ctx.updateGmxOracle(ctx, latestFairPrice);
+    // Under economicGas it is a storage write like every other price, so no block is mined here.
+    if (cp && ctx.updateGmxOracle)
+      await ctx.updateGmxOracle(ctx, latestFairPrice, { storage: config.economicGas });
 
     // [Calibration] Local deploy aligns the Aave oracle to the run's initial fair price. On a fork,
     // "oracle ≈ spot ≈ fair0" holds implicitly, but locally the deployer's seed price and fair0 can diverge (a
@@ -3385,24 +3457,57 @@ export async function runRealtimeSimulation(
     // txIndex 0. Place the keeper just below it, fixing the "oracle update → order execution" order within the
     // same block (even with parallel submission, fee decides ordering regardless of arrival order).
     // ADR 0011 economic-gas profile (economicGas): price finalization moves to a direct storage write (the
-    // front-run target mechanically disappears), so the env fee ordering guarantee is unnecessary. The keeper only
-    // needs to run after agent order placement and does not need front-row fixing, so env txs go out at the normal
-    // fee (defaultPriorityFeeWei).
+    // front-run target mechanically disappears), so the env fee ordering guarantee is unnecessary for ordering.
+    // The keeper's position in the block does not matter (GMX fills at the provider's stored price), but its
+    // inclusion does: at the 0.1 gwei default, a few agents filling the block above it (each may declare 10M
+    // gas a block) would hold back every GMX execution and liquidation, their own underwater perp's included.
+    // So the keeper bids ECONOMIC_KEEPER_FEE_WEI, far above what filling a block is worth; on anvil the keeper
+    // holds 2,000,000 ETH (GAS_ONLY_WEI), which at ~0.12 ETH an execution lasts well over a year.
     const economicGas = config.economicGas;
     const oracleFee = economicGas
       ? config.defaultPriorityFeeWei
       : config.maxPriorityFeeWei + 1_000_000_000n;
     const keeperFee = economicGas
-      ? config.defaultPriorityFeeWei
+      ? ECONOMIC_KEEPER_FEE_WEI
       : config.maxPriorityFeeWei + 500_000_000n;
     if (economicGas) {
+      // ADR 0011 §5-5: with no cap the fees become real money, and at base fee 0 every wei of it
+      // goes to the block's coinbase. anvil's is the zero address (measured, anvil 1.5.1), which no
+      // one holds a key for. A coinbase that is a scored agent would be paid the whole field's bids.
+      const coinbase = (
+        await publicClient.getBlock({ blockTag: "latest" })
+      ).miner.toLowerCase();
+      const paid = agentRuntimes.find((a) => a.address.toLowerCase() === coinbase);
+      if (paid)
+        throw new Error(
+          `economicGas: the chain's coinbase ${coinbase} is agent ${paid.id}'s address, so ` +
+            "every priority fee in the run would be paid to it. Start the node with another coinbase",
+        );
       logger.event({
         type: "economic_gas_enabled",
         note: "ADR 0011: retire priority-fee cap enforcement, make price finalization a state-write",
         oracleFeeWei: oracleFee.toString(),
         keeperFeeWei: keeperFee.toString(),
+        coinbase,
       });
     }
+    // ADR 0011: the transactions that stage an event (launch waves, depeg trades, liquidity pulls)
+    // bid a random fraction of what getting ahead of them is worth, one keyed stream per event kind
+    // (envBid.ts). Under the capped profile they keep the fixed fee above the cap.
+    const envBidders = new Map<string, EnvBidder>();
+    const envBid = (stream: string): EnvBidContext | undefined => {
+      if (!economicGas) return undefined;
+      let bidder = envBidders.get(stream);
+      if (!bidder) {
+        const rng = Rng.fromSeed(config.seed, `env-bid:${stream}`);
+        // A resumed practice period continues the stream where the checkpoint left it.
+        const position = cp?.envBidRng?.[stream];
+        if (position) rng.restore(position);
+        bidder = new EnvBidder(rng, config.defaultPriorityFeeWei);
+        envBidders.set(stream, bidder);
+      }
+      return { bidder, ethUsd: latestFairPrice };
+    };
 
     // ---- start the competition phase: switch to interval mining every N real seconds ----
     // Local mode turned auto-mine ON for setup, so turn it back OFF here.
@@ -3532,6 +3637,24 @@ export async function runRealtimeSimulation(
         settledAfterMs: settle.waitedMs,
         flushedBlocks: settle.burstBlocks,
       });
+      // The interval above was only to flush the setup backlog the same way every run does. Under
+      // economicGas the timer cannot know when the storage writes are done, so it stops here and
+      // the gated miner below takes over at the same cadence (gatedMiner.ts).
+      if (config.economicGas) {
+        await setIntervalMining(publicClient, 0);
+        // Whether this node serves a JSON-RPC batch in order, so a pass's price writes and the block
+        // that uses them can go in one request (gatedMiner.ts commit). Measured on this node, before
+        // the run's first block (it mines a few probe blocks); otherwise writes and mine are two
+        // requests and the new prices are readable in `latest` for the time between them.
+        const order = await batchServedInOrder(config.rpcUrl).catch((error: unknown) => ({
+          inOrder: false,
+          trials: 0,
+          writeFirst: 0,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+        batchCommit = order.inOrder;
+        logger.event({ type: "batch_order_check", ...order });
+      }
     }
     const startTime = Date.now();
     // base/effective separation (ADR 0009 §1): advance the OU state as the base series, and derive the effective
@@ -3574,6 +3697,7 @@ export async function runRealtimeSimulation(
     // run ends on a chain block (endBlock below), never on this count.
     let loopIterations = 0;
     let processing = false;
+    let passStarted = false;
     // The pass in progress, so the run's end waits for it: a wall-clock limit fires between passes
     // or in the middle of one, and the end block is the last block a *completed* pass processed.
     let inFlight: Promise<void> = Promise.resolve();
@@ -3653,6 +3777,9 @@ export async function runRealtimeSimulation(
       // boundary can only be a pre-bell gift, and a gift taken back mid-epoch must not count
       // against the agent it was given to (endowmentV0.ts).
       v0Rule: v0RuleFor(config.resetUnit),
+      // ADR 0011: under economicGas block B's history carries the prices written for B+1, so B is
+      // read once it is history, never while it is the head (liveScoring.ts).
+      readLagBlocks: config.economicGas ? 1 : 0,
     });
     // A resumed period's series so far: the boundary lines every segment of it appended, cut to the
     // checkpoint, and the scorer's bookkeeping from the checkpoint.
@@ -4133,6 +4260,14 @@ export async function runRealtimeSimulation(
               ),
             },
           },
+          // The checkpoint's own positions first: a stream not drawn from since the resume is still
+          // where it was, and dropping it here would restart it at the next resume.
+          envBidRng: {
+            ...(cp?.envBidRng ?? {}),
+            ...Object.fromEntries(
+              [...envBidders].map(([stream, bidder]) => [stream, bidder.snapshot()]),
+            ),
+          },
           agents: agentRuntimes.map(
             (a): CheckpointAgent => ({
               id: a.id,
@@ -4201,6 +4336,8 @@ export async function runRealtimeSimulation(
         finished = true;
         cancelTimer?.();
         unwatch();
+        // Blocks past the end would only be gate timeouts; stop() below flushes the last stage.
+        (gatedMiner as GatedMiner | null)?.halt();
         resolve();
       };
       // Not setTimeout: the practice period's 42-day ceiling is past its 32-bit limit, which Node
@@ -4214,6 +4351,12 @@ export async function runRealtimeSimulation(
         // Before the early return: a head reported while a pass is still running is still the head.
         sendHeadBlock = Math.max(sendHeadBlock ?? 0, notifiedBn);
         if (processing || finished) return;
+        // A block already processed is not a new step. Under gated mining the miner and the watcher
+        // both report each block, and a second pass on it would advance the price walk twice per
+        // block (measured: 291 passes for 150 blocks before this). The watcher's opening report of
+        // the head before the run is the one pass on an old block, and it is the first.
+        if (passStarted && notifiedBn <= lastProcessedBlock) return;
+        passStarted = true;
         processing = true;
         let settle: () => void = () => {};
         inFlight = new Promise<void>((resolve) => (settle = resolve));
@@ -4226,6 +4369,22 @@ export async function runRealtimeSimulation(
           endBlock,
         });
         const bn = step.block;
+        // The price writes for block bn+1, handed to the gated miner once this pass is done reading the
+        // head (stagePass below), or at the latest when the pass ends.
+        let pendingOracleApply: (() => Promise<void>) | null = null;
+        let pendingOracleCommit: (() => Promise<number>) | null = null;
+        let passStaged = false;
+        const stagePass = (): void => {
+          if (passStaged || !gatedMiner) return;
+          passStaged = true;
+          // A pass that failed before its oracle task stages nothing to write, which still opens
+          // the gate: the next block is mined on the prices already in storage rather than not at all.
+          gatedMiner.stage(
+            bn,
+            pendingOracleApply ?? (async () => {}),
+            pendingOracleCommit ?? undefined,
+          );
+        };
         try {
           const fromBlock = step.fromBlock;
           lastProcessedBlock = Math.max(lastProcessedBlock, bn);
@@ -4322,12 +4481,16 @@ export async function runRealtimeSimulation(
               if (ev.type === "lstSlash") {
                 if (!lstRuntime) continue;
                 try {
+                  // Under economicGas a slash is sent, not mined here (only the gated miner mines), at
+                  // a fixed 100 gwei: it is the environment's event on the vault, not a trade to be
+                  // priced, and kept above what an ordinary bid reaches (ADR 0011 §1b).
                   await slashLst(
                     ctx,
                     lstRuntime,
                     ev.magnitude,
                     logger,
-                    oracleFee,
+                    economicGas ? ECONOMIC_LST_SLASH_FEE_WEI : oracleFee,
+                    { noMine: economicGas },
                   );
                   stressAudit.record(ev, blockIndex, bn, { stage: "applied" });
                 } catch (error) {
@@ -4346,10 +4509,23 @@ export async function runRealtimeSimulation(
                 // capacity before any print. That is deliberate — reading the tape is part of the
                 // regime — but it does mean the event is anticipatable, not just reactable.
                 try {
+                  // Under economicGas the print bids like the other event trades: a random share of
+                  // what getting ahead of it is worth (envBid.ts), V from its notional on a seeded book.
+                  const basePrice = fairPrices[ev.base] ?? latestFairPrice;
+                  const whaleBid = envBid("whale");
+                  const whaleVenue = (ev.venue ?? "uniswap") as FrontRunVenue;
+                  const bid = whaleBid
+                    ? whaleBid.bidder.bid({
+                        valueUsd: seededImpactValueUsd(ev.magnitude * basePrice),
+                        frontRunGas: FRONT_RUN_GAS[whaleVenue] ?? FRONT_RUN_GAS.uniswap,
+                        gasLimit: 1_000_000n,
+                        ethUsd: whaleBid.ethUsd,
+                      })
+                    : null;
                   const order = buildWhaleOrder(
                     ev,
-                    fairPrices[ev.base] ?? latestFairPrice,
-                    config.defaultPriorityFeeWei,
+                    basePrice,
+                    bid?.priorityFeeWei ?? config.defaultPriorityFeeWei,
                   );
                   logger.event({
                     type: "stress_whale",
@@ -4359,6 +4535,13 @@ export async function runRealtimeSimulation(
                     side: ev.side,
                     base: ev.base,
                     magnitude: ev.magnitude,
+                    ...(bid
+                      ? {
+                          priorityFeeWei: bid.priorityFeeWei.toString(),
+                          frontRunValueUsd: Number(bid.valueUsd.toFixed(4)),
+                          bidFraction: Number(bid.u.toFixed(4)),
+                        }
+                      : {}),
                   });
                   const hashes = await handleFlowOrders([order]);
                   if (hashes.length > 0) stressAudit.record(ev, blockIndex, bn, { stage: "tx_submitted", hashes });
@@ -4423,9 +4606,8 @@ export async function runRealtimeSimulation(
           };
 
           // On-chain distribution of the fair price (PriceFeed) + oracle updates (aave/gmx).
-          // Economic gas (ADR 0011): the PriceFeed and Aave oracle are finalized at the block boundary via a direct
-          //   storage write (no tx → no front-run target). GMX is not front-run-relevant because the keeper does not
-          //   execute in realtime, so avoid direct mapping-storage writes and keep it a normal-fee mempool tx (undecided).
+          // Economic gas (ADR 0011): PriceFeed, every Aave aggregator and the GMX provider are finalized at the
+          //   block boundary via direct storage writes (no tx → no front-run target), staged for the gated miner.
           // 0010: put PriceFeed/oracle on the next block as fee-topping mempool txs.
           // LST venue (issue #38): advance the vault's economic clock one block. Accrual is
           // permissionless and its size is a pure function of blocks elapsed, so this only keeps
@@ -4472,43 +4654,45 @@ export async function runRealtimeSimulation(
           const oracleTask = async (): Promise<void> => {
             try {
               if (economicGas) {
-                // These oracle writes are independent, so run them concurrently instead of in
-                // series: at high agent counts this phase is the environment loop's dominant cost
-                // (it is what sizes the block time), and the calls only queue on anvil, they do not
-                // depend on each other. The PriceFeed / Aave / additional-base writes are keyless
-                // `anvil_setStorageAt` calls (no nonce). The GMX oracle update and the LST accrual
-                // both send txs from the admin key, so they share a nonce and must stay sequential
-                // with each other (two concurrent admin-key senders race and anvil drops the loser
-                // as "replacement transaction underpriced"); they form one sequential sub-task that
-                // runs alongside the storage writes.
-                await Promise.all([
-                  writePriceFeedStorage(
-                    publicClient,
-                    priceFeedAddress,
-                    latestFairPrice,
-                    BigInt(bn),
+                // Every price is a keyless `anvil_setStorageAt` (PriceFeed, every Aave aggregator,
+                // the GMX provider), planned here and applied by the gated miner in one JSON-RPC
+                // batch right before it mines the next block (gatedMiner.ts), so no block is cut
+                // between two of them and the new prices are in `latest` for one batch round trip
+                // and the mine, not for the dozen sequential calls they used to be (PR #287 review).
+                // Planned now, from this pass's prices and reads (the LST's redemption rate, a
+                // market-priced stable's quote); the next pass moves them before the miner applies.
+                // Staged once this pass is done reading block bn, not here: anvil writes storage into
+                // the head's state, so a write made while the pass still reads bn is read back as
+                // bn's own price -- measured as a 0.24% live-vs-sweep disagreement on calm#101.
+                const block = BigInt(bn);
+                const writes: StorageWrite[] = [
+                  ...(await aaveOracleWrites(ctx, latestFairPrice)),
+                  ...gmxOracleStorageWrites(ctx, latestFairPrice),
+                  ...extraBaseSymbols.flatMap((b) =>
+                    priceFeedWritesFor(priceFeedAddress, tokenInfo(b).address, fairPrices[b], block),
                   ),
-                  writeAaveOraclesStorage(ctx, latestFairPrice),
-                  ...extraBaseSymbols.map((b) =>
-                    writePriceFeedStorageFor(
-                      publicClient,
-                      priceFeedAddress,
-                      tokenInfo(b).address,
-                      fairPrices[b],
-                      BigInt(bn),
-                    ),
-                  ),
-                  (async () => {
-                    if (ctx.oracle.gmxProvider && ctx.updateGmxOracle) {
-                      await ctx.updateGmxOracle(ctx, latestFairPrice, {
-                        noMine: true,
-                        priorityFeeWei: oracleFee,
-                      });
+                  // The PriceFeed last: what the reference runtime reads first.
+                  ...priceFeedWrites(priceFeedAddress, latestFairPrice, block),
+                ];
+                const apply = async (): Promise<void> => {
+                  if (gatedMiner) await setStorageBatch(config.rpcUrl, writes);
+                  else
+                    for (const w of writes)
+                      await setStorageAt(publicClient, w.address, w.slot, w.value);
+                  for (const base of ["WETH", ...extraBaseSymbols]) auditPrice(base, "storage_written");
+                };
+                pendingOracleCommit = batchCommit
+                  ? async (): Promise<number> => {
+                      const head = await commitStorageBatch(config.rpcUrl, writes);
+                      for (const base of ["WETH", ...extraBaseSymbols]) auditPrice(base, "storage_written");
+                      return head;
                     }
-                    await accrueLstTask();
-                  })(),
-                ]);
-                for (const base of ["WETH", ...extraBaseSymbols]) auditPrice(base, "storage_written");
+                  : null;
+                if (gatedMiner) pendingOracleApply = apply;
+                else await apply();
+                // The LST accrual stays a tx from the admin key (its amount is a pure function of
+                // blocks elapsed; ADR 0011 §1 leaves it in the mempool at the ordinary fee).
+                await accrueLstTask();
                 return;
               }
               const feedHash = await updatePriceFeedMempool(
@@ -4793,30 +4977,59 @@ export async function runRealtimeSimulation(
           // Liquidity-pull stress event (issue #52): move each seeded pool toward the depth this
           // block's trapezoid asks for. Its own task rather than riding inside oracleTask because it
           // sends from the LP owner key, not the admin key, so the two cannot collide on a nonce.
+          // Under economicGas the deployer key's sends (pulls and depegs) are collected and sent
+          // highest bid first (envBid.ts sendByBid): one key's transactions are included in nonce
+          // order, so a pull's low bid sent first would hold back a depeg's higher one (PR #287
+          // review). Each deferred send attributes its own hash once it is out.
+          const deployerSends: DeferredSend[] | undefined = economicGas ? [] : undefined;
+          const deferInto = (
+            from: number,
+            attribute: (hash: Hex, priorityFeeWei: bigint) => void,
+          ): void => {
+            if (!deployerSends) return;
+            for (let i = from; i < deployerSends.length; i++) {
+              const item = deployerSends[i];
+              const send = item.send;
+              item.send = async () => {
+                const hash = await send();
+                if (hash) attribute(hash, item.priorityFeeWei);
+                return hash;
+              };
+            }
+          };
+          const attributePull = (hashes: Hex[], priorityFeeWei: bigint): void => {
+            if (hashes.length > 0) {
+              for (const event of stressAudit.active(blockIndex, e => e.type === "liquidityPull"))
+                stressAudit.record(event, blockIndex, bn, { stage: "tx_submitted", hashes });
+            }
+            for (const hash of hashes) {
+              submittedByHash.record(hash.toLowerCase(), {
+                ownerId: "liquidity",
+                role: "system",
+                priorityFeeWei,
+                actionType: "liquidityPull",
+              });
+            }
+          };
           const liquidityTask = async (): Promise<void> => {
             if (!liquidityPullRuntime) return;
             try {
+              const from = deployerSends?.length ?? 0;
               const hashes = await reconcileLiquidityPull(
                 ctx,
                 liquidityPullRuntime,
                 schedule,
                 blockIndex,
                 bn,
-                { priorityFeeWei: oracleFee },
+                {
+                  priorityFeeWei: oracleFee,
+                  bid: envBid("liquidity-pull"),
+                  ...(deployerSends ? { defer: deployerSends } : {}),
+                },
                 logger,
               );
-              if (hashes.length > 0) {
-                for (const event of stressAudit.active(blockIndex, e => e.type === "liquidityPull"))
-                  stressAudit.record(event, blockIndex, bn, { stage: "tx_submitted", hashes });
-              }
-              for (const hash of hashes) {
-                submittedByHash.record(hash.toLowerCase(), {
-                  ownerId: "liquidity",
-                  role: "system",
-                  priorityFeeWei: oracleFee,
-                  actionType: "liquidityPull",
-                });
-              }
+              attributePull(hashes, oracleFee);
+              deferInto(from, (hash, fee) => attributePull([hash], fee));
             } catch (error) {
               // Distinct from liquidity.ts's per-position `stress_liquidity_pull_failed`: this one
               // means *no* position was reconciled this block, which post-run analysis has to be
@@ -4836,16 +5049,7 @@ export async function runRealtimeSimulation(
             // Sequential across stables as well as with the pull: they all send from the deployer
             // key, and two senders on one key race on the nonce.
             for (const { runtime, fractionAt, ownerId } of depegRuntimes) {
-              try {
-                const hashes = await reconcileStableDepeg(
-                  ctx,
-                  runtime,
-                  fractionAt(blockIndex),
-                  blockIndex,
-                  bn,
-                  { priorityFeeWei: oracleFee },
-                  logger,
-                );
+              const attribute = (hashes: Hex[], priorityFeeWei: bigint): void => {
                 if (hashes.length > 0) {
                   for (const event of stressAudit.active(blockIndex, e =>
                     (e.type === "eusdDepeg" && runtime.symbol === "EUSD") ||
@@ -4856,10 +5060,28 @@ export async function runRealtimeSimulation(
                   submittedByHash.record(hash.toLowerCase(), {
                     ownerId,
                     role: "system",
-                    priorityFeeWei: oracleFee,
+                    priorityFeeWei,
                     actionType: "depeg",
                   });
                 }
+              };
+              try {
+                const from = deployerSends?.length ?? 0;
+                const hashes = await reconcileStableDepeg(
+                  ctx,
+                  runtime,
+                  fractionAt(blockIndex),
+                  blockIndex,
+                  bn,
+                  {
+                    priorityFeeWei: oracleFee,
+                    bid: envBid(`depeg:${runtime.symbol}`),
+                    ...(deployerSends ? { defer: deployerSends } : {}),
+                  },
+                  logger,
+                );
+                attribute(hashes, oracleFee);
+                deferInto(from, (hash, fee) => attribute([hash], fee));
               } catch (error) {
                 logger.event({
                   type: `${runtime.label}_task_failed`,
@@ -4889,7 +5111,7 @@ export async function runRealtimeSimulation(
                 schedule,
                 blockIndex,
                 bn,
-                { priorityFeeWei: oracleFee },
+                { priorityFeeWei: oracleFee, bid: envBid("token-launch") },
                 logger,
               );
               if (sends.length > 0) {
@@ -4953,6 +5175,7 @@ export async function runRealtimeSimulation(
           const deployerKeyTask = async (): Promise<void> => {
             if (liquidityPullRuntime) await liquidityTask();
             if (depegRuntimes.length > 0) await depegStep();
+            if (deployerSends && deployerSends.length > 0) await sendByBid(deployerSends);
           };
           if (liquidityPullRuntime || depegRuntimes.length > 0)
             tasks.push(timed(deployerKeyTask));
@@ -4960,13 +5183,22 @@ export async function runRealtimeSimulation(
           if (liquityRuntime) tasks.push(timed(liquityWatchTask));
           const results = await Promise.all(tasks);
 
+          // Everything that reads block bn as the head is done (state, keeper, oracle planning, the
+          // event reconciles, victim watches). What follows reads history (the boundary trails by a
+          // block under economicGas) or only writes artifacts, so the next block need not wait for
+          // it: stage now (PR #287 review).
+          stagePass();
+
           // After the block's own work, not beside it: this reads the block that has just been
           // mined, so it cannot race anything above, and running it inside the Promise.all would
           // put a cross-section read on the critical path of every block instead of one in twelve.
           const boundaryMs = await timed(() => liveScorer.onBlock(bn));
 
           // After the boundary read, so an agent registered here is valued from the *next* boundary
-          // rather than appearing in one it was not funded at. A stat on most blocks; a poll that
+          // rather than appearing in one it was not funded at. Under economicGas the read trails the
+          // head by a block (readLagBlocks), so a boundary at bn itself is read next pass, after this
+          // funding -- the cheatcode writes the head's state, and live and sweep both read it funded.
+          // A stat on most blocks; a poll that
           // finds an entry funds it (cheatcode on anvil, treasury transfer -- a few blocks -- on an
           // external chain), which the loop absorbs the way it absorbs any slow block: by catching up.
           await pollRegistrations(bn);
@@ -4997,8 +5229,11 @@ export async function runRealtimeSimulation(
           // boundary, which is what stops each segment losing an interval at the seam.
           // Not on the last pass: the run's end closes the final segment itself, and a roll on the
           // end block would open a segment with nothing in it.
-          if (!step.final && bn >= runStartBlock && segments?.dueToRoll())
-            await rollSegment(bn);
+          // Under economicGas the boundary reads trail the head by a block (readLagBlocks), so the
+          // segment ends on the last block they have reached.
+          const rollAt = config.economicGas ? bn - 1 : bn;
+          if (!step.final && rollAt >= runStartBlock && segments?.dueToRoll())
+            await rollSegment(rollAt);
 
           const [keeperMs, oracleMs, stateFlowMs] = results;
           let taskIdx = 3;
@@ -5053,14 +5288,83 @@ export async function runRealtimeSimulation(
             error: error instanceof Error ? error.message : String(error),
           });
         } finally {
+          // A pass that threw before its tasks finished stages here.
+          stagePass();
           processing = false;
           settle();
           // The end block has been processed -- or its pass failed, which does not move the end:
           // a pass after it would only cover blocks past the bell. A boundary the failed pass did
           // not reach is read by liveScorer.close() below.
           if (step.final) finish();
+          // Under gated mining the next block is mined only after this pass staged, so its
+          // notification usually arrives while this pass is still scoring and is dropped above --
+          // and no further block comes until a pass stages for it. Pick it up now.
+          else if (
+            gatedMiner &&
+            sendHeadBlock !== null &&
+            sendHeadBlock > lastProcessedBlock
+          ) {
+            const head = sendHeadBlock;
+            setImmediate(() => void onBlock(head));
+          }
         }
       };
+
+      if (config.economicGas && !external) {
+        gatedMiner = new GatedMiner({
+          blockTimeMs: config.blockTimeSec * 1000,
+          // Three blocks: a pass that has not staged by then is stuck, not slow (a normal pass
+          // stages within its first few hundred ms), and the chain keeps going on the previous prices.
+          gateTimeoutMs: Math.max(3_000, config.blockTimeSec * 3_000),
+          startHead: lastProcessedBlock,
+          mine: async () => {
+            await mine(publicClient);
+            return Number(await publicClient.getBlockNumber({ cacheTime: 0 }));
+          },
+          readHead: async () =>
+            Number(await publicClient.getBlockNumber({ cacheTime: 0 })),
+          // The pass starts on the miner's word rather than the watcher's next poll (a quarter
+          // block later): under gated mining the pass is what the next block waits for. The
+          // watcher stays as the fallback.
+          onMined: (head) => void onBlock(head),
+          onGateTimeout: (info) =>
+            logger.event({ type: "mining_gate_timeout", ...info }),
+          onWriteError: ({ forBlock, error, retried }) =>
+            logger.event({
+              type: "oracle_update_failed",
+              blockNumber: forBlock,
+              retried,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          onApplyHeld: (info) =>
+            logger.event({
+              type: "mining_held",
+              ...info,
+              note: info.minedAnyway
+                ? "the price writes kept failing; the block was mined on what storage holds"
+                : "the price writes failed; the block waits for the next tick rather than mix prices",
+            }),
+          onMineError: ({ head, error }) =>
+            logger.event({
+              type: "mining_failed",
+              head,
+              note: "retried at the next slot; the chain does not advance until a mine succeeds",
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          onResync: (info) =>
+            logger.event({
+              type: "mining_schedule_resynced",
+              ...info,
+              note: "the chain fell too far behind blockTimeSec to catch up; the lost time is not recovered",
+            }),
+        });
+        gatedMiner.start();
+        logger.event({
+          type: "gated_mining_started",
+          blockTimeSec: config.blockTimeSec,
+          startHead: lastProcessedBlock,
+        });
+      }
 
       unwatch = publicClient.watchBlockNumber({
         emitOnBegin: true,
@@ -5081,6 +5385,13 @@ export async function runRealtimeSimulation(
     // ---- competition end: stop the agents before scoring (a direct agent keeps placing orders unless stopped) ----
     for (const agent of agentRuntimes) agent.process?.close();
     flowProcess.close();
+    // Assigned inside the block loop's closure, which TypeScript's narrowing does not see.
+    const miner = gatedMiner as GatedMiner | null;
+    if (miner) {
+      await miner.stop();
+      logger.event({ type: "gated_mining_stopped", ...miner.stats() });
+      gatedMiner = null;
+    }
     if (!external) await setIntervalMining(publicClient, 0);
 
     // The epoch's last block: the end block on a run with a block budget (the pass loop is clamped to
@@ -5097,6 +5408,8 @@ export async function runRealtimeSimulation(
     const finalBlock = lastProcessedBlock;
     // The last boundary is the end block itself (epochExtent.ts). Read here if the last pass did not
     // get to it: a wall-clock end off the interval grid, or a final pass that failed before its read.
+    // Under economicGas it is always read here (readLagBlocks), after the miner's stop applied the
+    // final pass's writes, so the end block is the same state the sweep will read from history.
     await liveScorer.close(finalBlock);
 
     // ---- liquidity-pull teardown (issue #52): the run can end with a window still open, since the
@@ -5756,6 +6069,7 @@ export async function runRealtimeSimulation(
     if (sandboxWarning) console.error(agentSandboxBanner(sandboxWarning));
   } finally {
     try {
+      await (gatedMiner as GatedMiner | null)?.stop();
       if (config.chainMode !== "external")
         await setIntervalMining(publicClient, 0);
     } catch {

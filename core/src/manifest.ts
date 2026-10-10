@@ -111,7 +111,7 @@ export type EnvironmentManifest = {
   actions: Partial<Record<ProtocolId, readonly string[]>>;
   contracts: Record<string, unknown>;
   tokens: Record<string, { address: string; decimals: number; kind: string }>;
-  limits: Record<string, string | number>;
+  limits: Record<string, string | number | boolean>;
   funding: Record<string, string>;
   /**
    * Types and counts only -- never windows. See the header. `maxCount` is present when the seed
@@ -307,7 +307,13 @@ export function buildManifest(opts: {
         "No per-order size cap, no bundle-length cap and no open-position cap on any venue. A " +
         "trade is bounded by your balance and by the depth you are trading into.",
       defaultPriorityFeeWei: config.defaultPriorityFeeWei.toString(),
-      maxPriorityFeeWei: config.maxPriorityFeeWei.toString(),
+      // "none" under economicGas (ADR 0011): the cap is retired, and the number still in the config
+      // (fees.maxPriorityFeeWei, 5 gwei) would read as one to a self-signer.
+      maxPriorityFeeWei: config.economicGas ? "none" : config.maxPriorityFeeWei.toString(),
+      // The fee profile the reference runtime has to sign under. A self-hosted agent reads it from
+      // here (example/agents/runtime/botMain.ts), not from its own copy of the config, which may
+      // predate the change and would hold its bids to the retired 5 gwei (PR #287 review).
+      economicGas: config.economicGas,
       // For whoever signs their own transactions (sdk/src/feeRule.ts). The node orders the block on
       // maxFeePerGas while a tx pays min(maxFeePerGas, tip) at base fee 0, so this is the one rule a
       // self-signer can break without noticing -- stated here, where the cap it goes with is.

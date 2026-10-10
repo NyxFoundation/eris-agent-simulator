@@ -102,7 +102,7 @@ The order matters.
 
 1. **Stop the agents** (before scoring — a direct agent keeps placing orders until it is stopped)
 2. Stop the flow process
-3. Stop interval mining (not on external)
+3. Stop interval mining (under economicGas, stop the gated miner and apply its pending price writes; not on external)
 4. **Capture `finalBlock`** — before the teardown. Everything after it is the environment putting the world back, and scoring across it would **score the teardown**: a depeg restore buys the stable back to par, so an agent that never unwound would be marked at par
 5. Restore the liquidity pull and the depegs
 6. `flushBlocks(finalBlock)` — finish blocks.csv before `resetFork` erases the history
@@ -150,10 +150,10 @@ The order matters.
 
 ### Fee profiles
 
-| Profile | oracle / PriceFeed | keeper | Cap enforced? |
-|---|---|---|---|
-| Default (ADR 0010) | `maxPriorityFee + 1 gwei` → txIndex 0 under `--order fees` | `maxPriorityFee + 0.5 gwei` | Yes (post-hoc) |
-| `economicGas: true` (ADR 0011) | `defaultPriorityFee` (price finalization is a storage write, so the front-run target is gone) | same | **No cap** (free bidding); maxFeePerGas ≤ tip still applies ([03 §3.1.6](03-market.md)) |
+| Profile | oracle / PriceFeed | keeper | Environment's event txs (launch waves, depegs, pulls) | Cap enforced? |
+|---|---|---|---|---|
+| `economicGas: true` (ADR 0011; **default for the 12 official regimes and the practice period**) | Storage writes (PriceFeed, Aave, GMX), staged by the block pass and applied by `GatedMiner` right before it mines (`core/src/realtime/gatedMiner.ts`) | Fixed 50 gwei (`ECONOMIC_KEEPER_FEE_WEI`; not for ordering, so it is not crowded out of the block) | A random multiple of the front-running value V (`core/src/realtime/envBid.ts`) | **No cap** (free bidding); maxFeePerGas ≤ tip still applies ([03 §3.1.6](03-market.md)) |
+| `economicGas: false` (ADR 0010, superseded) | `maxPriorityFee + 1 gwei` → txIndex 0 under `--order fees` | `maxPriorityFee + 0.5 gwei` | Same as the oracle | Yes (post-hoc) |
 
 ## 2.3 Time
 

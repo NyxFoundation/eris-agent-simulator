@@ -45,6 +45,7 @@ import {
 } from "@eris/sdk/protocols/uniswap.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
+import { FRONT_RUN_GAS, impactValueUsd, probeAmount, type EnvBidContext } from "./envBid.js";
 import type {
   EventSchedule,
   ResolvedStressEvent,
@@ -344,7 +345,7 @@ export async function stepTokenLaunch(
   schedule: EventSchedule,
   blockIndex: number,
   blockNumber: number,
-  opts: { priorityFeeWei: bigint },
+  opts: { priorityFeeWei: bigint; bid?: EnvBidContext },
   logger: RunLogger,
 ): Promise<TokenLaunchSent[]> {
   const sent: TokenLaunchSent[] = [];
@@ -506,7 +507,7 @@ async function advanceListing(
   state: TokenLaunchState,
   blockIndex: number,
   blockNumber: number,
-  opts: { priorityFeeWei: bigint },
+  opts: { priorityFeeWei: bigint; bid?: EnvBidContext },
   logger: RunLogger,
   sent: TokenLaunchSent[],
 ): Promise<void> {
@@ -738,7 +739,7 @@ async function sendSwap(
   usdcBefore: bigint,
   blockIndex: number,
   blockNumber: number,
-  opts: { priorityFeeWei: bigint },
+  opts: { priorityFeeWei: bigint; bid?: EnvBidContext },
   logger: RunLogger,
   sent: TokenLaunchSent[],
 ): Promise<void> {
@@ -779,6 +780,42 @@ async function sendSwap(
   }
   if (quoted <= 0n) return;
   const minOut = (quoted * (10_000n - WAVE_SLIPPAGE_BPS)) / 10_000n;
+  // economicGas (ADR 0011): bid a random fraction of what getting ahead of this trade is worth
+  // (envBid.ts). The approve, when there is one, goes at the same fee: it is the same sender, so the
+  // swap cannot be placed ahead of it anyway.
+  let bid: ReturnType<EnvBidContext["bidder"]["bid"]> | null = null;
+  if (opts.bid) {
+    const small = probeAmount(amountIn);
+    let smallQuoted = 0n;
+    try {
+      const probe = await ctx.publicClient.simulateContract({
+        address: UNISWAP.quoterV2,
+        abi: quoterV2Abi,
+        functionName: "quoteExactInputSingle",
+        args: [
+          { tokenIn, tokenOut, amountIn: small, fee: LAUNCH_POOL_FEE, sqrtPriceLimitX96: 0n },
+        ],
+      });
+      smallQuoted = probe.result[0];
+    } catch {
+      // No marginal rate: V is 0 and the bid is the floor, which is a price, not a stall.
+    }
+    bid = opts.bid.bidder.bid({
+      valueUsd: impactValueUsd({
+        amountIn,
+        quoted,
+        smallIn: small,
+        smallQuoted,
+        usdDecimals: TOKENS.USDC.decimals,
+        usdSide: kind === "buy" ? "in" : "out",
+      }),
+      frontRunGas: FRONT_RUN_GAS.uniswap,
+      gasLimit: GAS_SWAP,
+      ethUsd: opts.bid.ethUsd,
+      balanceWei: await ctx.publicClient.getBalance({ address: account.address }),
+    });
+  }
+  const priorityFeeWei = bid?.priorityFeeWei ?? opts.priorityFeeWei;
   const needApprove =
     kind === "buy" ? !state.approved.usdc : !state.approved.token;
   const nonce = await ctx.publicClient.getTransactionCount({
@@ -796,8 +833,8 @@ async function sendSwap(
       data,
       gas,
       nonce: n++,
-      maxFeePerGas: baseFee + opts.priorityFeeWei,
-      maxPriorityFeePerGas: opts.priorityFeeWei,
+      maxFeePerGas: baseFee + priorityFeeWei,
+      maxPriorityFeePerGas: priorityFeeWei,
     });
   const ownerKey = launchWaveWalletKey(state.slot);
   if (needApprove) {
@@ -858,6 +895,14 @@ async function sendSwap(
     amountIn: amountIn.toString(),
     quotedOut: quoted.toString(),
     hash,
+    ...(bid
+      ? {
+          priorityFeeWei: bid.priorityFeeWei.toString(),
+          frontRunValueUsd: Number(bid.valueUsd.toFixed(4)),
+          bidFraction: Number(bid.u.toFixed(4)),
+          ...(bid.balanceCapped ? { bidBalanceCapped: true } : {}),
+        }
+      : {}),
   });
 }
 

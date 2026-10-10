@@ -11,6 +11,7 @@ The dashboard's "Updates" page carries the same entries.
 
 | Date | What changed |
 |---|---|
+| [2026-10-08](2026-10-08.en.md) | The priority fee cap (5 gwei) is removed; the reference price is written directly into the contracts |
 | [2026-10-06](2026-10-06.en.md) | The permissionless lending contract (SimpleLending) is no longer deployed in the official regimes; only strategies using the `lending` actions in local backtests are affected |
 | [2026-10-05](2026-10-05.en.md) | The practice environment was rebuilt: standings reset, every venue address changed, four changes that stop code from working, GMX fees and liquidation, and Aave's free collateral |
 

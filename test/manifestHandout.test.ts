@@ -74,3 +74,34 @@ test("a directory without a manifest, or a file that is not one, is refused", ()
   );
   assert.throws(() => readRunManifest(empty), /not an environment manifest/);
 });
+
+test("the manifest publishes no fee cap under economicGas, and the cap under the capped profile", () => {
+  // ADR 0011: the config keeps fees.maxPriorityFeeWei (5 gwei), which is not a cap once economicGas
+  // retires it -- published as a number, a self-signer would read it as one.
+  const build = (economicGas: string) =>
+    buildManifest({
+      config: {
+        ...loadConfig({ ENABLED_PROTOCOLS: "uniswap", ERIS_ECONOMIC_GAS: economicGas }),
+        stressEvents: [],
+        vulnEvents: [],
+      },
+      priceFeed: "0x2222222222222222222222222222222222222222",
+      participants: [],
+    } as Parameters<typeof buildManifest>[0]);
+  assert.equal(build("1").limits.maxPriorityFeeWei, "none");
+  assert.equal(build("0").limits.maxPriorityFeeWei, "5000000000");
+});
+
+test("a self-hosted runtime takes the fee profile from the manifest over its own config", async () => {
+  // ADR 0011 / PR #287 review: an old practice.yaml (no economicGas line, or `false`) would hold the
+  // reference runtime's bids to the retired 5 gwei. botMain.ts passes the manifest's value as an
+  // override, the same way it passes the period's length.
+  const { loadYamlConfig } = await import("@eris/sdk/runConfig.js");
+  const dir = mkdtempSync(join(tmpdir(), "eris-fee-profile-"));
+  const file = join(dir, "old-practice.yaml");
+  writeFileSync(file, "run:\n  blocks: 10\n  economicGas: false\n");
+  assert.equal(loadYamlConfig(file).config.economicGas, false);
+  assert.equal(loadYamlConfig(file, { ERIS_ECONOMIC_GAS: "1" }).config.economicGas, true);
+  const manifest = coordinatorManifest();
+  assert.equal(typeof manifest.limits.economicGas, "boolean");
+});

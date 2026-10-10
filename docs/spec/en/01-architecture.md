@@ -35,7 +35,7 @@ Four kinds of OS process run during a run.
 ```
 ┌─ coordinator ─────────────────────────┐      ┌─ agent process × N ────────────┐
 │ anvil lifecycle                        │      │ runtime/bot.ts drives all kinds │
-│ fair price → PriceFeed / oracle txs    │      │ read.ts: observation per block  │
+│ fair price → PriceFeed / oracle writes │      │ read.ts: observation per block  │
 │ relays the flow bot's orders           │      │ agent.ts: decide / run          │
 │ GMX keeper                             │      │ send.ts: signs and sends        │
 │ injects stress events                  │      │  (manages its own nonce)        │

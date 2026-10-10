@@ -13,6 +13,7 @@ import {
   sendAndMine,
   sendNoMine,
   setStorageAt,
+  type StorageWrite,
 } from "@eris/sdk/chain.js";
 import { deployContract } from "@eris/sdk/protocols/deploy.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
@@ -134,6 +135,18 @@ const UPDATED_AT_BLOCK_SLOT = `0x${"0".repeat(63)}1` as Hex;
 // target an agent would front-run mechanically disappears (ordering guarantee independent of the priority-fee cap).
 // Price distribution is an env mechanism, not an agent action, so using a cheatcode does not compromise realism.
 // The agent's read path (readFairPrice = latestAnswer) is unchanged, so the experience and submission compatibility stay the same.
+// The writes a PriceFeed price is: the answer, then the block it is for.
+export function priceFeedWrites(
+  address: Address,
+  fairPrice: number,
+  blockNumber: bigint,
+): StorageWrite[] {
+  return [
+    { address, slot: ANSWER_SLOT, value: bigintToStorageWord(toPriceFeedAnswer(fairPrice)) },
+    { address, slot: UPDATED_AT_BLOCK_SLOT, value: bigintToStorageWord(blockNumber) },
+  ];
+}
+
 export async function writePriceFeedStorage(
   publicClient: PublicClient,
   address: Address,
@@ -195,6 +208,19 @@ function answerSlotFor(token: Address, mapSlot: bigint): Hex {
 }
 
 // Apply the same direct storage write as ADR 0011 §1 to extra bases as well (mapping slots 2/3).
+// An extra base's PriceFeed price (setPriceFor's mapping), as writes.
+export function priceFeedWritesFor(
+  address: Address,
+  token: Address,
+  price: number,
+  blockNumber: bigint,
+): StorageWrite[] {
+  return [
+    { address, slot: answerSlotFor(token, 2n), value: bigintToStorageWord(toPriceFeedAnswer(price)) },
+    { address, slot: answerSlotFor(token, 3n), value: bigintToStorageWord(blockNumber) },
+  ];
+}
+
 export async function writePriceFeedStorageFor(
   publicClient: PublicClient,
   address: Address,

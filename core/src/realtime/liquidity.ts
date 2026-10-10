@@ -27,6 +27,12 @@ import type { RunLogger } from "../logger.js";
 import type { EventSchedule } from "./events.js";
 import { requireStandingApprovals } from "./standingApprovals.js";
 import {
+  FRONT_RUN_GAS,
+  pullFrontRunValueUsd,
+  type DeferredSend,
+  type EnvBidContext,
+} from "./envBid.js";
+import {
   approvalsFor,
   buildDeposit,
   buildWithdraw,
@@ -276,7 +282,12 @@ export async function reconcileLiquidityPull(
   schedule: EventSchedule,
   blockIndex: number,
   blockNumber: number,
-  opts: { priorityFeeWei: bigint },
+  // `bid` (economicGas, ADR 0011): price each send at a random fraction of what getting ahead of it
+  // is worth (envBid.ts) instead of the fixed `priorityFeeWei`.
+  // `defer`: collect the sends instead of making them, for the caller to order by bid with another
+  // event's sends from the same key (sendByBid). The returned hashes are then empty; each deferred
+  // send resolves to its own.
+  opts: { priorityFeeWei: bigint; bid?: EnvBidContext; defer?: DeferredSend[] },
   logger: RunLogger,
 ): Promise<Hex[]> {
   const mults = schedule.depthMultiplierAt(blockIndex);
@@ -354,18 +365,49 @@ export async function reconcileLiquidityPull(
               target - applied,
               deadline,
             );
-      const hash = await sendNoMine(
-        ctx.publicClient,
-        ctx.walletClient,
-        ctx.chain,
-        runtime.ownerPk,
-        { to: call.to, data: call.data, gas: RECONCILE_GAS },
-        opts.priorityFeeWei,
-      );
-      runtime.pending.set(key, { hash, blockIndex });
-      allSettled = false;
-      hashes.push(hash);
-      logger.event({
+      const bid = opts.bid
+        ? opts.bid.bidder.bid({
+            valueUsd:
+              depthBefore !== undefined && target < applied
+                ? pullFrontRunValueUsd({
+                    depthBefore,
+                    depthAfter: depthBefore - (applied - target),
+                    // The environment seeded the pool, so its seeded share is the seeded depth.
+                    seededDepth: pos.seededShare,
+                  })
+                : 0,
+            frontRunGas: FRONT_RUN_GAS[pos.venue],
+            gasLimit: RECONCILE_GAS,
+            ethUsd: opts.bid.ethUsd,
+            balanceWei: await ctx.publicClient.getBalance({ address: runtime.owner }),
+          })
+        : null;
+      const priorityFeeWei = bid?.priorityFeeWei ?? opts.priorityFeeWei;
+      const send = async (): Promise<Hex | null> => {
+        let hash: Hex;
+        try {
+          hash = await sendNoMine(
+            ctx.publicClient,
+            ctx.walletClient,
+            ctx.chain,
+            runtime.ownerPk,
+            { to: call.to, data: call.data, gas: RECONCILE_GAS },
+            priorityFeeWei,
+          );
+        } catch (error) {
+          logger.event({
+            type: "stress_liquidity_pull_failed",
+            blockIndex,
+            blockNumber,
+            venue: pos.venue,
+            market: pos.marketKey,
+            targetShare: target.toString(),
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        }
+        runtime.pending.set(key, { hash, blockIndex });
+        logger.event({
         type: "stress_liquidity_pull",
         blockIndex,
         blockNumber,
@@ -380,7 +422,25 @@ export async function reconcileLiquidityPull(
         previousShare: applied.toString(),
         targetShare: target.toString(),
         hash,
-      });
+        ...(bid
+          ? {
+              priorityFeeWei: bid.priorityFeeWei.toString(),
+              frontRunValueUsd: Number(bid.valueUsd.toFixed(4)),
+              bidFraction: Number(bid.u.toFixed(4)),
+              ...(bid.balanceCapped ? { bidBalanceCapped: true } : {}),
+            }
+          : {}),
+        });
+        return hash;
+      };
+      // Something is going out either way, so the window is not settled this block.
+      allSettled = false;
+      if (opts.defer) {
+        opts.defer.push({ priorityFeeWei, send });
+        continue;
+      }
+      const hash = await send();
+      if (hash) hashes.push(hash);
     } catch (error) {
       // `applied` is untouched, so the next block recomputes the same delta and retries: a failed
       // send costs one block of depth rather than desynchronizing the pool for the whole run.

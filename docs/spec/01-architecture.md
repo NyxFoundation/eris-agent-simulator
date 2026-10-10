@@ -35,7 +35,7 @@ example/  ──►  sdk/  ◄──  core/  ──►  runs/<id>/  ◄──  d
 ```
 ┌─ coordinator ─────────────────────────┐      ┌─ agent process × N ────────────┐
 │ anvil ライフサイクル                   │      │ runtime/bot.ts が一律に駆動     │
-│ fair price 生成 → PriceFeed/oracle tx  │      │ read.ts: 毎ブロック observation │
+│ fair price → PriceFeed/oracle 書込     │      │ read.ts: 毎ブロック observation │
 │ flow bot 注文の中継送信                │      │ agent.ts: decide / run          │
 │ GMX keeper                             │      │ send.ts: 署名・直接送信         │
 │ ストレスイベントの注入                 │      │  （nonce は自己管理）           │
