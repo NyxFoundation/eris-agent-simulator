@@ -147,6 +147,9 @@ export function buildWhaleOrder(
   event: ResolvedStressEvent,
   fairPriceUsdcPerBase: number,
   priorityFeeWei: bigint,
+  // The print's slippage limit (ADR 0011 §1b, economicGas): what a sandwich around it can take at
+  // most. Omitted, the venue adapter's default applies (50 bps).
+  slippageBps?: number,
 ): FlowOrderWire {
   if (event.type !== "whale")
     throw new Error(`buildWhaleOrder called with a ${event.type} event`);
@@ -173,12 +176,106 @@ export function buildWhaleOrder(
       type: SWAP_TYPE[venue],
       tokenIn: side === "buy" ? "USDC" : base,
       amountIn: amount.toString(),
-      // A whale takes whatever the book gives: the whole content of this event is the impact, so
-      // capping slippage would cap the event itself. minAmountOut 0 is deliberate.
-      minAmountOut: "0",
+      // The limit is on the quote at build time, not on the impact: a whale still moves the book by
+      // its whole size, and a sandwich can take at most this share of what it receives. (This used
+      // to say `minAmountOut: "0"`, a field no adapter reads, so the print ran at each adapter's
+      // default 50 bps all along.)
+      ...(slippageBps !== undefined ? { slippageBps } : {}),
       // Non-WETH bases need the market tag so the adapter can resolve the right pool; WETH omits it
       // to keep the action byte-identical to ordinary WETH flow.
       ...(base === "WETH" ? {} : { base }),
     } as unknown as FlowOrderWire["action"],
   };
+}
+
+// A whale print under economicGas carries a slippage limit (ADR 0011 §1c), so a block whose earlier
+// transactions moved the pool against it reverts it -- not only a sandwich: participants cannot see a
+// pending print (the gateway refuses every view of the pool) and the print's block, venue and side
+// are the seed's, so what reverts one is most often ordinary arbitrage that bid above it. A whale is a
+// single event: a reverted print with no second attempt turns that epoch into calm, with nothing but a
+// post-run warning to show for it. A large trader whose order reverts sends it again at a fresh quote;
+// so does this one, up to WHALE_MAX_ATTEMPTS in all.
+export const WHALE_MAX_ATTEMPTS = 3;
+// Blocks to wait for a print's receipt before giving up on knowing what became of it.
+export const WHALE_RECEIPT_WAIT_BLOCKS = 10;
+
+// A receipt's status, or null while the transaction has none (not mined yet, or replaced).
+export type WhaleReceiptStatus = "success" | "reverted" | null;
+
+type WhaleAttempt = {
+  event: ResolvedStressEvent;
+  hashes: readonly string[];
+  attempt: number;
+  sentBlock: number;
+};
+
+export type WhalePoll = {
+  // Prints to send again, with the attempt number the new one will carry.
+  resubmit: Array<{ event: ResolvedStressEvent; attempt: number; revertedHashes: string[] }>;
+  filled: Array<{ event: ResolvedStressEvent; attempt: number; hash: string }>;
+  // Out of attempts: the print never happened.
+  abandoned: Array<{ event: ResolvedStressEvent; attempts: number; revertedHashes: string[] }>;
+  // No receipt within WHALE_RECEIPT_WAIT_BLOCKS: what became of it is unknown, and it is not resent.
+  unconfirmed: Array<{ event: ResolvedStressEvent; attempt: number; hashes: string[] }>;
+};
+
+// The prints in flight and what became of them. Judged by the last hash of an attempt (the swap; an
+// approval, when there is one, goes first). An attempt whose submission failed has no hashes and
+// counts as a failed attempt. In memory only: a practice period that restarts between a print and
+// its receipt does not resend it.
+export class WhaleResubmits {
+  private pending: WhaleAttempt[] = [];
+  readonly counts = {
+    prints: 0,
+    filledFirstAttempt: 0,
+    filledAfterResubmit: 0,
+    abandoned: 0,
+    unconfirmed: 0,
+  };
+
+  sent(
+    event: ResolvedStressEvent,
+    hashes: readonly string[],
+    attempt: number,
+    blockNumber: number,
+  ): void {
+    if (attempt === 1) this.counts.prints++;
+    this.pending.push({ event, hashes, attempt, sentBlock: blockNumber });
+  }
+
+  get unresolved(): number {
+    return this.pending.length;
+  }
+
+  async poll(
+    blockNumber: number,
+    status: (hash: string) => Promise<WhaleReceiptStatus>,
+  ): Promise<WhalePoll> {
+    const out: WhalePoll = { resubmit: [], filled: [], abandoned: [], unconfirmed: [] };
+    const waiting: WhaleAttempt[] = [];
+    for (const a of this.pending) {
+      const last = a.hashes[a.hashes.length - 1];
+      const s = last === undefined ? "reverted" : await status(last);
+      if (s === "success") {
+        out.filled.push({ event: a.event, attempt: a.attempt, hash: last! });
+        if (a.attempt === 1) this.counts.filledFirstAttempt++;
+        else this.counts.filledAfterResubmit++;
+      } else if (s === "reverted") {
+        const revertedHashes = last === undefined ? [] : [last];
+        if (a.attempt < WHALE_MAX_ATTEMPTS) {
+          out.resubmit.push({ event: a.event, attempt: a.attempt + 1, revertedHashes });
+        } else {
+          out.abandoned.push({ event: a.event, attempts: a.attempt, revertedHashes });
+          this.counts.abandoned++;
+        }
+      } else if (blockNumber - a.sentBlock >= WHALE_RECEIPT_WAIT_BLOCKS) {
+        out.unconfirmed.push({ event: a.event, attempt: a.attempt, hashes: [...a.hashes] });
+        this.counts.unconfirmed++;
+      } else {
+        waiting.push(a);
+      }
+    }
+    this.pending = waiting;
+    return out;
+  }
 }

@@ -45,7 +45,14 @@ import {
 } from "@eris/sdk/protocols/uniswap.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
-import { FRONT_RUN_GAS, impactValueUsd, probeAmount, type EnvBidContext } from "./envBid.js";
+import {
+  FLAT_FEE_MEDIAN_WEI,
+  LAUNCH_WAVE_SLIPPAGE_BPS,
+  impactValueUsd,
+  probeAmount,
+  type EnvBid,
+  type EnvBidContext,
+} from "./envBid.js";
 import type {
   EventSchedule,
   ResolvedStressEvent,
@@ -779,11 +786,16 @@ async function sendSwap(
     return;
   }
   if (quoted <= 0n) return;
-  const minOut = (quoted * (10_000n - WAVE_SLIPPAGE_BPS)) / 10_000n;
-  // economicGas (ADR 0011): bid a random fraction of what getting ahead of this trade is worth
-  // (envBid.ts). The approve, when there is one, goes at the same fee: it is the same sender, so the
-  // swap cannot be placed ahead of it anyway.
-  let bid: ReturnType<EnvBidContext["bidder"]["bid"]> | null = null;
+  // Under economicGas the limit is drawn per trade and tight (ADR 0011 §1b): the old 15% let a
+  // sandwich around a wave buy take most of its impact.
+  const slippageBps = opts.bid
+    ? BigInt(opts.bid.bidder.drawSlippageBps(...LAUNCH_WAVE_SLIPPAGE_BPS))
+    : WAVE_SLIPPAGE_BPS;
+  const minOut = (quoted * (10_000n - slippageBps)) / 10_000n;
+  // economicGas (ADR 0011 §1c): an ordinary buyer's fee; the trade is protected by its slippage
+  // limit, not by outbidding whoever might get ahead of it. Its impact (V) is recorded, not bid. The
+  // approve, when there is one, goes at the same fee: same sender, nonce order.
+  let bid: (EnvBid & { valueUsd: number }) | null = null;
   if (opts.bid) {
     const small = probeAmount(amountIn);
     let smallQuoted = 0n;
@@ -800,7 +812,8 @@ async function sendSwap(
     } catch {
       // No marginal rate: V is 0 and the bid is the floor, which is a price, not a stall.
     }
-    bid = opts.bid.bidder.bid({
+    bid = {
+      ...opts.bid.bidder.flatBid(FLAT_FEE_MEDIAN_WEI),
       valueUsd: impactValueUsd({
         amountIn,
         quoted,
@@ -809,11 +822,7 @@ async function sendSwap(
         usdDecimals: TOKENS.USDC.decimals,
         usdSide: kind === "buy" ? "in" : "out",
       }),
-      frontRunGas: FRONT_RUN_GAS.uniswap,
-      gasLimit: GAS_SWAP,
-      ethUsd: opts.bid.ethUsd,
-      balanceWei: await ctx.publicClient.getBalance({ address: account.address }),
-    });
+    };
   }
   const priorityFeeWei = bid?.priorityFeeWei ?? opts.priorityFeeWei;
   const needApprove =
@@ -899,8 +908,6 @@ async function sendSwap(
       ? {
           priorityFeeWei: bid.priorityFeeWei.toString(),
           frontRunValueUsd: Number(bid.valueUsd.toFixed(4)),
-          bidFraction: Number(bid.u.toFixed(4)),
-          ...(bid.balanceCapped ? { bidBalanceCapped: true } : {}),
         }
       : {}),
   });

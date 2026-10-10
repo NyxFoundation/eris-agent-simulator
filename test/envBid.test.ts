@@ -2,95 +2,22 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Rng } from "@eris/sdk/rng.js";
 import {
-  ENV_BID_MEDIAN,
   EnvBidder,
-  FRONT_RUN_GAS,
   PULL_REFERENCE_TRADE_USD,
   SEEDED_SPOT_DEPTH_USD,
   impactValueUsd,
   pullFrontRunValueUsd,
   seededImpactValueUsd,
   sendByBid,
+  FLAT_FEE_MEDIAN_WEI,
+  WHALE_SLIPPAGE_BPS,
+  LAUNCH_WAVE_SLIPPAGE_BPS,
+  DEPEG_SLIPPAGE_BPS,
 } from "../core/src/realtime/envBid.js";
 
-// ADR 0011 §1b: the environment's event transactions bid U × V per gas of the front-runner's swap.
-// In ~60% of draws U < 1, i.e. getting ahead costs less than it is worth.
+// ADR 0011 §1c: the environment's event transactions pay an ordinary fee and carry a slippage limit.
 
 const FLOOR = 100_000_000n; // 0.1 gwei
-
-test("about 60% of bids are below the front-running value", () => {
-  const bidder = new EnvBidder(Rng.fromSeed(101, "env-bid:test"), FLOOR);
-  const n = 20_000;
-  let below = 0;
-  const us: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const { u } = bidder.bid({
-      valueUsd: 100,
-      frontRunGas: FRONT_RUN_GAS.uniswap,
-      gasLimit: 700_000n,
-      ethUsd: 3000,
-    });
-    us.push(u);
-    if (u < 1) below++;
-  }
-  const share = below / n;
-  assert.ok(share > 0.585 && share < 0.615, `share below 1: ${share}`);
-  us.sort((a, b) => a - b);
-  const median = us[n / 2];
-  assert.ok(Math.abs(median - ENV_BID_MEDIAN) < 0.02, `median ${median}`);
-});
-
-test("bid × the front-runner's gas = U × V: what getting ahead costs is the drawn share of V", () => {
-  for (const venue of ["uniswap", "balancer", "curve"] as const) {
-    const bidder = new EnvBidder(Rng.fromSeed(7, `env-bid:${venue}`), FLOOR);
-    const b = bidder.bid({
-      valueUsd: 300,
-      frontRunGas: FRONT_RUN_GAS[venue],
-      gasLimit: 900_000n,
-      ethUsd: 3000,
-    });
-    const costUsd = (Number(b.priorityFeeWei * FRONT_RUN_GAS[venue]) / 1e18) * 3000;
-    // Integer division on the fee per gas loses at most one wei per gas.
-    assert.ok(Math.abs(costUsd - b.u * 300) < 1e-6, `${venue}: ${costUsd} vs ${b.u * 300}`);
-  }
-});
-
-test("the gas limit does not move the bid unless the balance cap binds", () => {
-  const bid = (gasLimit: bigint, balanceWei?: bigint) =>
-    new EnvBidder(Rng.fromSeed(7, "env-bid:limit"), FLOOR).bid({
-      valueUsd: 300,
-      frontRunGas: FRONT_RUN_GAS.curve,
-      gasLimit,
-      ethUsd: 3000,
-      ...(balanceWei !== undefined ? { balanceWei } : {}),
-    });
-  const ample = 1000n * 10n ** 18n;
-  const base = bid(135_000n, ample);
-  for (const gasLimit of [300_000n, 600_000n, 900_000n, 5_000_000n])
-    assert.equal(bid(gasLimit, ample).priorityFeeWei, base.priorityFeeWei, `${gasLimit}`);
-  assert.equal(bid(900_000n).priorityFeeWei, base.priorityFeeWei, "no balance given");
-  assert.equal(base.balanceCapped, false);
-});
-
-test("never below the floor, and capped at half the sender's balance", () => {
-  const bidder = new EnvBidder(Rng.fromSeed(7, "env-bid:test"), FLOOR);
-  const zero = bidder.bid({
-    valueUsd: 0,
-    frontRunGas: FRONT_RUN_GAS.uniswap,
-    gasLimit: 600_000n,
-    ethUsd: 3000,
-  });
-  assert.equal(zero.priorityFeeWei, FLOOR);
-  const capped = bidder.bid({
-    valueUsd: 1_000_000,
-    frontRunGas: FRONT_RUN_GAS.uniswap,
-    gasLimit: 100_000n,
-    ethUsd: 3000,
-    balanceWei: 10n ** 18n,
-  });
-  assert.equal(capped.balanceCapped, true);
-  assert.equal(capped.priorityFeeWei, 10n ** 18n / 2n / 100_000n);
-});
 
 test("impact value: what the trade loses against the marginal rate, in dollars", () => {
   // Selling 1,000 for 990 USDC when the marginal rate is 1.00: $10 of impact (USDC out, 6 decimals).
@@ -176,4 +103,42 @@ test("one key's deferred sends go out highest bid first, ties in the callers' or
   assert.deepEqual(sent, ["depeg", "pull-b", "pull-c", "pull-a"]);
   // Results stay in the callers' order.
   assert.deepEqual(hashes, ["0xpull-a", "0xpull-b", "0xdepeg", "0xpull-c"]);
+});
+
+test("the ordinary fee averages 1-2 gwei, and never falls below the floor", () => {
+  // Pulls and whale prints pay what an ordinary sender pays (PR #287 follow-up), not a share of V.
+  const bidder = new EnvBidder(Rng.fromSeed(101, "env-bid:flat"), FLOOR);
+  const n = 20_000;
+  let sum = 0;
+  const fees: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const gwei = Number(bidder.flatBid(FLAT_FEE_MEDIAN_WEI).priorityFeeWei) / 1e9;
+    sum += gwei;
+    fees.push(gwei);
+  }
+  const mean = sum / n;
+  assert.ok(mean > 1 && mean < 2, `mean ${mean} gwei`);
+  fees.sort((a, b) => a - b);
+  const p05 = fees[Math.floor(n * 0.05)];
+  const p95 = fees[Math.floor(n * 0.95)];
+  assert.ok(p05 > 0.6 && p95 < 3, `p05 ${p05}, p95 ${p95}`);
+  const floored = new EnvBidder(Rng.fromSeed(1, "env-bid:floor"), 5_000_000_000n);
+  assert.equal(floored.flatBid(FLAT_FEE_MEDIAN_WEI, 0).priorityFeeWei, 5_000_000_000n);
+});
+
+test("slippage limits are drawn over a factor-of-two range, inside it; the whale's is a fixed 0.5%", () => {
+  assert.equal(WHALE_SLIPPAGE_BPS, 50);
+  const bidder = new EnvBidder(Rng.fromSeed(7, "env-bid:slippage"), FLOOR);
+  for (const [lo, hi] of [LAUNCH_WAVE_SLIPPAGE_BPS, DEPEG_SLIPPAGE_BPS]) {
+    assert.equal(hi, lo * 2);
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = 0; i < 2_000; i++) {
+      const bps = bidder.drawSlippageBps(lo, hi);
+      min = Math.min(min, bps);
+      max = Math.max(max, bps);
+    }
+    assert.ok(min >= lo && max <= hi, `[${lo}, ${hi}]: drew ${min}..${max}`);
+    assert.ok(min < lo * 1.05 && max > hi * 0.95, `the whole range is used: ${min}..${max}`);
+  }
 });

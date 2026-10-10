@@ -16,6 +16,10 @@ import {
   whaleEndowment,
   whaleFunding,
   whaleFundingCeiling,
+  WhaleResubmits,
+  WHALE_MAX_ATTEMPTS,
+  WHALE_RECEIPT_WAIT_BLOCKS,
+  type WhaleReceiptStatus,
 } from "../core/src/realtime/whale.js";
 import { baseTokens } from "@eris/sdk/markets.js";
 
@@ -103,13 +107,15 @@ test("a sell spends the base and a buy spends USDC, at the venue asked for", () 
   assert.equal(buyAction.amountIn, (80_000n * 10n ** 6n).toString());
 });
 
-test("a whale accepts any fill: capping slippage would cap the event itself", () => {
+test("a whale's slippage limit rides on the order; without one the adapter's default applies", () => {
+  // The order used to carry `minAmountOut: "0"`, a field no adapter reads: the print ran at each
+  // adapter's default 50 bps. Under economicGas the limit is drawn per print (ADR 0011 §1b).
   const ev = new EventSchedule([WHALE], 42, 100).events[0];
-  const action = buildWhaleOrder(ev, 2000, 1n).action as unknown as Record<
-    string,
-    string
-  >;
-  assert.equal(action.minAmountOut, "0");
+  const withLimit = buildWhaleOrder(ev, 2000, 1n, 75).action as unknown as Record<string, unknown>;
+  assert.equal(withLimit.slippageBps, 75);
+  assert.equal("minAmountOut" in withLimit, false);
+  const without = buildWhaleOrder(ev, 2000, 1n).action as unknown as Record<string, unknown>;
+  assert.equal("slippageBps" in without, false);
 });
 
 const whaleEvent = (over: Record<string, unknown>) => ({
@@ -245,4 +251,91 @@ test("a whale needs no trapezoid fields", () => {
   );
   assert.equal(parsed.type, "whale");
   assert.equal(parsed.rampBlocks, 0);
+});
+
+// ---- resending a reverted print (whale.ts WhaleResubmits) ----
+
+const resolvedWhale = () => {
+  const schedule = new EventSchedule([{ ...WHALE, side: "buy" as const }], 7, 200);
+  return schedule.events[0];
+};
+
+const statuses = (m: Record<string, WhaleReceiptStatus>) => async (hash: string) => m[hash] ?? null;
+
+test("a filled print is not sent again", async () => {
+  const ev = resolvedWhale();
+  const tracker = new WhaleResubmits();
+  tracker.sent(ev, ["0xa"], 1, 100);
+  const polled = await tracker.poll(101, statuses({ "0xa": "success" }));
+  assert.deepEqual(polled.resubmit, []);
+  assert.equal(polled.filled.length, 1);
+  assert.equal(tracker.unresolved, 0);
+  assert.equal(tracker.counts.filledFirstAttempt, 1);
+});
+
+test("a reverted print is sent again, up to WHALE_MAX_ATTEMPTS in all, then abandoned", async () => {
+  const ev = resolvedWhale();
+  const tracker = new WhaleResubmits();
+  tracker.sent(ev, ["0x1"], 1, 100);
+  const reverted: Record<string, WhaleReceiptStatus> = {};
+  let attempt = 1;
+  for (let block = 101; attempt < WHALE_MAX_ATTEMPTS; block++) {
+    reverted[`0x${attempt}`] = "reverted";
+    const polled = await tracker.poll(block, statuses(reverted));
+    assert.equal(polled.resubmit.length, 1);
+    assert.equal(polled.resubmit[0].attempt, attempt + 1);
+    assert.deepEqual(polled.resubmit[0].revertedHashes, [`0x${attempt}`]);
+    attempt++;
+    tracker.sent(ev, [`0x${attempt}`], attempt, block);
+  }
+  reverted[`0x${attempt}`] = "reverted";
+  const last = await tracker.poll(200, statuses(reverted));
+  assert.deepEqual(last.resubmit, []);
+  assert.equal(last.abandoned.length, 1);
+  assert.equal(last.abandoned[0].attempts, WHALE_MAX_ATTEMPTS);
+  assert.equal(tracker.counts.prints, 1);
+  assert.equal(tracker.counts.abandoned, 1);
+});
+
+test("a resent print that fills counts as filled after a resend", async () => {
+  const ev = resolvedWhale();
+  const tracker = new WhaleResubmits();
+  tracker.sent(ev, ["0x1"], 1, 100);
+  const first = await tracker.poll(101, statuses({ "0x1": "reverted" }));
+  tracker.sent(first.resubmit[0].event, ["0x2"], first.resubmit[0].attempt, 101);
+  const second = await tracker.poll(102, statuses({ "0x1": "reverted", "0x2": "success" }));
+  assert.equal(second.filled[0].attempt, 2);
+  assert.equal(tracker.counts.filledAfterResubmit, 1);
+  assert.equal(tracker.counts.filledFirstAttempt, 0);
+});
+
+test("an attempt whose submission failed is sent again", async () => {
+  const ev = resolvedWhale();
+  const tracker = new WhaleResubmits();
+  tracker.sent(ev, [], 1, 100);
+  const polled = await tracker.poll(101, statuses({}));
+  assert.equal(polled.resubmit.length, 1);
+  assert.equal(polled.resubmit[0].attempt, 2);
+});
+
+test("the last hash decides: an approval that succeeded does not make a reverted swap a fill", async () => {
+  const ev = resolvedWhale();
+  const tracker = new WhaleResubmits();
+  tracker.sent(ev, ["0xapprove", "0xswap"], 1, 100);
+  const polled = await tracker.poll(101, statuses({ "0xapprove": "success", "0xswap": "reverted" }));
+  assert.deepEqual(polled.filled, []);
+  assert.equal(polled.resubmit.length, 1);
+});
+
+test("a print with no receipt waits, then is reported unconfirmed and not resent", async () => {
+  const ev = resolvedWhale();
+  const tracker = new WhaleResubmits();
+  tracker.sent(ev, ["0xa"], 1, 100);
+  const early = await tracker.poll(100 + WHALE_RECEIPT_WAIT_BLOCKS - 1, statuses({}));
+  assert.deepEqual(early.unconfirmed, []);
+  assert.equal(tracker.unresolved, 1);
+  const late = await tracker.poll(100 + WHALE_RECEIPT_WAIT_BLOCKS, statuses({}));
+  assert.equal(late.unconfirmed.length, 1);
+  assert.deepEqual(late.resubmit, []);
+  assert.equal(tracker.unresolved, 0);
 });
