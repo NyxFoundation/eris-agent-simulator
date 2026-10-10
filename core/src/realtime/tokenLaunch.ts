@@ -49,6 +49,7 @@ import type {
   EventSchedule,
   ResolvedStressEvent,
   ResolvedTokenLaunch,
+  StressEventConfig,
 } from "./events.js";
 
 // The fee tier every launch pool opens at. 0.3% rather than the environment's 0.05% WETH/USDC tier:
@@ -82,11 +83,25 @@ const LIST_ATTEMPTS = 3;
 export const LAUNCH_WALLET_PREFIX = "launch";
 export const LAUNCH_WAVE_WALLET_PREFIX = "launch-wave";
 
-export function launchWalletKey(eventIndex: number, index: number): string {
-  return `${LAUNCH_WALLET_PREFIX}:${eventIndex}:${index}`;
+// The launch wallets are slots, created and funded in every run whether or not the schedule lists a
+// token (rules §3.3). They used to be one pair per drawn token, each holding exactly its draw, which
+// told an agent at block 0 that this was `launch`, how many tokens would list, which were duds and
+// how big each wave was: the wallets' setup approvals are transactions in the setup blocks, and the
+// balances are readable by address in every later epoch of the same matrix process. Three slots is
+// config/regimes/launch.yaml's ceiling; test/regimeStartInvariance.test.ts holds every official
+// regime under it, and a schedule that draws more refuses to start (launchWalletFunding).
+export const LAUNCH_WALLET_SLOTS = 3;
+// Each slot's USDC, whatever it lists: the largest pool and the largest wave config/regimes/launch.yaml
+// can draw (100k seeded, a 1.0x wave). The listing seeds exactly its drawn `liquidityUsdc` and the
+// wave buys toward its drawn total, so a wallet holding more changes nothing it does.
+export const LAUNCH_WALLET_USDC_UNITS = 100_000n * 10n ** BigInt(TOKENS.USDC.decimals);
+export const LAUNCH_WAVE_USDC_UNITS = 100_000n * 10n ** BigInt(TOKENS.USDC.decimals);
+
+export function launchWalletKey(slot: number): string {
+  return `${LAUNCH_WALLET_PREFIX}:${slot}`;
 }
-export function launchWaveWalletKey(eventIndex: number, index: number): string {
-  return `${LAUNCH_WAVE_WALLET_PREFIX}:${eventIndex}:${index}`;
+export function launchWaveWalletKey(slot: number): string {
+  return `${LAUNCH_WAVE_WALLET_PREFIX}:${slot}`;
 }
 
 export type LaunchWallet = { address: Address; privateKey: Hex };
@@ -102,6 +117,8 @@ type Pending = {
 export type TokenLaunchState = {
   eventIndex: number;
   index: number;
+  // The wallet slot this launch trades from (launchWalletKey / launchWaveWalletKey).
+  slot: number;
   event: ResolvedStressEvent;
   launch: ResolvedTokenLaunch;
   launchWallet: LaunchWallet;
@@ -138,27 +155,88 @@ export type TokenLaunchRuntime = {
 // USDC units per whole dollar.
 const USDC_UNIT = 10n ** BigInt(TOKENS.USDC.decimals);
 
-/// What every launch of the schedule needs endowed, before any window opens. Pure: the coordinator
-/// funds from it and the tests read it.
+/// What every launch of the schedule needs, and the wallet slot it trades from (the k-th launch of
+/// `schedule.tokenLaunches()` is slot k). Pure: the coordinator funds from launchWalletFunding, which
+/// reads this, and the tests read both.
 export function tokenLaunchEndowments(schedule: EventSchedule): Array<{
   eventIndex: number;
   index: number;
+  slot: number;
   launchKey: string;
   waveKey: string;
   liquidityUsdcUnits: bigint;
   waveUsdcUnits: bigint;
 }> {
-  return schedule.tokenLaunches().map(({ eventIndex, launch }) => {
+  return schedule.tokenLaunches().map(({ eventIndex, launch }, slot) => {
     const liquidityUsdcUnits = BigInt(launch.liquidityUsdc) * USDC_UNIT;
     return {
       eventIndex,
       index: launch.index,
-      launchKey: launchWalletKey(eventIndex, launch.index),
-      waveKey: launchWaveWalletKey(eventIndex, launch.index),
+      slot,
+      launchKey: launchWalletKey(slot),
+      waveKey: launchWaveWalletKey(slot),
       liquidityUsdcUnits,
       waveUsdcUnits: waveUsdcUnits(launch),
     };
   });
+}
+
+/// What each launch slot is funded with: the fixed amounts, raised only where a draw needs more (an
+/// official regime never does; the test holds its ceiling under them). Every slot is listed, used or
+/// not, so a run without launches funds exactly what a run with three does.
+export function launchWalletFunding(schedule: EventSchedule): Array<{
+  slot: number;
+  launchKey: string;
+  waveKey: string;
+  launchUsdcUnits: bigint;
+  waveUsdcUnits: bigint;
+}> {
+  const needs = tokenLaunchEndowments(schedule);
+  if (needs.length > LAUNCH_WALLET_SLOTS)
+    throw new Error(
+      `the schedule lists ${needs.length} tokens, but the environment has ${LAUNCH_WALLET_SLOTS} launch ` +
+        "wallet slots. Raise LAUNCH_WALLET_SLOTS (core/src/realtime/tokenLaunch.ts) for every regime " +
+        "at once: a slot count that follows the schedule names the regime at block 0",
+    );
+  const max = (a: bigint, b: bigint) => (a > b ? a : b);
+  return Array.from({ length: LAUNCH_WALLET_SLOTS }, (_, slot) => {
+    const need = needs[slot];
+    return {
+      slot,
+      launchKey: launchWalletKey(slot),
+      waveKey: launchWaveWalletKey(slot),
+      launchUsdcUnits: max(LAUNCH_WALLET_USDC_UNITS, need?.liquidityUsdcUnits ?? 0n),
+      waveUsdcUnits: max(LAUNCH_WAVE_USDC_UNITS, need?.waveUsdcUnits ?? 0n),
+    };
+  });
+}
+
+/// The most any seed can draw under these configs: the token count, and the largest pool and wave
+/// a single token can have. Pure, for the test that holds official regimes under the fixed amounts.
+export function tokenLaunchCeiling(configs: StressEventConfig[]): {
+  tokens: number;
+  liquidityUsdcUnits: bigint;
+  waveUsdcUnits: bigint;
+} {
+  let tokens = 0;
+  let liquidityUsdcUnits = 0n;
+  let waveMax = 0n;
+  for (const c of configs) {
+    if (c.type !== "tokenLaunch") continue;
+    tokens += (c.count ? c.count[1] : 1) * (c.tokenCount ? c.tokenCount[1] : 1);
+    const liquidity = Math.round(c.liquidityUsdc ? c.liquidityUsdc[1] : 0);
+    const units = BigInt(liquidity) * USDC_UNIT;
+    if (units > liquidityUsdcUnits) liquidityUsdcUnits = units;
+    const wave = waveUsdcUnits({
+      index: 0,
+      liquidityUsdc: liquidity,
+      waveUsdcMult: c.waveUsdcMult ? c.waveUsdcMult[1] : 0,
+      dud: false,
+      sellBackFrac: 0,
+    });
+    if (wave > waveMax) waveMax = wave;
+  }
+  return { tokens, liquidityUsdcUnits, waveUsdcUnits: waveMax };
 }
 
 // The wave's total USDC, from its multiple of the pool's USDC side. Rounded to whole units on a
@@ -208,19 +286,16 @@ export async function setupTokenLaunch(
   readForgeArtifact("AgentERC20");
   const launches: TokenLaunchState[] = schedule
     .tokenLaunches()
-    .map(({ eventIndex, event, launch }) => {
+    .map(({ eventIndex, event, launch }, slot) => {
       const liquidityUsdcUnits = BigInt(launch.liquidityUsdc) * USDC_UNIT;
       return {
         eventIndex,
         index: launch.index,
         event,
         launch,
-        launchWallet: opts.walletByKey(
-          launchWalletKey(eventIndex, launch.index),
-        ),
-        waveWallet: opts.walletByKey(
-          launchWaveWalletKey(eventIndex, launch.index),
-        ),
+        slot,
+        launchWallet: opts.walletByKey(launchWalletKey(slot)),
+        waveWallet: opts.walletByKey(launchWaveWalletKey(slot)),
         liquidityUsdcUnits,
         tokenSupplyWei:
           BigInt(launch.liquidityUsdc) * 10n ** BigInt(LAUNCH_TOKEN_DECIMALS),
@@ -524,7 +599,7 @@ async function advanceListing(
     sent.push({
       hash,
       from: state.launchWallet.address,
-      ownerKey: launchWalletKey(state.eventIndex, state.index),
+      ownerKey: launchWalletKey(state.slot),
       actionType: "tokenLaunch",
     });
   logger.event({
@@ -724,7 +799,7 @@ async function sendSwap(
       maxFeePerGas: baseFee + opts.priorityFeeWei,
       maxPriorityFeePerGas: opts.priorityFeeWei,
     });
-  const ownerKey = launchWaveWalletKey(state.eventIndex, state.index);
+  const ownerKey = launchWaveWalletKey(state.slot);
   if (needApprove) {
     // Approve once, for everything the wallet will ever route: it is the environment's own wallet
     // and the router is the environment's own contract.

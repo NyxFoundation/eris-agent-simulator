@@ -1105,9 +1105,12 @@ gas は全部 pin する = `eth_estimateGas` は今の state で失敗する）�
   `core/src/realtime/tokenLaunch.ts`。wave wallet は USDC → token を SwapRouter `exactInputSingle` で、
   QuoterV2 の見積もりに 15% の slippage 枠。**settled した tx から集計**（`grossBuyUsdc` / `tokensSold` /
   `sellUsdcReceived`）し、`stress_token_launch_summary` で帳簿を閉じる
-- **wallet は launch / wave をトークンごとに 1 つずつ** flow map に載せる（`launch:<e>:<i>` /
-  `launch-wave:<e>:<i>`。whale と同じく funding ループの後に正確な額を入れ直す = launch は USDC 片側ちょうど、
-  wave は倍率分、dud は 0）。blocks.csv では role `uninformed-flow`・ownerId `flow-launch…`
+- **wallet は launch / wave の固定 3 組のスロット**（`LAUNCH_WALLET_SLOTS`。`launch:<k>` / `launch-wave:<k>`、
+  k 番目の上場がスロット k）を**全 run で** flow map に載せ、各 100k USDC の固定額を入れる（`launchWalletFunding`。
+  引きがそれを超えたときだけ増やす）。以前はトークンごとに 1 組を作って引いた額ちょうど（dud は 0）を入れていたので、
+  setup ブロックの送信者数と残高から block 0 で launch・上場数・dud・波の大きさが読めた。上場は引いた
+  `liquidityUsdc` ちょうどを seed し、波は引いた総額へ向けて買うので、多めの残高は使われない。
+  blocks.csv では role `uninformed-flow`・ownerId `flow-launch…`
 - **評価は ADR 0022 公理 2 のまま**: 鐘の時点のトークン残高は全員 0（`erc20-unaccounted`）。通り抜けた USDC
   だけが数える。**環境側の teardown は無い**（プールは snapshot revert で消え、残りは採点外の flow wallet）
 - 参加者側は `example/agents/lib/launchSwap.ts`（USDC と未価格トークンの registry プール抽出 / slot0 価格 /
@@ -1288,6 +1291,14 @@ agent 側の `ctx.rng` は address 由来（run の seed ではない）。`SimC
   チェーン上に見える（Aave の HF 1.10 の借り手、`SortedTroves.getLast()` の ICR 1.20）ので、塞ぐには全レジームに victim を
   置く（デコイ）必要があり、レジームの意味が変わるので別に決める。もう 1 つの既知の穴は vuln プールのソースが公開 repo に
   あること（bytecode の骨格で照合できる）
+- **setup ブロックの tx と環境財布の残高もレジームで変えない**（同じテスト）。agent はゲートウェイ越しに
+  `runStartBlock` より前のブロック・ログ・残高を読めるので、config と env を揃えても setup がレジームを名指していた:
+  whale 財布とその WETH deposit は whale だけ、launch 財布はトークン数ぶん・引いた額ちょうど、deployer の
+  `approve(pool, max)` は depeg / 引き抜きのあるレジームだけ。今は **whale 財布は全 run で `WHALE_ENDOWMENT`**
+  （600 WETH + 2.4M USDC。公式の最大の引きを賄う額で、超える引き = 練習期間だけ増やす）、**launch は固定 3 スロット**、
+  **deployer の standing approval は `core/src/realtime/standingApprovals.ts` が全 run で同じ集合を送り**、depeg と
+  引き抜きの setup は送らずに検査だけする（`requireStandingApprovals`）。公式レジームの最大の引きが固定額に収まることも
+  テストが持つ。flow 財布の配布額・本数も 12 本で同一であることを検査する。**victim の Trove / Aave 建玉は上の既知の例外のまま**
 - **bind-mount モードと `--agent-sandbox process` は隔離境界ではない**（repo / host のファイルが全部見える）
 自己改善型は `ERIS_IMPROVE_LOG_CALLS: "1"`（ロスターの env）で LLM との生の対話（system 全文・送信
 messages・生応答・エラー）を `agents/<agentId>.llm.jsonl` に残せる（opt-in。プロンプト調整の一次情報）。
