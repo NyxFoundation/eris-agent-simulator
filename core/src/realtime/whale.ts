@@ -9,12 +9,13 @@
 // Executed by the coordinator on one block (it is a trade, not a multiplier on the price path), and
 // placed by the same seed-driven schedule as every other stress event (ADR 0009).
 import { parseUnits } from "viem";
-import type { ResolvedStressEvent } from "./events.js";
+import type { ResolvedStressEvent, StressEventConfig } from "./events.js";
 import type { FlowOrderWire } from "../flowProcess.js";
 import { tokenInfo } from "@eris/sdk/markets.js";
 
-// The flow-wallet key the whale trades from. Registered in flowWalletMap only when the schedule
-// actually contains a whale, so ordinary runs are unaffected.
+// The flow-wallet key the whale trades from. Registered and funded in every run, whale or not: a
+// wallet that exists only when the schedule has a whale names the regime at block 0 to anyone who
+// counts the setup blocks' senders or reads the wallet's balance (rules §3.3). See WHALE_ENDOWMENT.
 export const WHALE_WALLET_KEY = "whale:uninformed";
 
 // Multiplier over the *cumulative* same-side notional. Swaps quote at the pool price rather than at
@@ -74,6 +75,66 @@ export function whaleFunding(
       parseUnits(usdcTotal.toFixed(usdcDecimals), usdcDecimals) *
       WHALE_FUNDING_HEADROOM,
   };
+}
+
+// What the whale wallet is endowed with in every run, whatever the schedule drew.
+//
+// The amount used to be `whaleFunding` of the drawn schedule, funded only when there was a whale.
+// Both named the regime before the first block: the wallet's WETH deposit is a transaction in the
+// setup blocks, which an agent reads from the chain's history, and the balance itself is readable
+// by address in every later epoch of the same matrix process (the environment's keys are fixed per
+// process, walletKeys.ts). So every run funds the same amount, sized to cover the largest draw any
+// official regime can make: config/regimes/whale.yaml at its ceiling is five 60 WETH orders on one
+// side, 300 WETH, times the headroom -- 600 WETH, or 1.8M USDC at the $3,000 opening price. The USDC
+// floor leaves a third on top so the opening fair can sit up to $4,000 before a buy-side draw needs
+// more. test/regimeStartInvariance.test.ts holds every official regime's ceiling under this.
+export const WHALE_ENDOWMENT: { baseWei: Record<string, bigint>; usdcUnits: bigint } = {
+  baseWei: { WETH: parseUnits("600", 18) },
+  usdcUnits: parseUnits("2400000", 6),
+};
+
+// The endowment a run funds: WHALE_ENDOWMENT, raised per asset only where the schedule needs more.
+// An official regime never does (the test above), so its whale wallet is identical in every regime.
+// A schedule that does -- the practice period funds a month of whales at its start -- gets what it
+// needs rather than whales that fail on balance, and its regime is no secret anyway (the episode
+// list is published).
+export function whaleEndowment(
+  events: ResolvedStressEvent[],
+  prices: Record<string, number>,
+): { baseWei: Record<string, bigint>; usdcUnits: bigint } {
+  const needed = whaleFunding(events, prices);
+  const baseWei: Record<string, bigint> = { ...WHALE_ENDOWMENT.baseWei };
+  for (const [base, wei] of Object.entries(needed.baseWei))
+    if (wei > (baseWei[base] ?? 0n)) baseWei[base] = wei;
+  return {
+    baseWei,
+    usdcUnits:
+      needed.usdcUnits > WHALE_ENDOWMENT.usdcUnits
+        ? needed.usdcUnits
+        : WHALE_ENDOWMENT.usdcUnits,
+  };
+}
+
+// The most `whaleFunding` can ask for under these event configs, over every seed: each whale entry
+// at its largest count and magnitude, all on the side that costs the most. Pure, so the test can hold
+// a regime's ceiling under WHALE_ENDOWMENT without enumerating seeds.
+export function whaleFundingCeiling(
+  configs: StressEventConfig[],
+  prices: Record<string, number>,
+): { baseWei: Record<string, bigint>; usdcUnits: bigint } {
+  const worst: ResolvedStressEvent[] = [];
+  for (const c of configs) {
+    if (c.type !== "whale") continue;
+    const count = c.count ? c.count[1] : 1;
+    const magnitude = c.magnitudeRange[1];
+    const base = c.base ?? "WETH";
+    const sides: Array<"buy" | "sell"> =
+      c.side === "buy" ? ["buy"] : c.side === "sell" ? ["sell"] : ["buy", "sell"];
+    for (let i = 0; i < count; i++)
+      for (const side of sides)
+        worst.push({ type: "whale", base, side, magnitude } as ResolvedStressEvent);
+  }
+  return whaleFunding(worst, prices);
 }
 
 // The order a whale event places. Pure: the caller submits it through the ordinary flow relay, so

@@ -297,7 +297,7 @@ import {
 } from "./ownerGuards.js";
 import {
   buildWhaleOrder,
-  whaleFunding,
+  whaleEndowment,
   WHALE_WALLET_KEY,
   WhaleResubmits,
   type WhaleReceiptStatus,
@@ -306,9 +306,10 @@ import {
   setupTokenLaunch,
   stepTokenLaunch,
   summarizeTokenLaunch,
-  tokenLaunchEndowments,
+  launchWalletFunding,
   type TokenLaunchRuntime,
 } from "./tokenLaunch.js";
+import { grantDeployerStandingApprovals } from "./standingApprovals.js";
 import {
   accrueLst,
   lstBlockEvent,
@@ -1340,13 +1341,18 @@ export async function runRealtimeSimulation(
   // A dedicated wallet so a whale order does not drain the ordinary flow wallets mid-run (which
   // would quietly change the flow bot's behavior for the rest of the run) and so blocks.csv
   // attributes the print to the event rather than to background flow.
+  //
+  // Created in every run, whale or not, as are the launch slots below: the environment's wallets
+  // and what they hold must not depend on the schedule (rules §3.3). A wallet that exists only in
+  // one regime is a sender in that regime's setup blocks and a balance at a fixed address in every
+  // later epoch of the same matrix process -- the regime, readable before the first block.
   const whaleEvents = schedule.events.filter((e) => e.type === "whale");
   // Under economicGas a print carries a slippage limit, and one that reverts is sent again
   // (whale.ts WhaleResubmits): a whale is a single event, and a reverted print with no second
   // attempt would turn the epoch into calm.
   const whaleResubmits =
     whaleEvents.length > 0 && config.economicGas ? new WhaleResubmits() : null;
-  if (whaleEvents.length > 0) {
+  {
     const key = WHALE_WALLET_KEY;
     const privateKey = environmentKey("flow", key);
     flowWalletMap.set(key, {
@@ -1357,9 +1363,10 @@ export async function runRealtimeSimulation(
   }
   // Token launches (issue #29): one wallet that lists each token and one that buys it. On the flow
   // map so they are funded, approved and attributed as flow like the whale; their sizes are set
-  // below once the pools have been read, for the same reason the whale's are.
-  const launchEndowments = tokenLaunchEndowments(schedule);
-  for (const e of launchEndowments) {
+  // below once the pools have been read, for the same reason the whale's are. A fixed number of
+  // slots, whatever the schedule lists (LAUNCH_WALLET_SLOTS).
+  const launchSlots = launchWalletFunding(schedule);
+  for (const e of launchSlots) {
     for (const key of [e.launchKey, e.waveKey]) {
       const privateKey = environmentKey("flow", key);
       flowWalletMap.set(key, {
@@ -1753,11 +1760,14 @@ export async function runRealtimeSimulation(
     }
 
     // ---- whale endowment (ADR 0017 regime 3) ----
-    // Funded here rather than in the loop above because the size is denominated against the fair
-    // price, which is only known once the pools have been read. A whale's whole job is to place an
-    // order far larger than ordinary flow, so flow-sized funding would make it fail on balance and
-    // silently turn the regime into calm for that seed.
-    if (whaleEvents.length > 0 && !resume) {
+    // Funded here rather than in the loop above because a draw that outgrows the fixed endowment is
+    // denominated against the fair price, which is only known once the pools have been read. A
+    // whale's whole job is to place an order far larger than ordinary flow, so flow-sized funding
+    // would make it fail on balance and silently turn the regime into calm for that seed.
+    //
+    // Every run, with the same amount in every official regime (WHALE_ENDOWMENT): the deposit is a
+    // transaction in the setup blocks, so a whale-only one named the regime.
+    if (!resume) {
       const wallet = flowWalletMap.get(WHALE_WALLET_KEY);
       if (!wallet) throw new Error("whale wallet missing from flowWalletMap");
       // Fail fast on a whale pointed at a venue this run does not have. Otherwise submitIntent
@@ -1776,7 +1786,7 @@ export async function runRealtimeSimulation(
         WETH: latestFairPrice,
         ...(ctx.fairPrices ?? {}),
       };
-      const funding = whaleFunding(schedule.events, fairForFunding);
+      const funding = whaleEndowment(schedule.events, fairForFunding);
       await fundWallet(
         publicClient,
         walletClient,
@@ -1799,11 +1809,12 @@ export async function runRealtimeSimulation(
     }
 
     // ---- token-launch endowment (issue #29) ----
-    // The launch wallet holds exactly the USDC side it seeds, the wave wallet exactly what the seed
-    // drew for it to spend (nothing for a dud). Flow-sized funding would list a thinner pool than
-    // the schedule says and cap the wave at the flow wallet's balance, silently turning the regime
-    // into a smaller one for that seed.
-    for (const e of resume ? [] : launchEndowments) {
+    // Every slot holds at least the largest pool and wave the official launch regime can draw
+    // (launchWalletFunding), in every run: holding exactly the draw named the token count, the duds
+    // and the wave sizes at block 0. The listing seeds exactly its drawn liquidity and the wave buys
+    // toward its drawn total, so the extra is never spent. Flow-sized funding would list a thinner
+    // pool than the schedule says and cap the wave at the flow wallet's balance.
+    for (const e of resume ? [] : launchSlots) {
       const launchWallet = flowWalletMap.get(e.launchKey);
       const waveWallet = flowWalletMap.get(e.waveKey);
       if (!launchWallet || !waveWallet)
@@ -1815,7 +1826,7 @@ export async function runRealtimeSimulation(
         launchWallet.privateKey,
         config.flowEthWei,
         0n,
-        e.liquidityUsdcUnits,
+        e.launchUsdcUnits,
       );
       await fundWallet(
         publicClient,
@@ -1828,11 +1839,10 @@ export async function runRealtimeSimulation(
       );
       logger.event({
         type: "stress_token_launch_funded",
-        eventIndex: e.eventIndex,
-        index: e.index,
+        slot: e.slot,
         launchWallet: launchWallet.address,
         waveWallet: waveWallet.address,
-        liquidityUsdcUnits: e.liquidityUsdcUnits.toString(),
+        launchUsdcUnits: e.launchUsdcUnits.toString(),
         waveUsdcUnits: e.waveUsdcUnits.toString(),
       });
     }
@@ -2428,6 +2438,26 @@ export async function runRealtimeSimulation(
       // reference agents find Troves through the observation's sorted list anyway).
       Object.assign(agentExtraEnv, {
         [LIQUITY_VICTIM_ENV]: liquityVictims.map((v) => v.address).join(","),
+      });
+    }
+    // ---- the deployer's standing approvals: every run, whatever the schedule holds ----
+    // The depegs and the liquidity pull trade as the deployer and need standing approvals the deploy
+    // did not leave. Each used to grant its own here, which put the deployer's `approve` transactions
+    // in the setup blocks of exactly the regimes that have them (depeg, depeg-persist, crash, spike,
+    // lending-incident, cdp-incident) -- readable from the chain's history before the first block.
+    // Granted from the deployment instead (standingApprovals.ts); the mechanisms below only check.
+    // A resumed period's are standing from its first start. Local deploy only: on a fork the seeded
+    // depth and the stables belong to somebody else, and every mechanism that needs them refuses.
+    if (config.localDeploy && !resume) {
+      const granted = await grantDeployerStandingApprovals(
+        ctx,
+        deployerPk,
+        PULL_VENUES.filter((v) => enabledIds.includes(v)),
+      );
+      logger.event({
+        type: "deployer_standing_approvals",
+        owner: accountAddress(deployerPk),
+        approvals: granted.map((a) => ({ token: a.token, spender: a.spender })),
       });
     }
     if (

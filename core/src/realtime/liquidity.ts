@@ -19,12 +19,13 @@
 // expose the same thing: a proportional claim measured in its own unit (position liquidity, BPT, LP
 // balance), where a fraction of the claim is a fraction of the depth. GMX and Aave are a different
 // axis entirely and out of scope.
-import { encodeFunctionData, maxUint256, type Address, type Hex } from "viem";
+import { type Address, type Hex } from "viem";
 import { erc20Abi } from "@eris/sdk/abis.js";
 import { accountAddress, sendAndMine, sendNoMine } from "@eris/sdk/chain.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
 import type { EventSchedule } from "./events.js";
+import { requireStandingApprovals } from "./standingApprovals.js";
 import {
   FLAT_FEE_MEDIAN_WEI,
   pullFrontRunValueUsd,
@@ -141,28 +142,19 @@ export async function setupLiquidityPull(
   if (opts.resume) return resumeLiquidityPull(owner, opts.ownerPk, positions, opts.resume, logger);
 
   // The decay leg deposits tokens back, so each venue's spender needs standing approval: the
-  // deploy-time approvals covered only the exact seeding amounts. Sequential because they all come
-  // from one key and each mines a block -- concurrent sends would race on the nonce.
+  // deploy-time approvals covered only the exact seeding amounts. The coordinator grants it in every
+  // run, pull or not (standingApprovals.ts): granting it here put the deployer's approvals in the
+  // setup blocks of exactly the regimes with a pull -- crash, spike and the two incidents.
   const approvals = new Map<string, { token: Address; spender: Address }>();
   for (const pos of positions)
     for (const a of approvalsFor(pos))
       approvals.set(`${a.token.toLowerCase()}:${a.spender.toLowerCase()}`, a);
-  for (const { token, spender } of approvals.values()) {
-    await sendAndMine(
-      ctx.publicClient,
-      ctx.walletClient,
-      ctx.chain,
-      opts.ownerPk,
-      {
-        to: token,
-        data: encodeFunctionData({
-          abi: erc20Abi,
-          functionName: "approve",
-          args: [spender, maxUint256],
-        }),
-      },
-    );
-  }
+  await requireStandingApprovals(
+    ctx,
+    owner,
+    [...approvals.values()],
+    "stress event liquidityPull",
+  );
 
   // Balances matter for the restore: putting depth back after the price has moved needs a different
   // mix than the withdrawal returned, and the shortfall (if any) comes from the owner's own float.
