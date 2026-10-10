@@ -37,7 +37,9 @@ this column tells you who called what, when.
 `RPC_MAX_TX_GAS` (10000000) · `RPC_MAX_PRIORITY_FEE_WEI` (5000000000) — these two are the
 [transaction checks](#transaction-checks-at-entry-gas-cap-and-fee-rule) ·
 `RPC_MAX_PARAM_DEPTH` (64) · `RPC_MAX_PARAM_NODES` (100000) — the [request shape limit](#request-shape-limit) ·
-`RPC_MAX_BODY_BYTES` (4194304) — the [body cap](#request-body-cap).
+`RPC_MAX_BODY_BYTES` (4194304) — the [body cap](#request-body-cap) ·
+`RPC_MAX_CALL_GAS` (10000000) · `RPC_UPSTREAM_TIMEOUT_MS` (5000) · `RPC_MAX_IN_FLIGHT_PER_CLIENT` (16) —
+the [read gas cap, upstream timeout and in-flight cap](#read-gas-cap-upstream-timeout-and-in-flight-cap).
 Runs as the `rpc-gateway-live` service in `infra/monitoring/docker-compose.yml` (host-net,
 `restart: unless-stopped`); `rpc-gateway-test` (compose profile `test`) is ready for a second env.
 
@@ -216,6 +218,30 @@ after the reply is flushed, and `rpc_body_denied_total` counts it. The largest h
 deployment (initcode is capped at 49,152 bytes by EIP-3860, ~100 KB as hex) and the runtime's batched
 Multicall3 reads (hundreds of KB); 4 MiB is ~40× those. Reproduce with
 `node --import tsx --test test/rpcGatewayBody.test.ts` (a fake upstream; no anvil needed).
+
+### Read gas cap, upstream timeout and in-flight cap
+
+The token bucket bills an `eth_call` a flat `RPC_HEAVY_WEIGHT` whatever it executes, and anvil runs a
+call with no `gas` up to the block gas limit (320M on the practice devnet, 30M in a backtest). So one
+key could ask for seconds of node CPU per second with a loop contract, and slow the oracle updates and
+every other participant's observations with it. Three bounds, all before or around the upstream call:
+
+| bound | does | env (default; 0 disables) | counter |
+|---|---|---|---|
+| read gas cap | `eth_call` / `eth_estimateGas` / `eth_createAccessList` (single or batch): a `gas` that is absent, unreadable or above the cap is **rewritten** to the cap; `gasLimit` is dropped | `RPC_MAX_CALL_GAS` (10,000,000) | `rpc_call_gas_capped_total` |
+| upstream timeout | aborts the upstream request and answers HTTP 504 with JSON-RPC error `-32000` | `RPC_UPSTREAM_TIMEOUT_MS` (5,000) | `rpc_upstream_timeout_total` |
+| in-flight cap | requests one client has upstream at once (a batch is one); over it is HTTP 429 with `-32005` | `RPC_MAX_IN_FLIGHT_PER_CLIENT` (16) | `rpc_in_flight_denied_total` |
+
+The gas is written in rather than refused because every client's default is to omit it. 10M is the
+transaction cap: a read has no reason to need more than a transaction may burn (an estimate above it is
+for a transaction the gateway would refuse anyway), and the largest legitimate reads measured are a
+256-entry `MarketRegistry` page (~5M cold) and a lending id page (<1M). Base fee is 0, so the gas a call
+is given does not depend on the caller's balance. The operator's scoring reads go to anvil directly.
+5s is two and a half blocks, past which an observation is stale for its sender anyway; the timeout frees
+the gateway's slot, and **whether anvil stops executing a call whose connection closed is not measured**
+— the gas cap is what bounds the node's work. 16 in flight is well above the reference runtime, which
+batches its reads into one HTTP request per tick. Reproduce with
+`node --import tsx --test test/rpcGatewayCallGas.test.ts test/rpcGatewayBody.test.ts` (no anvil).
 
 ## Transaction checks at entry (gas cap and fee rule)
 

@@ -37,6 +37,10 @@ function answer(c: Call): unknown {
   }
 }
 
+// An eth_call to this address is never answered: the upstream holds the request open, the way a
+// node busy executing a long call does.
+const HANG = "0x000000000000000000000000000000000000beef";
+
 async function startFakeUpstream(t: TestContext) {
   const seen: Call[] = [];
   let bytes = 0;
@@ -49,6 +53,7 @@ async function startFakeUpstream(t: TestContext) {
       const parsed = JSON.parse(body.toString("utf8")) as Call | Call[];
       const calls = Array.isArray(parsed) ? parsed : [parsed];
       seen.push(...calls);
+      if (calls.some((c) => c.method === "eth_call" && (c.params?.[0] as { to?: string } | undefined)?.to === HANG)) return;
       const replies = calls.map((c) => ({ jsonrpc: "2.0", id: c.id, result: answer(c) }));
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(Array.isArray(parsed) ? replies : replies[0]));
@@ -57,7 +62,7 @@ async function startFakeUpstream(t: TestContext) {
   const port = await freePort();
   server.listen(port, "127.0.0.1");
   await once(server, "listening");
-  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  t.after(() => new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }));
   return { url: `http://127.0.0.1:${port}`, seen, bytes: () => bytes };
 }
 
@@ -216,4 +221,72 @@ test("a request log that cannot be written drops lines and keeps serving", { tim
   const metrics = await (await fetch(`${gateway}/metrics`)).text();
   const dropped = Number(/rpc_log_lines_dropped_total\{[^}]+\} (\d+)\n/.exec(metrics)?.[1]);
   assert.ok(dropped >= 1, `dropped lines are counted (got ${dropped})`);
+});
+
+test("eth_call / eth_estimateGas / eth_createAccessList reach the upstream with their gas capped", { timeout: 20_000 }, async (t) => {
+  const upstream = await startFakeUpstream(t);
+  const gateway = await startGateway(t, upstream.url, { RPC_MAX_CALL_GAS: "1000000" });
+  const to = "0x000000000000000000000000000000000000dead";
+
+  await rpc(gateway, "eth_call", [{ to, data: "0x" }, "latest"]);
+  await rpc(gateway, "eth_call", [{ to, gas: "0x5208" }, "latest"]);
+  await fetch(gateway, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify([
+      { jsonrpc: "2.0", id: 1, method: "eth_estimateGas", params: [{ to, gas: "0x1312d00" }, "latest"] },
+      { jsonrpc: "2.0", id: 2, method: "eth_blockNumber", params: [] },
+      { jsonrpc: "2.0", id: 3, method: "eth_createAccessList", params: [{ to }, "latest"] },
+    ]),
+  });
+  const gas = upstream.seen
+    .filter((c) => ["eth_call", "eth_estimateGas", "eth_createAccessList"].includes(c.method))
+    .map((c) => [c.method, (c.params?.[0] as { gas?: string }).gas]);
+  assert.deepEqual(gas, [
+    ["eth_call", "0xf4240"],
+    ["eth_call", "0x5208"],
+    ["eth_estimateGas", "0xf4240"],
+    ["eth_createAccessList", "0xf4240"],
+  ]);
+  const metrics = await (await fetch(`${gateway}/metrics`)).text();
+  assert.match(metrics, /rpc_call_gas_capped_total\{[^}]+\} 3\n/);
+});
+
+test("an upstream that does not answer is cut off with a JSON-RPC error", { timeout: 20_000 }, async (t) => {
+  const upstream = await startFakeUpstream(t);
+  const gateway = await startGateway(t, upstream.url, { RPC_UPSTREAM_TIMEOUT_MS: "300" });
+
+  const t0 = Date.now();
+  const hung = await rpc(gateway, "eth_call", [{ to: HANG }, "latest"]);
+  assert.ok(Date.now() - t0 < 5_000);
+  assert.equal(hung.status, 504);
+  assert.equal(hung.body.error?.code, -32000);
+  assert.match(String(hung.body.error?.message), /did not answer within 300 ms/);
+
+  // The gateway is still serving, and the node still counts as up.
+  assert.equal((await rpc(gateway, "eth_blockNumber")).body.result, "0x1");
+  const metrics = await (await fetch(`${gateway}/metrics`)).text();
+  assert.match(metrics, /rpc_upstream_timeout_total\{[^}]+\} 1\n/);
+  assert.match(metrics, /rpc_upstream_up\{[^}]+\} 1\n/);
+  assert.match(metrics, /rpc_in_flight\{[^}]+\} 0\n/);
+});
+
+test("one client's requests in flight are capped; the slot frees when one finishes", { timeout: 20_000 }, async (t) => {
+  const upstream = await startFakeUpstream(t);
+  const gateway = await startGateway(t, upstream.url, { RPC_MAX_IN_FLIGHT_PER_CLIENT: "2", RPC_UPSTREAM_TIMEOUT_MS: "1500" });
+
+  const held = [rpc(gateway, "eth_call", [{ to: HANG }, "latest"]), rpc(gateway, "eth_call", [{ to: HANG }, "latest"])];
+  // Wait until both are upstream.
+  for (let i = 0; i < 100 && upstream.seen.filter((c) => c.method === "eth_call").length < 2; i++)
+    await new Promise((r) => setTimeout(r, 20));
+  const refused = await rpc(gateway, "eth_blockNumber");
+  assert.equal(refused.status, 429);
+  assert.equal(refused.body.error?.code, -32005);
+  assert.equal(refused.body.id, 0, "preserve JSON-RPC id zero");
+
+  // Both held requests time out, which releases their slots.
+  for (const r of await Promise.all(held)) assert.equal(r.status, 504);
+  assert.equal((await rpc(gateway, "eth_blockNumber")).body.result, "0x1");
+  const metrics = await (await fetch(`${gateway}/metrics`)).text();
+  assert.match(metrics, /rpc_in_flight_denied_total\{[^}]+\} 1\n/);
 });

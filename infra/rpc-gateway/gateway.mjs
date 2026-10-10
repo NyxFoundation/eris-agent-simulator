@@ -13,12 +13,14 @@
 //      RPC_KEYS_FILE (per-participant keys; setting it makes X-ASCON-Key mandatory)
 //      RPC_MAX_TX_GAS (10000000) RPC_MAX_PRIORITY_FEE_WEI (5000000000; 0 disables the fee cap only)
 //      RPC_MAX_BODY_BYTES (4194304) largest request body accepted; over it is 413 and the socket closes
+//      RPC_MAX_CALL_GAS (10000000; 0 disables) gas written into eth_call / eth_estimateGas / eth_createAccessList
+//      RPC_UPSTREAM_TIMEOUT_MS (5000; 0 disables) RPC_MAX_IN_FLIGHT_PER_CLIENT (16; 0 disables)
 import http from "node:http";
 import { createWriteStream, writeFileSync, renameSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { URL } from "node:url";
 
-import { feeRuleViolation, txFees, txGasLimit } from "./txGas.mjs";
+import { capCallGas, feeRuleViolation, txFees, txGasLimit } from "./txGas.mjs";
 
 const PORT = Number(process.env.PORT || 8546);
 const UPSTREAM = new URL(process.env.UPSTREAM || "http://127.0.0.1:8545");
@@ -235,6 +237,42 @@ function overCapGas(parsed) {
   return null;
 }
 
+// ---- per-call gas cap on EVM-executing reads ----
+// The transaction cap above reads a signed field; a read has none. eth_call / eth_estimateGas /
+// eth_createAccessList run with whatever `gas` the caller names, and without one anvil runs them to
+// the block gas limit -- 320M on the practice devnet (infra/monitoring/docker-compose.yml), 30M in a
+// backtest. The rate limit bills a read a flat RPC_HEAVY_WEIGHT whatever it burns, so one key could
+// buy seconds of node CPU per second with a loop contract and slow the oracle updates and every other
+// participant's observation down with it (the read-side twin of issue #40 T0; sdk/src/untrustedRead.ts
+// is the same bound on the environment's own reads of participant code, at 200k).
+//
+// So the gateway writes the gas in (txGas.mjs capCallGas): absent, unreadable or above the cap becomes
+// the cap; at or under it passes. Refusing instead would break every client, whose default is to omit
+// `gas`. The default is the transaction cap, 10M, because a read has no business needing more than a
+// transaction may burn: an estimate above it is for a transaction the gateway would refuse anyway.
+// The largest legitimate reads measured are a 256-entry MarketRegistry page (~5M cold,
+// sdk/src/marketRegistry.ts) and a lending id page (<1M, sdk/src/protocols/lending.ts); the runtime's
+// Multicall3 batches are bounded by viem's calldata batch size, not by gas. The operator's own
+// scoring reads go to anvil directly and are not affected. 0 disables.
+const MAX_CALL_GAS = BigInt(process.env.RPC_MAX_CALL_GAS ?? "10000000");
+let callGasCapped = 0;   // reads whose gas the gateway wrote in
+
+// ---- upstream timeout and per-client concurrency ----
+// forward() used to wait on anvil for as long as anvil took, and a client could hold any number of
+// requests open at once: the token bucket bounds how many a client *starts*, not how many it keeps
+// running. RPC_UPSTREAM_TIMEOUT_MS aborts the upstream request and answers 504; 5s is two and a half
+// blocks, past which an observation is stale for its sender anyway. Aborting frees the gateway's slot,
+// not necessarily the node's work (whether anvil stops executing a call whose connection closed is not
+// measured) -- the gas cap is what bounds that work. RPC_MAX_IN_FLIGHT_PER_CLIENT caps the requests one
+// client has upstream at a time (a JSON-RPC batch is one request); over it is 429 before anvil is
+// touched. 16 is well above the reference runtime, which batches its reads into one HTTP request per
+// tick. Both 0 disable.
+const UPSTREAM_TIMEOUT_MS = Number(process.env.RPC_UPSTREAM_TIMEOUT_MS ?? "5000");
+const MAX_IN_FLIGHT_PER_CLIENT = Number(process.env.RPC_MAX_IN_FLIGHT_PER_CLIENT ?? "16");
+const clientInFlight = new Map();   // client -> requests upstream now
+let upstreamTimeouts = 0;
+let inFlightDenied = 0;
+
 // ---- fee rule: the field the block is ordered by must be the price paid ----
 // anvil `--order fees` sorts the pool on maxFeePerGas (foundry v1.7.1: TransactionPriority(
 // tx.max_fee_per_gas())), and with base fee 0 a transaction pays min(maxFeePerGas, tip). So a
@@ -404,6 +442,9 @@ function metricsText() {
   o += `# TYPE rpc_params_denied_total counter\nrpc_params_denied_total{${L}} ${paramsDenied}\n`;
   o += `# TYPE rpc_body_denied_total counter\nrpc_body_denied_total{${L}} ${bodyDenied}\n`;
   o += `# TYPE rpc_pending_sealed_total counter\nrpc_pending_sealed_total{${L}} ${pendingSealed}\n`;
+  o += `# TYPE rpc_call_gas_capped_total counter\nrpc_call_gas_capped_total{${L}} ${callGasCapped}\n`;
+  o += `# TYPE rpc_upstream_timeout_total counter\nrpc_upstream_timeout_total{${L}} ${upstreamTimeouts}\n`;
+  o += `# TYPE rpc_in_flight_denied_total counter\nrpc_in_flight_denied_total{${L}} ${inFlightDenied}\n`;
   o += `# TYPE rpc_dup_id_denied_total counter\nrpc_dup_id_denied_total{${L}} ${dupIdDenied}\n`;
   o += `# TYPE rpc_key_denied_total counter\nrpc_key_denied_total{${L}} ${keyDenied}\n`;
   o += `# TYPE rpc_keys_loaded gauge\nrpc_keys_loaded{${L}} ${keyMap.size}\n`;
@@ -429,12 +470,24 @@ function forward(bodyBuf, cb) {
   const opts = { hostname: UPSTREAM.hostname, port: UPSTREAM.port || 80, path: UPSTREAM.pathname || "/",
     method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(bodyBuf) } };
   const t0 = process.hrtime.bigint();
+  const elapsed = () => Number(process.hrtime.bigint() - t0) / 1e9;
+  // Exactly one answer: the timeout destroys the request, which also emits "error".
+  let done = false, timer = null;
+  const finish = (...a) => { if (done) return; done = true; if (timer) clearTimeout(timer); cb(...a); };
   const ur = http.request(opts, (r) => {
     const chunks = [];
     r.on("data", (c) => chunks.push(c));
-    r.on("end", () => { const dur = Number(process.hrtime.bigint() - t0) / 1e9; upstreamUp = 1; cb(null, r.statusCode, Buffer.concat(chunks), dur); });
+    r.on("end", () => { upstreamUp = 1; finish(null, r.statusCode, Buffer.concat(chunks), elapsed()); });
+    r.on("error", () => {});   // the abort below surfaces on the request; nothing to add here
   });
-  ur.on("error", (e) => { const dur = Number(process.hrtime.bigint() - t0) / 1e9; upstreamUp = 0; cb(e, 502, Buffer.from(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "upstream: " + e.message } })), dur); });
+  ur.on("error", (e) => { if (done) return; upstreamUp = 0; finish(e, 502, Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32000, message: "upstream: " + e.message } })), elapsed()); });
+  if (UPSTREAM_TIMEOUT_MS > 0) timer = setTimeout(() => {
+    upstreamTimeouts++;
+    const e = Object.assign(new Error(`upstream did not answer within ${UPSTREAM_TIMEOUT_MS} ms`), { code: "UPSTREAM_TIMEOUT" });
+    // The node is slow, not down: rpc_upstream_up stays as it was.
+    finish(e, 504, Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32000, message: e.message } })), elapsed());
+    ur.destroy(e);
+  }, UPSTREAM_TIMEOUT_MS);
   ur.end(bodyBuf);
 }
 
@@ -538,6 +591,12 @@ function handle(req, res, chunks) {
       error: { code: -32600, message: `batch members share id ${sharedId}; a transaction read by hash needs an id of its own` } }));
   }
 
+  // Read gas cap: written into the body, like the block tag above. Applies with RPC_FILTER=0 as well.
+  if (parsed && typeof parsed === "object") {
+    const capped = capCallGas(isBatch ? parsed : [parsed], MAX_CALL_GAS);
+    if (capped > 0) { callGasCapped += capped; bodyBuf = Buffer.from(JSON.stringify(parsed)); }
+  }
+
   // per-tx gas cap (issue #40 T0) -> refuse before the transaction can starve a block
   const overCap = overCapGas(parsed);
   if (overCap !== null) {
@@ -559,9 +618,20 @@ function handle(req, res, chunks) {
     return res.end(JSON.stringify({ jsonrpc: "2.0", id: isBatch ? null : (parsed?.id ?? null), error: { code: -32003, message: badFee.message } }));
   }
 
+  // per-client in-flight cap -> 429 before touching anvil (and before spending the client's tokens)
+  const who = client || ip || "anon";
+  const open = clientInFlight.get(who) || 0;
+  if (MAX_IN_FLIGHT_PER_CLIENT > 0 && open >= MAX_IN_FLIGHT_PER_CLIENT) {
+    inFlightDenied++;
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, status: "in_flight_denied", open, limit: MAX_IN_FLIGHT_PER_CLIENT, client, ip });
+    res.writeHead(429, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ jsonrpc: "2.0", id: isBatch ? null : (parsed?.id ?? null),
+      error: { code: -32005, message: `too many requests in flight (limit ${MAX_IN_FLIGHT_PER_CLIENT} per client)` } }));
+  }
+
   // per-client rate limit (heavy EVM-executing reads cost more) -> 429 before touching anvil
   const cost = (methods.length ? methods : [label]).reduce((s, m) => s + weight(m), 0) || 1;
-  if (!allow(client || ip || "anon", cost)) {
+  if (!allow(who, cost)) {
     rateLimited++;
     logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, status: "rate_limited", client, ip });
     res.writeHead(429, { "content-type": "application/json" });
@@ -569,17 +639,21 @@ function handle(req, res, chunks) {
   }
 
   inFlight++;
+  clientInFlight.set(who, open + 1);
   forward(bodyBuf, (err, status, rawBody, dur) => sealPending(parsed, rawBody, (upBody) => {
     inFlight--;
+    const left = (clientInFlight.get(who) || 1) - 1;
+    if (left > 0) clientInFlight.set(who, left); else clientInFlight.delete(who);
     let st = "ok";
-    if (err || status >= 500) st = "upstream_error";
+    if (err && err.code === "UPSTREAM_TIMEOUT") st = "upstream_timeout";
+    else if (err || status >= 500) st = "upstream_error";
     else { try { const j = JSON.parse(upBody.toString("utf8")); if (Array.isArray(j) ? j.some((x) => x && x.error) : (j && j.error)) st = "rpc_error"; } catch { st = "bad_response"; } }
     // count each sub-method (so per-method rate is right); time by the request-level label
     const counted = methods.length ? methods.map(methodLabel) : [label];   // malformed -> _unknown
     for (const m of counted) reqTotal.set(`${m}|${st}`, (reqTotal.get(`${m}|${st}`) || 0) + 1);
     observe(label, st, dur);
     logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, methods: methods.length > 1 ? methods : undefined, batch: isBatch ? methods.length : undefined, dur_ms: +(dur * 1000).toFixed(1), status: st, http: status, client, ip });
-    res.writeHead(err ? 502 : status, { "content-type": "application/json" });
+    res.writeHead(status, { "content-type": "application/json" });
     res.end(upBody);
   }));
 }
