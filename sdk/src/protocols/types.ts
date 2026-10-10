@@ -236,6 +236,9 @@ export interface ProtocolAdapter {
         callbackGasLimit: bigint;
         reason: string;
       }) => void;
+      // Issue #225: the GMX keeper had more executable orders than MAX_ORDER_FILLS_PER_BLOCK; how
+      // many went this pass and how many wait for the next.
+      onOrdersDeferred?: (report: { sent: number; deferred: number }) => void;
     },
   ): Promise<void>;
 

@@ -145,6 +145,21 @@ export type SegmentIndexEntry = {
   agents: unknown[];
 };
 
+/**
+ * Where a period's segmenting stood, for a coordinator that resumes it after a restart
+ * (core/src/realtime/periodResume.ts). The index of earlier segments is not here: it is matrix.json,
+ * which a resume reads back.
+ */
+export type SegmentedRunState = {
+  segment: number;
+  segmentDirId: string;
+  segmentStartedAtMs: number;
+  segmentStartBlock: number;
+  periodStartedAtMs: number | null;
+  /** Null when no roll is scheduled yet (JSON has no Infinity). */
+  nextRollAtMs: number | null;
+};
+
 export class SegmentedRun implements RunArtifactWriter {
   private logger: RunLogger;
   private index: SegmentIndexEntry[] = [];
@@ -175,16 +190,52 @@ export class SegmentedRun implements RunArtifactWriter {
       /** A display name for the whole period. */
       scenarioSet: string;
     },
+    // A period that resumes after a restart: open its current segment where it was and carry on.
+    // The index is read back from matrix.json, without the entries of segments the resume moved out
+    // (periodResume.cutArtifactsToCheckpoint), and the current segment's entry is open again.
+    resume?: { state: SegmentedRunState; index: SegmentIndexEntry[] },
   ) {
     mkdirSync(join(opts.root, opts.competitionId), { recursive: true });
-    this.segmentStartedAtMs = Date.now();
-    this.segmentDirId = this.newSegmentId();
-    this.logger = new RunLogger(
-      join(opts.root, opts.competitionId),
-      this.segmentDirId,
-    );
+    if (resume) {
+      const s = resume.state;
+      this.segment = s.segment;
+      this.segmentDirId = s.segmentDirId;
+      this.segmentStartedAtMs = s.segmentStartedAtMs;
+      this.segmentStartBlock = s.segmentStartBlock;
+      this.periodStartedAtMs = s.periodStartedAtMs;
+      this.nextRollAtMs = s.nextRollAtMs ?? Number.POSITIVE_INFINITY;
+      this.index = resume.index
+        .filter((e) => e.seed <= s.segment)
+        .map((e) => {
+          if (!e.runDir.endsWith(s.segmentDirId)) return e;
+          const { endedAt: _endedAt, ...open } = e;
+          return { ...open, toBlock: open.fromBlock, agents: [] };
+        });
+      this.logger = new RunLogger(this.competitionDir, this.segmentDirId, {
+        append: true,
+      });
+    } else {
+      this.segmentStartedAtMs = Date.now();
+      this.segmentDirId = this.newSegmentId();
+      this.logger = new RunLogger(
+        join(opts.root, opts.competitionId),
+        this.segmentDirId,
+      );
+    }
     this.writeIndex();
     this.writePointer();
+  }
+
+  /** What a checkpoint records about the segmenting (see SegmentedRunState). */
+  state(): SegmentedRunState {
+    return {
+      segment: this.segment,
+      segmentDirId: this.segmentDirId,
+      segmentStartedAtMs: this.segmentStartedAtMs,
+      segmentStartBlock: this.segmentStartBlock,
+      periodStartedAtMs: this.periodStartedAtMs,
+      nextRollAtMs: Number.isFinite(this.nextRollAtMs) ? this.nextRollAtMs : null,
+    };
   }
 
   /**

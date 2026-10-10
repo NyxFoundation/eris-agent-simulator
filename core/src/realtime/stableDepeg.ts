@@ -72,6 +72,16 @@ export type StableDepegRuntime = StableDepegMarket & {
   cappedReported: boolean;
 };
 
+/// What a depeg measured when its period started, for a period that resumes after a restart
+/// (periodResume.ts). Measured again mid-window, the pool depth would be the depegged one and the
+/// actor's balance what is left after selling -- every later target would be a fraction of the wrong
+/// number, and the buy-back would stop short of par by exactly what had been sold.
+export type StableDepegResume = {
+  seededPoolStableWei: bigint;
+  startStableWei: bigint;
+  cappedReported: boolean;
+};
+
 /// Stage the account that will move the peg, and record what it has to work with.
 ///
 /// The actor is not a participant and is excluded from scoring, the same arrangement as the ADR 0009
@@ -85,11 +95,32 @@ export async function setupStableDepeg(
     // What to say when the actor holds none of the stable. Deployment-specific, and the difference
     // between "redeploy" and "a previous run spent it" is exactly what the operator needs.
     emptyInventoryHint: string;
+    resume?: StableDepegResume;
   },
   logger: RunLogger,
 ): Promise<StableDepegRuntime> {
   const { market, label } = opts;
   const actor = accountAddress(opts.actorPk);
+  if (opts.resume) {
+    // The approvals are standing (maxUint256) from the period's first start.
+    logger.event({
+      type: `${label}_resumed`,
+      stable: market.symbol,
+      actor,
+      seededPoolStableWei: opts.resume.seededPoolStableWei.toString(),
+      startStableWei: opts.resume.startStableWei.toString(),
+    });
+    return {
+      ...market,
+      label,
+      actor,
+      actorPk: opts.actorPk,
+      seededPoolStableWei: opts.resume.seededPoolStableWei,
+      startStableWei: opts.resume.startStableWei,
+      pending: null,
+      cappedReported: opts.resume.cappedReported,
+    };
+  }
 
   const [poolStable, actorStable, actorQuote] = (await Promise.all([
     ctx.publicClient.readContract({

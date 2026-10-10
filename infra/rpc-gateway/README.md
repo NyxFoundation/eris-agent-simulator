@@ -167,6 +167,11 @@ that has no block yet is answered as `null`, the same reply as for a hash the no
 a log line, a guessed nonce) used to show an unmined transaction's calldata, fees and signed bytes. A
 mined transaction passes through byte for byte. The raw form carries no block field, so it costs one
 upstream `eth_getTransactionReceipt`; a lookup that fails seals. Counted in `rpc_pending_sealed_total`.
+The seal matches replies to calls by id, so a batch in which a read by hash shares its id with another
+member (`1` and `"1"` count as one id, a missing id as `null`) is refused with 400 before it reaches the
+node, counted in `rpc_dup_id_denied_total`; a reply that still arrives under a shared id is sealed. Batches
+of other methods under one id are forwarded as before. Standard clients (viem, ethers, web3.py) number
+batch members uniquely.
 `eth_getTransactionReceipt` itself is unchanged: `null` while pending, which is what
 `example/agents/runtime/send.ts` polls on.
 

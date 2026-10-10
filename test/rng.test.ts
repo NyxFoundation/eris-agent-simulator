@@ -81,3 +81,35 @@ test("adding WBTC leaves the WETH price path byte-identical (independent per-ass
   // WBTC advances independently.
   assert.notEqual(cur.WBTC, 60000);
 });
+
+// The practice period's resume (core/src/realtime/periodResume.ts) continues the price walk's
+// streams from a saved position. Restored mid-block as well as on a block edge: four draws share one
+// HMAC block, and a position that lands inside one is the common case.
+test("a keyed stream restored from its snapshot continues with the same draws", () => {
+  for (const before of [0, 1, 3, 4, 5, 37]) {
+    const original = Rng.fromSeed(7, "price:WETH");
+    for (let i = 0; i < before; i++) original.next();
+    const saved = original.snapshot();
+    const expected = Array.from({ length: 9 }, () => original.next());
+    const resumed = Rng.fromSeed(7, "price:WETH");
+    resumed.restore(saved);
+    assert.deepEqual(
+      Array.from({ length: 9 }, () => resumed.next()),
+      expected,
+      `after ${before} draws`,
+    );
+    assert.deepEqual(resumed.snapshot(), { kind: "keyed", draws: before + 9 });
+  }
+});
+
+test("an LCG stream restores from its snapshot, and the two kinds do not mix", () => {
+  const a = new Rng(42);
+  a.next();
+  const saved = a.snapshot();
+  const expected = [a.next(), a.next()];
+  const b = new Rng(1);
+  b.restore(saved);
+  assert.deepEqual([b.next(), b.next()], expected);
+  assert.throws(() => Rng.fromSeed(1, "x").restore(saved), /into a keyed stream/);
+  assert.throws(() => b.restore({ kind: "keyed", draws: 3 }), /into an LCG stream/);
+});

@@ -53,6 +53,32 @@ groups:
         labels: { severity: warning, kind: memory }
         annotations: { summary: "host memory usage is above 85%" }
 
+      # 2026-10-08: a Blockscout retry loop wrote 699 GB of container log in 2.5 days, the disk filled,
+      # and the gateway and the coordinator died on their next write. No rule looked at the disk. At
+      # that rate 15% of this host is ~10 hours of warning; the compose log cap removes that source,
+      # this is for the next one. No panel: nothing on the fleet board charts the disk.
+      - uid: ascon_host_disk_low
+        title: Host disk low
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model: { refId: A, expr: "min(100 * node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"})", instant: true, intervalMs: 1000, maxDataPoints: 43200 }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: lt, params: [15] }
+        labels: { severity: critical, kind: disk }
+        annotations: { summary: "the host's root filesystem has less than 15% free. A full disk kills the coordinator, and the next start reverts the chain (infra/devnet/README.md)" }
+
       - uid: ascon_container_mem_high
         title: Agent container near OOM
         condition: C

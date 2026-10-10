@@ -511,3 +511,49 @@ test("the sweep pins the same boundary when the live scorer does, so the two sti
   // Alpha's first cross-section is pinned the same way.
   assert.equal(swept.alphaByAgent.a, 8);
 });
+
+// The practice period's resume (periodResume.ts): a restarted coordinator rebuilds the series from
+// the intervals.jsonl lines the scorer appended, plus the snapshot's bookkeeping, and carries on as
+// if it had never stopped.
+test("a scorer restored from its lines and snapshot continues the same series", async () => {
+  const failAt = new Set([104]);
+  const straight = scorerFixture({ runDir: tmp(), valueAt: (b) => b, failAt });
+  for (let b = 100; b <= 120; b++) await straight.onBlock(b);
+
+  const before = tmp();
+  const first = scorerFixture({ runDir: before, valueAt: (b) => b, failAt });
+  for (let b = 100; b <= 109; b++) await first.onBlock(b);
+  const saved = first.snapshot();
+  const lines = readFileSync(join(before, "run", INTERVALS_FILENAME), "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l) as { blockNumber: number; values: Record<string, number | null> });
+
+  const resumed = scorerFixture({ runDir: tmp(), valueAt: (b) => b, failAt });
+  resumed.restore(saved, lines);
+  for (let b = 110; b <= 120; b++) await resumed.onBlock(b);
+
+  assert.deepEqual(resumed.series(), straight.series());
+  assert.equal(resumed.meta().failedBoundaries, 1, "the failure before the restart still counts");
+  assert.equal(resumed.firstBoundaryBlock, 100);
+  assert.deepEqual(resumed.firstBoundary("a"), straight.firstBoundary("a"));
+});
+
+test("restore refuses boundaries the snapshot never attempted", () => {
+  const scorer = scorerFixture({ runDir: tmp(), valueAt: (b) => b });
+  const snapshot = {
+    lastAttempted: 104,
+    failures: 0,
+    endBlock: null,
+    firstBoundaryBlock: 100,
+    firstBoundaryByAgent: {},
+  };
+  assert.throws(
+    () => scorer.restore(snapshot, [{ blockNumber: 100, values: {} }, { blockNumber: 108, values: {} }]),
+    /past the last one the snapshot attempted/,
+  );
+  assert.throws(
+    () => scorer.restore(snapshot, [{ blockNumber: 104, values: {} }, { blockNumber: 100, values: {} }]),
+    /out of order/,
+  );
+});

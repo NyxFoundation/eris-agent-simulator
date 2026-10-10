@@ -210,6 +210,64 @@ test("validateAction: a standalone WETH sell under USDC-only is rejected for ins
   assert.equal(result.ok, false);
 });
 
+// Issue #276: the uniswap adapter had no stableToken, so applyLeafSpend moved no USDC on a uniswap
+// leg -- the proceeds of a uniswap sale were never credited, and a uniswap buy was never debited.
+test("validateAction: a bundle can buy elsewhere with the proceeds of a uniswap sale (#276)", () => {
+  const wethOnly: BalanceSnapshot = {
+    ethWei: 1n,
+    wethWei: 10n ** 18n,
+    usdcUnits: 0n,
+  };
+  const result = validateAction(
+    parseAction({
+      type: "bundle",
+      actions: [
+        // 1 WETH at the uniswap price of 3,000 credits ~3,000 USDC to the working balance.
+        { type: "swap", tokenIn: "WETH", amountIn: (10n ** 18n).toString() },
+        { type: "balancerSwap", tokenIn: "USDC", amountIn: "2000000000" },
+      ],
+    }),
+    observation,
+    wethOnly,
+  );
+  assert.equal(result.ok, true);
+});
+
+test("validateAction: two uniswap buys cannot spend the same USDC twice (#276)", () => {
+  // balances.usdcUnits = 100; each buy passes on its own, together they are 120.
+  const result = validateAction(
+    parseAction({
+      type: "bundle",
+      actions: [
+        { type: "swap", tokenIn: "USDC", amountIn: "60" },
+        { type: "swap", tokenIn: "USDC", amountIn: "60" },
+      ],
+    }),
+    observation,
+    balances,
+  );
+  assert.deepEqual(result, { ok: false, reason: "amountIn exceeds balance" });
+});
+
+test("validateAction: uniswap LP mints spend USDC cumulatively across a bundle (#276)", () => {
+  // WETH stays well inside the balance (2 x 10 of 100); the USDC legs are 2 x 60 of 100.
+  const mint = {
+    type: "mintLiquidity",
+    tickLower: -10,
+    tickUpper: 10,
+    amountWethDesired: "10",
+    amountUsdcDesired: "60",
+  };
+  assert.deepEqual(
+    validateAction(
+      parseAction({ type: "bundle", actions: [mint, mint] }),
+      observation,
+      balances,
+    ),
+    { ok: false, reason: "LP desired amounts exceed balance" },
+  );
+});
+
 test("parseAction rejects nested bundle; bundle length itself is not capped", () => {
   assert.throws(
     () =>

@@ -268,3 +268,11 @@ test("readStoredMatrix keeps the recorded stream naming", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a matrix.json that does not parse is named, not guessed at (issue #262)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-resume-"));
+  writeFileSync(join(dir, "matrix.json"), '{"schema": 2, "scenarios": [');
+  assert.throws(() => readStoredMatrix(dir), /matrix\.json is not valid JSON/);
+  rmSync(dir, { recursive: true, force: true });
+});
+

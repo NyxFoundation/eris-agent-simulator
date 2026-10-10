@@ -361,8 +361,24 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   `participant`（任意）は規約 §2.2 の**参加単位**で、同じ値の 2 体はその単位の 2 提出（高い方が最終スコア）。
   `agents_registered` / manifest / summary.json / matrix.json の agent レコードに**そのまま載る**だけで、
   採点の算術は agent 単位のまま（単位への畳み込みは読む側 = dashboard の仕事）
+- **再起動は期間を再開する**（`core/src/realtime/periodResume.ts`）。coordinator は毎パスの終わりに
+  `<期間>/resume/state.json`（+ 30 ブロックごとの履歴を 40 個）へ、チェーンにも成果物にも無い状態 = 価格 walk の
+  水準と乱数の位置・期間の時計（runStartBlock / runBlocks / 日次グリッドの起点）・ロスターと配布額（V_0 の床）・
+  採点の帳簿・depeg / 引き抜きが開始時に測った基準値・成果物のサイズを書く。境界の値は intervals.jsonl に
+  あるので入れない。起動時に開いている期間があれば**チェーンを戻さず**続きから再開する。どの checkpoint からかは
+  「ブロックハッシュがチェーンと一致する最新のもの」: coordinator が死んだだけなら state.json、anvil がダンプから
+  戻ったら履歴から選び、成果物をそこまで切り戻す（切った分は `resume/cut-*`）。どれも一致しなければ拒否。
+  **新しい期間は `--new-period` か `runs/NEW_PERIOD` のときだけ**（チェーンを戻すのはこれだけ。起動 = 新期間
+  だった頃、ENOSPC 後の自動再起動が 2.5 日分を戻した = 2026-10-08）。期間も要求も無ければ拒否。再開時に変えて
+  よい config は `MUTABLE_CONFIG_KEYS`（fees・economicGas・flow.topUpEveryBlocks・registrationsFile・agent の
+  待機 / quota / sandbox）だけで、それ以外（seed・endsAt・エピソード・ロスター・鍵）が違えば差分を名指しで拒否。
+  SIGTERM はチェーンの採掘を止めてから終了する（止まっている間に価格更新の無いブロックが進まない）。
+  **持ち越せないもの**: anvil 再起動後の state 履歴（間に来た境界は `interval_boundary_failed`）、
+  `agentMarkets` / `tokenLaunch` / vuln / victim / prewarm のある期間（`period_not_resumable`、再起動で拒否）。
+  実測（ローカル anvil、2026-10-08）: kill -9 → 再開、SIGTERM → `economicGas: true` に変えて再開、anvil を
+  ダンプから 26 ブロック戻して再開の 3 通りで、blocks.csv の重複 0・ブロックの欠落 0・depeg / 引き抜きは par まで戻った
 - **登録は再起動なしで追加する**（`run.registrationsFile`。ADR 0021 §2 / 規約 §2.7）。ロスターは起動時に 1 回しか
-  読まず、再起動は新しい competition ディレクトリを開いて順位表を割る。ファイル（YAML/JSON。`external: true` +
+  読まず、期間の一部なので再開時に変えられない。ファイル（YAML/JSON。`external: true` +
   `address` エントリと同形。`config/registrations.example.yaml`）を **~30 ブロックごとに stat** し、変わっていれば
   読み直して新規分を setup と同じ経路で登録する（鍵なし runtime・address 帰属・同額 funding = `fundAddress`・
   `LiveScorer.addAgent` で**次の境界から**評価・`agents_registered` と manifest を再発行 + `agent_external_registered`）。
@@ -433,7 +449,11 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   上限は `setTimeout` の 32bit を超えて 1ms に化けていた（イベント無しの run が 0 ブロックで終了）→ `setLongTimeout`。
   ②**背景フローの財布は補充する**（`flow.topUpEveryBlocks`、練習は 300。公式は 0 = 1 回配り）。実測で
   1 財布の在庫が 1 日に元の数倍揺れ、合計価値は 1 日 1 割強減る。`flow_balances` / `flow_guard` /
-  `flow_wallet_topped_up` が記録。③**LST の利回りはチェーンの時計**（ADR 0028。旧既定 1 時間/ブロックだと 35 日が 170 年分で
+  `flow_wallet_topped_up` が記録。**GMX の flow は自分の建玉を cap の一定割合までに抑える**（`flow.gmxOiTargetFrac`、
+  既定 0.4、0 = 閉じない旧 flow。期間中も変更可）。以前は開くだけで、2026-10-08 開始の練習期間では WETH 市場の
+  両側が reserve 上限（プール価値 × 0.5）まで flow の建玉で埋まり、参加者はどちら向きにも開けなかった。目標を超えた側に
+  引いた注文は同じ乱数のまま close になる（担保は比例分）ので、**目標未満なら flow は乱数単位で以前と同一**。
+  360 ブロックのエポックは目標の 1/6 程度しか積まないので公式レジームでは発火しない。③**LST の利回りはチェーンの時計**（ADR 0028。旧既定 1 時間/ブロックだと 35 日が 170 年分で
   原資 50 WETH が 3.3 日で尽き、#129 で 30 秒/ブロックにしていた）。尽きたら観測の `apyBps` は 0、`lst_reward_reserve_exhausted`。
   ④**coordinator の送信記録は flush で消す**（`SubmittedLedger`。以前は 1 日 ~200MB 増えた。soak で 180MB 一定）。
   ⑤**練習チェーンの anvil は `--transaction-block-keeper 300 --prune-history 300`**。無いと全 tx（1 件 ~37KB、

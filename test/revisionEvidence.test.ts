@@ -690,6 +690,56 @@ test("buildRevisionContext: the PnL lines carry the do-nothing counterfactual ne
   assert.match(plain, /PnL since the run started: -100\.00 USDC\n/);
 });
 
+test("buildRevisionContext: a position held at the interval's start is named next to the counterfactual (#274)", () => {
+  // The holding counterfactual marks the wallet's balances; a GMX position held at the last revision
+  // is taken as unchanged, so its market move lands in "what trading did" -- the line says so.
+  const context = buildRevisionContext({
+    block: 120,
+    valueUsdc: 27_196.79,
+    initialValueUsdc: 25_000,
+    sinceLastRevisionUsdc: -90,
+    holdSinceStartUsdc: 2_100.12,
+    holdSinceLastRevisionUsdc: -180.5,
+    venuesAtStartUsdc: 0,
+    venuesAtLastRevisionUsdc: 4_000,
+    currentVersion: 0,
+    history: [],
+    recent: [],
+    observation: null,
+  });
+  // Nothing held outside the wallet at the start: the line is unchanged.
+  assert.match(context, /PnL since the run started: 2196\.79 USDC \([^)]*is what trading did\)\n/);
+  assert.match(
+    context,
+    /PnL since the last revision: -90\.00 USDC \(.*is what trading did; that counts the wallet only -- the 4000\.00 USDC you held in venue positions then is taken as unchanged, so their market move is in the difference\)/,
+  );
+});
+
+test("buildRevisionContext: an account that could not be valued is unknown, not a PnL of zero (#274)", () => {
+  const context = buildRevisionContext({
+    block: 120,
+    valueUsdc: null,
+    initialValueUsdc: null,
+    sinceLastRevisionUsdc: null,
+    currentVersion: 1,
+    history: [
+      {
+        version: 1,
+        source: "async function decide() { return null; }",
+        notes: "tighter gate",
+        installedAtBlock: 60,
+        valueAtInstall: 25_100,
+      },
+    ],
+    recent: [],
+    observation: null,
+  });
+  assert.match(context, /PnL since the run started: unknown \(the account could not be valued yet\)/);
+  assert.doesNotMatch(context, /PnL since the run started: 0\.00/);
+  // With no baseline the install value is shown as it is, not differenced against a zero.
+  assert.match(context, /v1 @ block 60 \(value then: 25100\.00 USDC\)/);
+});
+
 test("digestMarketHistory: eUSD is reported once, in the stables section, when the registry prices it", () => {
   // The registry prices eUSD as a stable since #27 (negative = below a dollar). The liquity adapter
   // reports the same price as a discount with the sign flipped (positive = below par), and a live

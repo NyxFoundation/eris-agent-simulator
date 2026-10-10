@@ -25,6 +25,7 @@ import {
   createRunsApi,
   HOLD,
   modeFromEnv,
+  queryByteCount,
   redactBlocksRow,
   redactEvent,
   redactEventLine,
@@ -760,6 +761,55 @@ test("operator mode serves every file and tail byte for byte", async () => {
 });
 
 
+// `?offset=0.5` reached createReadStream as `start: 0.5`, which throws synchronously in the stat
+// callback: one unauthenticated request ended the server, audience mode included. Every malformed
+// count has to come back as an ordinary answer at a whole-number offset, and the server has to be
+// still standing for the next request.
+test("a malformed offset or limit is an ordinary tail answer, not a dead server", async () => {
+  assert.equal(queryByteCount("0.5", 0), 0);
+  assert.equal(queryByteCount("7.9", 0), 7);
+  assert.equal(queryByteCount("-1", 0), 0);
+  assert.equal(queryByteCount("abc", 3), 3);
+  assert.equal(queryByteCount("NaN", 3), 3);
+  assert.equal(queryByteCount(null, 3), 3);
+  assert.equal(queryByteCount("1e300", 0), Number.MAX_SAFE_INTEGER);
+  assert.equal(queryByteCount("Infinity", 0), Number.MAX_SAFE_INTEGER);
+
+  const root = fixtureRuns();
+  const run = "2026-11-01T10-00-00-000Z";
+  const size = readFileSync(join(root, run, "events.jsonl")).length;
+  for (const audience of [true, false]) {
+    const { get, close } = await serve(root, audience);
+    try {
+      const cases: Array<[string, (offset: number) => boolean]> = [
+        ["offset=0.5", (o) => o > 0],
+        ["offset=0.5&limit=0.5", (o) => o > 0],
+        ["offset=0&limit=0.5", (o) => o > 0],
+        ["offset=3.7&limit=2.2", (o) => o >= 3],
+        ["offset=-1", (o) => o > 0],
+        ["offset=NaN", (o) => o > 0],
+        ["offset=abc", (o) => o > 0],
+        ["limit=-5", (o) => o > 0],
+        ["offset=1e300", (o) => o === size],
+        ["offset=Infinity", (o) => o === size],
+      ];
+      for (const [q, ok] of cases) {
+        const res = await get(`/${run}/tail/events.jsonl?${q}`);
+        assert.equal(res.status, 200, `${q} (audience ${audience})`);
+        const body = JSON.parse(res.text) as { offset: number; text: string };
+        assert.ok(Number.isSafeInteger(body.offset), `${q}: offset ${body.offset}`);
+        assert.ok(body.offset <= size, `${q}: offset within the file`);
+        assert.ok(ok(body.offset), `${q}: offset ${body.offset} (audience ${audience})`);
+      }
+      // Still serving after all of the above.
+      assert.equal((await get(`/${run}/tail/events.jsonl?offset=0`)).status, 200);
+    } finally {
+      await close();
+    }
+  }
+  rmSync(root, { recursive: true, force: true });
+});
+
 // A hosted box keeps every smoke and test run its operator ever made under runs/, and the picker
 // offered all of them to participants under their internal names. The allowlist is the server's
 // answer, so it has to hold for the index, for direct fetches and for tails alike (issue #84 K).
@@ -1023,4 +1073,104 @@ test("a symlink inside an admitted competition does not serve a run outside the 
     }
   }
   rmSync(root, { recursive: true, force: true });
+});
+
+// 2026-10-08: the practice chain was lost and the coordinator restarted, which opens a new
+// competition. continues.json beside the new period's matrix.json names the earlier one, and the
+// served index carries the earlier period's days first -- admitted with it, even when only the new
+// period is listed.
+test("a period that continues another serves the earlier days first, and admits them", async () => {
+  const root = mkdtempSync(join(tmpdir(), "eris-runs-continued-"));
+  const period = (id: string, days: string[]) => {
+    mkdirSync(join(root, id), { recursive: true });
+    for (const d of days) {
+      mkdirSync(join(root, id, d), { recursive: true });
+      writeFileSync(join(root, id, d, "summary.json"), JSON.stringify({ agents: [] }));
+    }
+    writeFileSync(
+      join(root, id, "matrix.json"),
+      JSON.stringify({
+        schema: 1,
+        resetUnit: "continuous",
+        segmentHours: 24,
+        scenariosPlanned: days.length,
+        scenarios: days.map((d, i) => ({
+          regime: "segment",
+          seed: i,
+          label: d,
+          runDir: `runs/${id}/${d}`,
+          agents: [],
+        })),
+      }),
+    );
+  };
+  period("period-a", ["a-s00", "a-s01"]);
+  period("period-b", ["b-s00"]);
+  writeFileSync(
+    join(root, "period-b", "continues.json"),
+    JSON.stringify({ from: "period-a", note: "chain lost, restarted" }),
+  );
+  for (const audience of [false, true]) {
+    const { get, close } = await serve(root, audience, ["period-b"]);
+    try {
+      const index = JSON.parse((await get("/period-b/matrix.json")).text);
+      assert.deepEqual(
+        index.scenarios.map((s: { runDir: string; seed: number }) => [s.runDir, s.seed]),
+        [
+          ["runs/period-a/a-s00", 0],
+          ["runs/period-a/a-s01", 1],
+          ["runs/period-b/b-s00", 2],
+        ],
+      );
+      assert.equal(index.scenariosPlanned, 3);
+      assert.deepEqual(index.continues, {
+        from: "period-a",
+        note: "chain lost, restarted",
+        days: 2,
+      });
+      // The earlier days are served because the continued index names them; the earlier period's
+      // own index is not, since it is not on the list.
+      assert.equal((await get("/period-a/a-s01/summary.json")).status, 200);
+      assert.equal((await get("/period-a/matrix.json")).status, 404);
+    } finally {
+      await close();
+    }
+  }
+  rmSync(root, { recursive: true, force: true });
+});
+
+// A practice period's checkpoint directory (core/src/realtime/periodResume.ts): state.json carries
+// the seed and the episode plan, and the tails a resume cut keep the artifacts' own names.
+test("audience mode serves nothing under a period's resume/ directory", async () => {
+  const root = mkdtempSync(join(tmpdir(), "eris-runs-api-resume-"));
+  const period = "2026-10-08T11-35-00-987Z";
+  const day = "2026-10-08-s00";
+  mkdirSync(join(root, period, day), { recursive: true });
+  writeFileSync(
+    join(root, period, "matrix.json"),
+    JSON.stringify({ scenarioSet: "practice", resetUnit: "continuous", scenarios: [] }),
+  );
+  writeFileSync(join(root, period, day, "events.jsonl"), "");
+  const cut = join(root, period, "resume", "cut-2026-10-08T12-00-00-000Z", day);
+  mkdirSync(cut, { recursive: true });
+  mkdirSync(join(root, period, "resume", "history"), { recursive: true });
+  writeFileSync(join(root, period, "resume", "state.json"), '{"world":{"seed":4242}}\n');
+  writeFileSync(join(cut, "events.jsonl"), '{"type":"stress_schedule","events":[]}\n');
+  writeFileSync(join(cut, "blocks.csv"), "round\n");
+  const { get, close } = await serve(root, true);
+  try {
+    assert.equal((await get(`/${period}/resume/state.json`)).status, 404);
+    assert.equal(
+      (await get(`/${period}/resume/cut-2026-10-08T12-00-00-000Z/${day}/events.jsonl`)).status,
+      404,
+    );
+    assert.equal(
+      (await get(`/${period}/resume/cut-2026-10-08T12-00-00-000Z/${day}/blocks.csv`)).status,
+      404,
+    );
+    assert.equal((await get(`/${period}/matrix.json`)).status, 200);
+  } finally {
+    await close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

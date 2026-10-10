@@ -86,7 +86,15 @@ function keyOf(pos: PullPosition): string {
 export async function setupLiquidityPull(
   ctx: SimContext,
   schedule: EventSchedule,
-  opts: { localDeploy: boolean; ownerPk: Hex; enabledVenues: PullVenue[] },
+  opts: {
+    localDeploy: boolean;
+    ownerPk: Hex;
+    enabledVenues: PullVenue[];
+    // A practice period resuming after a restart (periodResume.ts): each position's claim at the
+    // period's start, keyed venue:market. Discovered again mid-window, the claim would be the pulled
+    // one, and the restore would put back only what is already there.
+    resume?: LiquidityPullResume;
+  },
   logger: RunLogger,
 ): Promise<LiquidityPullRuntime> {
   const bases = schedule.liquidityPullBases();
@@ -123,6 +131,8 @@ export async function setupLiquidityPull(
         "`venue:` if a venue is meant to be left alone",
     );
   }
+
+  if (opts.resume) return resumeLiquidityPull(owner, opts.ownerPk, positions, opts.resume, logger);
 
   // The decay leg deposits tokens back, so each venue's spender needs standing approval: the
   // deploy-time approvals covered only the exact seeding amounts. Sequential because they all come
@@ -186,6 +196,70 @@ export async function setupLiquidityPull(
     pending: new Map(),
     restoreAttempts: new Map(),
     restoreReported: true,
+  };
+}
+
+export type LiquidityPullResume = {
+  seededShares: Record<string, bigint>;
+  restoreReported: boolean;
+};
+
+/** What a checkpoint records of a pull: each position's claim at the period's start. */
+export function liquidityPullResumeState(runtime: LiquidityPullRuntime): LiquidityPullResume {
+  return {
+    seededShares: Object.fromEntries(runtime.positions.map((p) => [keyOf(p), p.seededShare])),
+    restoreReported: runtime.restoreReported,
+  };
+}
+
+// The positions as discovered now carry today's claim. The period's start is the checkpoint's; what
+// the position holds today is `applied`, which is what the reconcile computes the next delta from.
+// The approvals are standing (maxUint256) from the first start.
+function resumeLiquidityPull(
+  owner: Address,
+  ownerPk: Hex,
+  discovered: PullPosition[],
+  saved: LiquidityPullResume,
+  logger: RunLogger,
+): LiquidityPullRuntime {
+  const applied = new Map<string, bigint>();
+  const positions = discovered.map((pos) => {
+    const key = keyOf(pos);
+    const seeded = saved.seededShares[key];
+    if (seeded === undefined)
+      throw new Error(
+        `liquidityPull: the period started without a position at ${key}, and one is there now. ` +
+          "The pool set changed under the period; it cannot be resumed against it",
+      );
+    if (pos.seededShare !== seeded) applied.set(key, pos.seededShare);
+    return { ...pos, seededShare: seeded };
+  });
+  const missing = Object.keys(saved.seededShares).filter(
+    (key) => !positions.some((p) => keyOf(p) === key),
+  );
+  if (missing.length > 0)
+    throw new Error(
+      `liquidityPull: the period's positions ${missing.join(", ")} are gone from ${owner}; ` +
+        "it cannot be resumed against this chain",
+    );
+  logger.event({
+    type: "stress_liquidity_pull_resumed",
+    owner,
+    positions: positions.map((p) => ({
+      venue: p.venue,
+      market: p.marketKey,
+      seededShare: p.seededShare.toString(),
+      currentShare: (applied.get(keyOf(p)) ?? p.seededShare).toString(),
+    })),
+  });
+  return {
+    owner,
+    ownerPk,
+    positions,
+    applied,
+    pending: new Map(),
+    restoreAttempts: new Map(),
+    restoreReported: saved.restoreReported,
   };
 }
 

@@ -4,11 +4,10 @@ Documentation=https://github.com/NyxFoundation/eris-agent-simulator/blob/main/in
 After=network-online.target
 Wants=network-online.target
 
-# A restart does not resume: `competitionId` is the process start time (core/src/realtime/
-# coordinator.ts), so every start opens a NEW competition directory and the standings begin again.
-# That is tolerable once. It is not tolerable in a loop, which would shard a week-long period into
-# dozens of directories nobody can read. Three starts an hour, then the unit stays failed and the
-# stall alert (infra/monitoring) says so in Slack.
+# A restart resumes the period (README, "A restart resumes the period"): the coordinator continues the
+# open period from its last checkpoint on the same chain, and starts a NEW period -- reverting the
+# chain -- only when runs/NEW_PERIOD exists. A fault that recurs is still not something to loop on:
+# three starts an hour, then the unit stays failed and the stall alert (infra/monitoring) says so.
 StartLimitIntervalSec=1h
 StartLimitBurst=3
 
@@ -27,6 +26,12 @@ Environment=PATH=%h/.foundry/bin:%h/.nix-profile/bin:/run/current-system/sw/bin:
 
 # The chain is a container that may still be starting at boot. Waiting here rather than failing
 # keeps the restart budget above for real faults.
+# A start on a full disk gets nothing done but damage: on 2026-10-08 the coordinator died on ENOSPC,
+# this unit restarted it 30 s later, and that start (back then every start was a new period) reverted
+# 2.5 days of chain and died again. A resume would only fail to write its checkpoint, and a new period
+# still reverts. Refuse below 5% free, before the chain is touched. (The chain's volume and the run
+# directory share this filesystem on the practice box; that is the one checked.)
+ExecStartPre=/bin/sh -c 'used=$$(df --output=pcent %h | tail -n 1 | tr -dc 0-9); test "$$used" -lt 95 || { echo "the disk under %h is $$used%% full: refusing to start (infra/devnet/README.md)" >&2; exit 1; }'
 ExecStartPre=%h/workspace/eris-agent-simulator/infra/devnet/wait-for-chain.sh
 
 # The seed is the one run key that does not come from the config. config/practice.yaml is public, and
@@ -58,8 +63,9 @@ ExecStart=/usr/bin/env npm run sim:realtime -- --config config/practice.yaml --s
 Restart=on-failure
 RestartSec=30
 
-# The coordinator installs no SIGTERM handler. A stop is abrupt: events.jsonl / blocks.csv /
-# intervals.jsonl are append-only and survive, summary.json is not written. Stopping ends the period.
+# On SIGTERM the coordinator stops the chain's interval mining and exits: a stop pauses the period, and
+# the next start resumes it from the last checkpoint (written every pass). summary.json is written when
+# the period reaches its end.
 KillSignal=SIGTERM
 TimeoutStopSec=30
 

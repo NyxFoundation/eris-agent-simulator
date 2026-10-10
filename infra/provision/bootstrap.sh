@@ -47,7 +47,22 @@ d = json.load(open(p)) if os.path.exists(p) and os.path.getsize(p) else {}
 d["default-address-pools"] = [{"base": "10.200.0.0/12", "size": 24}]   # 4096 networks
 json.dump(d, open(p, "w"), indent=2)
 PY
-  DOCKER_POOLS_CHANGED=1
+  DOCKER_DAEMON_CHANGED=1
+fi
+# The default for every container the compose files do not cap themselves -- the live week's agents
+# (`docker run` in infra/docker-agent/run-agent.sh) above all. Docker keeps json-file logs forever by
+# default; on 2026-10-08 one container's wrote 699 GB and filled the practice box. Applies to
+# containers created after the daemon restarts below.
+if ! grep -q '"log-opts"' /etc/docker/daemon.json 2>/dev/null; then
+  python3 - <<'PY2'
+import json, os
+p = "/etc/docker/daemon.json"
+d = json.load(open(p)) if os.path.exists(p) and os.path.getsize(p) else {}
+d["log-driver"] = "json-file"
+d["log-opts"] = {"max-size": "100m", "max-file": "3"}
+json.dump(d, open(p, "w"), indent=2)
+PY2
+  DOCKER_DAEMON_CHANGED=1
 fi
 
 log "docker engine + compose plugin"
@@ -63,7 +78,7 @@ fi
 usermod -aG docker "$ASCON_USER"
 systemctl enable --now docker
 # the pool change only takes effect on a daemon restart
-[ "${DOCKER_POOLS_CHANGED:-0}" = 1 ] && systemctl restart docker && sleep 5 || true
+[ "${DOCKER_DAEMON_CHANGED:-0}" = 1 ] && systemctl restart docker && sleep 5 || true
 
 log "node ${NODE_MAJOR}"
 if ! command -v node >/dev/null 2>&1 || [ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)" -lt "$NODE_MAJOR" ]; then

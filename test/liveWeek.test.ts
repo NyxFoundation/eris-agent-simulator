@@ -8,6 +8,8 @@ import {
   LiveWeekRefusal,
   isLiveWeekRefusal,
   liveWeekRefusals,
+  inferenceProxyRefusal,
+  probeInferenceProxy,
   publicAccountRefusal,
   stateDumpRefusal,
 } from "../core/src/realtime/liveWeek.js";
@@ -34,7 +36,12 @@ const field: AgentSpec[] = [
   { id: "unit-a", wallet: "AUTO" },
   { id: "unit-b", wallet: "AUTO" },
 ];
-const isolated = { ERIS_AGENT_ISOLATE: "1", ERIS_AGENT_INTERNAL: "1" };
+const isolated = {
+  ERIS_AGENT_ISOLATE: "1",
+  ERIS_AGENT_INTERNAL: "1",
+  ERIS_INFERENCE_BASE_URL: "http://inference:8790",
+  ERIS_AGENT_STATE_ROOT: "/srv/eris/state",
+};
 
 const posture = (
   over: Partial<Parameters<typeof liveWeekRefusals>[0]> = {},
@@ -103,7 +110,7 @@ test("a shared network, an open route out and bind-mount mode are each refused",
 
 test("the network switches are read per roster entry, as the launcher reads them", () => {
   const reasons = posture({
-    env: {},
+    env: { ERIS_INFERENCE_BASE_URL: "http://inference:8790", ERIS_AGENT_STATE_ROOT: "/srv/eris/state" },
     agents: [
       { id: "unit-a", wallet: "AUTO", env: isolated },
       { id: "unit-b", wallet: "AUTO" },
@@ -196,3 +203,51 @@ test("the dump measurement finds public accounts that hold ETH or signed, and no
     { address: ANVIL_0.toLowerCase(), balanceWei: (10n ** 21n).toString(), nonce: 412 },
   ]);
 });
+
+// ---- the inference proxy (rules §2.5, issue #260) ----
+
+test("a live week with no inference proxy for the agents is refused", () => {
+  const reasons = posture({ env: { ERIS_AGENT_ISOLATE: "1", ERIS_AGENT_INTERNAL: "1", ERIS_AGENT_STATE_ROOT: "/srv/eris/state" } });
+  assert.equal(reasons.length, 1);
+  assert.match(reasons[0], /ERIS_INFERENCE_BASE_URL/);
+});
+
+test("the proxy has to say it forwards the participants' credentials", () => {
+  assert.equal(inferenceProxyRefusal({ ok: true, credentials: "participant" }), undefined);
+  assert.match(inferenceProxyRefusal({ ok: true, credentials: "operator" }) ?? "", /--keys/);
+  assert.match(inferenceProxyRefusal({ ok: true }) ?? "", /operator/);
+  assert.match(inferenceProxyRefusal({ error: "down" }) ?? "", /healthz/);
+});
+
+test("the probe reads /healthz from the agents' URL, or the host's own, and says when neither answers", async () => {
+  const asked: string[] = [];
+  const answering = (body: unknown) =>
+    (async (url: string | URL | Request) => {
+      asked.push(String(url));
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+  assert.equal(
+    await probeInferenceProxy({ ERIS_INFERENCE_BASE_URL: "http://inference:8790/" }, answering({ ok: true, credentials: "participant" })),
+    undefined,
+  );
+  assert.equal(asked[0], "http://inference:8790/healthz");
+  await probeInferenceProxy(
+    { ERIS_INFERENCE_BASE_URL: "http://inference:8790", ERIS_INFERENCE_PROBE_URL: "http://127.0.0.1:8790" },
+    answering({ ok: true, credentials: "participant" }),
+  );
+  assert.equal(asked[1], "http://127.0.0.1:8790/healthz");
+  const down = (async () => { throw new Error("ECONNREFUSED"); }) as typeof fetch;
+  assert.match((await probeInferenceProxy({ ERIS_INFERENCE_BASE_URL: "http://inference:8790" }, down)) ?? "", /not reachable from this host/);
+  assert.equal(await probeInferenceProxy({}, down), undefined, "no URL is the sync refusal's job");
+});
+
+// ---- the agent state root (rules §4.7.1, issue #264) ----
+
+test("a live week without --agent-state-root is refused: the rules carry each unit's state across epochs", () => {
+  const { ERIS_AGENT_STATE_ROOT: _omitted, ...withoutRoot } = isolated;
+  const reasons = posture({ env: withoutRoot });
+  assert.equal(reasons.length, 1);
+  assert.match(reasons[0], /--agent-state-root/);
+  assert.match(reasons[0], /4\.7\.1/);
+});
+

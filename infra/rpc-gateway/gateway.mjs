@@ -30,8 +30,28 @@ const LOG_FILE = process.env.LOG_FILE || "";
 // reason eris-exporter can't be scraped directly), so when METRICS_FILE is set we also dump the
 // exposition to the shared textfile dir that node-exporter serves. HTTP /metrics still works locally.
 const METRICS_FILE = process.env.METRICS_FILE || "";
-const logStream = LOG_FILE ? createWriteStream(LOG_FILE, { flags: "a" }) : null;
-const logline = (o) => { const s = JSON.stringify(o) + "\n"; logStream ? logStream.write(s) : process.stdout.write(s); };
+// The request log must never take the gateway down. A WriteStream with no 'error' listener throws on
+// the first failed write, so a full disk killed the process -- and with it every participant's RPC --
+// over a log line (2026-10-08). A failed stream is dropped, its lines are counted instead of written,
+// and the file is reopened at most once a minute.
+const LOG_REOPEN_MS = 60_000;
+let logStream = null, logFailedAt = 0, logLinesDropped = 0;
+function openLog() {
+  const ws = createWriteStream(LOG_FILE, { flags: "a" });
+  ws.on("error", (e) => {
+    if (logStream !== ws) return;
+    logStream = null; logFailedAt = Date.now();
+    process.stderr.write(`rpc-gateway: request log ${LOG_FILE}: ${e.message}; dropping lines, retrying in ${LOG_REOPEN_MS / 1000}s\n`);
+  });
+  logStream = ws;
+}
+if (LOG_FILE) openLog();
+const logline = (o) => {
+  const s = JSON.stringify(o) + "\n";
+  if (!LOG_FILE) { process.stdout.write(s); return; }
+  if (!logStream && Date.now() - logFailedAt >= LOG_REOPEN_MS) openLog();
+  if (logStream) logStream.write(s); else logLinesDropped++;
+};
 
 const BUCKETS = [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
 const MAX_METHODS = 200;                                  // cardinality guard (rpc methods are bounded)
@@ -291,13 +311,38 @@ let bodyDenied = 0;
 // so it costs one upstream receipt lookup. Failure to look up seals (fail closed).
 const TX_BY_HASH_METHODS = new Set(["eth_getTransactionByHash", "eth_getRawTransactionByHash"]);
 let pendingSealed = 0;
+let dupIdDenied = 0;
+
+// The seal matches each reply to its call by id, so a batch in which a read by hash shares its id
+// with another member made it judge one reply by the other call: a raw reply checked as an object
+// read, or an unmined hash checked by a mined hash's receipt, and the unmined transaction went out
+// unsealed. Such a batch is refused before it reaches the node (the id of the first collision, or
+// null). Only a read by hash takes part: a batch of other calls under one id is the client's own
+// business and never passes through the seal. Ids compare as the seal keys them, so 1 and "1" are
+// one id, and a missing id is the same as null.
+const idKey = (c) => String(c.id ?? null);
+function sharedTxByHashId(parsed) {
+  if (!Array.isArray(parsed)) return null;
+  const counts = new Map();
+  for (const c of parsed) if (c && typeof c === "object") counts.set(idKey(c), (counts.get(idKey(c)) || 0) + 1);
+  for (const c of parsed) if (c && TX_BY_HASH_METHODS.has(c.method) && counts.get(idKey(c)) > 1) return idKey(c);
+  return null;
+}
 
 // Rewrites the upstream reply for the tx-by-hash calls in `parsed`, then hands the body to `cb`.
 // Untouched bodies are passed through as received, so nothing else is re-serialized.
 function sealPending(parsed, upBody, cb) {
   const calls = Array.isArray(parsed) ? parsed : [parsed];
   const byId = new Map();
-  for (const c of calls) if (c && TX_BY_HASH_METHODS.has(c.method)) byId.set(String(c.id), c);
+  // A reply whose id two calls claim cannot be told apart, so it is sealed rather than judged
+  // (`handle` refuses such a batch first; this keeps the seal closed if that check ever misses).
+  const AMBIGUOUS = {};
+  const members = calls.filter((c) => c && typeof c === "object");
+  const counts = new Map();
+  for (const c of members) counts.set(idKey(c), (counts.get(idKey(c)) || 0) + 1);
+  for (const c of members) {
+    if (TX_BY_HASH_METHODS.has(c.method)) byId.set(idKey(c), counts.get(idKey(c)) > 1 ? AMBIGUOUS : c);
+  }
   if (byId.size === 0) return cb(upBody);
   let reply;
   try { reply = JSON.parse(upBody.toString("utf8")); } catch { return cb(upBody); }
@@ -306,8 +351,9 @@ function sealPending(parsed, upBody, cb) {
   const lookups = [];
   for (const r of responses) {
     if (!r || r.result === null || r.result === undefined) continue;
-    const c = byId.get(String(r.id));
+    const c = byId.get(idKey(r));
     if (!c) continue;
+    if (c === AMBIGUOUS) { r.result = null; changed = true; pendingSealed++; continue; }
     if (c.method === "eth_getTransactionByHash") {
       if (typeof r.result === "object" && r.result.blockNumber === null) { r.result = null; changed = true; pendingSealed++; }
       continue;
@@ -371,6 +417,7 @@ function observeBatch(n) {
 function metricsText() {
   const L = `env="${ENV_NAME}"`;
   let o = "";
+  o += `# TYPE rpc_log_lines_dropped_total counter\nrpc_log_lines_dropped_total{${L}} ${logLinesDropped}\n`;
   o += `# TYPE rpc_requests_total counter\n`;
   for (const [k, v] of reqTotal) { const [m, s] = k.split("|"); o += `rpc_requests_total{${L},method="${m}",status="${s}"} ${v}\n`; }
   o += `# TYPE rpc_request_duration_seconds histogram\n`;
@@ -398,6 +445,7 @@ function metricsText() {
   o += `# TYPE rpc_call_gas_capped_total counter\nrpc_call_gas_capped_total{${L}} ${callGasCapped}\n`;
   o += `# TYPE rpc_upstream_timeout_total counter\nrpc_upstream_timeout_total{${L}} ${upstreamTimeouts}\n`;
   o += `# TYPE rpc_in_flight_denied_total counter\nrpc_in_flight_denied_total{${L}} ${inFlightDenied}\n`;
+  o += `# TYPE rpc_dup_id_denied_total counter\nrpc_dup_id_denied_total{${L}} ${dupIdDenied}\n`;
   o += `# TYPE rpc_key_denied_total counter\nrpc_key_denied_total{${L}} ${keyDenied}\n`;
   o += `# TYPE rpc_keys_loaded gauge\nrpc_keys_loaded{${L}} ${keyMap.size}\n`;
   return o;
@@ -531,6 +579,16 @@ function handle(req, res, chunks) {
     // An omitted block parameter that the node would read as pending becomes "latest" (above).
     // Re-serialized only when something changed, so every other body is forwarded byte for byte.
     if (calls.map(defaultBlockTag).some(Boolean)) bodyBuf = Buffer.from(JSON.stringify(parsed));
+  }
+
+  // a read by hash sharing its id within a batch -> refuse; the seal could not tell its reply apart
+  const sharedId = sharedTxByHashId(parsed);
+  if (sharedId !== null) {
+    dupIdDenied++;
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, status: "dup_id_denied", id: sharedId, client, ip });
+    res.writeHead(400, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ jsonrpc: "2.0", id: null,
+      error: { code: -32600, message: `batch members share id ${sharedId}; a transaction read by hash needs an id of its own` } }));
   }
 
   // Read gas cap: written into the body, like the block tag above. Applies with RPC_FILTER=0 as well.

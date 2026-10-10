@@ -63,7 +63,7 @@ test("the CLI keeps serving after a record write fails, and says so on stderr", 
   // the field's activity off the one host it is allowed to talk to.
   assert.match(stderr, /stats at GET \/admin\/recording/);
   const base = `http://127.0.0.1:${port}`;
-  assert.deepEqual(await (await fetch(`${base}/healthz`)).json(), { ok: true });
+  assert.deepEqual(await (await fetch(`${base}/healthz`)).json(), { ok: true, credentials: "operator" });
   assert.equal((await fetch(`${base}/admin/recording`)).status, 401);
   const health = (await (
     await fetch(`${base}/admin/recording`, { headers: { authorization: `Bearer ${STATS_TOKEN}` } })

@@ -23,8 +23,12 @@ const QUOTE_DECIMALS = tokenInfo("USDC").decimals;
 // fair price walked on -- by round 16 it had drawn all 360 of the run's price shocks, in order. And an
 // unhashed LCG seed starts nearby seeds in the same place: the first draw (the first round's
 // uniswap arrival count) came out 0 on every seed from 1 to 200.
-export function flowRng(flowSeed: number): Rng {
-  return Rng.fromSeed(flowSeed, "flow");
+//
+// `stream` names a continuation: a practice period that resumes after a restart starts the bot
+// again, and the same stream from the top would replay the period's first day of orders. Empty is
+// the original stream, byte for byte.
+export function flowRng(flowSeed: number, stream = ""): Rng {
+  return Rng.fromSeed(flowSeed, stream === "" ? "flow" : `flow:${stream}`);
 }
 
 const FLOW_SLIPPAGE_BPS = 100;
@@ -76,6 +80,8 @@ export type FlowLimits = {
   // ADR 0015 Notes: extend the above to GMX/Aave. gmxArrivalRate=0 / aaveActorSizeSigma=0 is the legacy behavior.
   gmxArrivalRate: number;
   gmxSizeSigma: number;
+  // The share of each side's open-interest cap the GMX flow may hold before it closes (0 = never).
+  gmxOiTargetFrac: number;
   aaveActorSizeSigma: number;
   defaultPriorityFeeWei: bigint;
 };
@@ -107,6 +113,16 @@ export type FlowContextWire = {
     { wethWei: string; usdcUnits: string; bases?: Record<string, string> }
   >;
   usdcOnlyFlow?: boolean;
+  // The GMX flow wallet's own WETH-collateral ETH/USD positions and each side's open-interest cap
+  // (USD at 30 decimals, WETH wei). Absent = unknown, and the flow only opens, as it always did.
+  gmxFlowExposure?: {
+    longSizeUsd: string;
+    longCollateralWei: string;
+    shortSizeUsd: string;
+    shortCollateralWei: string;
+    longCapUsd: string;
+    shortCapUsd: string;
+  };
   // ADR 0013 Phase 8: AMM flow per non-WETH base. Unset in a WETH-only run (off by default), in which
   // case buildFlowOrders doesn't enter the extra-base loop and consumes no RNG at all (byte-compatible).
   // Filled only when the coordinator enables WBTC, etc. If a base's max is "0", early-continue.
@@ -149,6 +165,8 @@ export type FlowContextWire = {
     // ADR 0015 Notes: GMX/Aave extension. unset/"0"=off (legacy behavior).
     gmxArrivalRate?: string;
     gmxSizeSigma?: string;
+    // unset/"0" = the flow never closes (the wire before the OI target).
+    gmxOiTargetFrac?: string;
     aaveActorSizeSigma?: string;
     defaultPriorityFeeWei: string;
   };
@@ -532,10 +550,43 @@ export function buildAmmFlow(
   return orders;
 }
 
+// The GMX flow wallet's book, decoded from the wire (see FlowContextWire.gmxFlowExposure).
+export type GmxFlowExposure = {
+  long: { sizeUsd: bigint; collateralWei: bigint };
+  short: { sizeUsd: bigint; collateralWei: bigint };
+  longCapUsd: bigint;
+  shortCapUsd: bigint;
+};
+
+export function decodeGmxFlowExposure(
+  wire: FlowContextWire["gmxFlowExposure"],
+): GmxFlowExposure | null {
+  if (!wire) return null;
+  return {
+    long: {
+      sizeUsd: BigInt(wire.longSizeUsd),
+      collateralWei: BigInt(wire.longCollateralWei),
+    },
+    short: {
+      sizeUsd: BigInt(wire.shortSizeUsd),
+      collateralWei: BigInt(wire.shortCollateralWei),
+    },
+    longCapUsd: BigInt(wire.longCapUsd),
+    shortCapUsd: BigInt(wire.shortCapUsd),
+  };
+}
+
 // GMX perp orderflow: open small longs/shorts to create fill volume (executed by the keeper).
 // ADR 0015 Notes / amm-challenge retail: with arrivalRate>0, make the per-block count Poisson(λ) and
 // size lognormal (heavy-tailed = occasionally large positions) (realistic perp flow).
 // arrivalRate=0 is the old Bernoulli(activityProb) + uniform burst + uniform size (byte-compatible).
+//
+// The OI target: an order drawn for a side on which the flow already holds oiTargetFrac of the cap
+// closes that much instead (a decrease of the drawn size, with the matching share of collateral).
+// Without it the flow only ever opened, and over a practice day both sides of the market filled to
+// the reserve cap with the flow's own positions, after which no agent could open either way. The
+// decision uses the draws the order already makes, so below the target -- every 360-block epoch --
+// the flow is draw-for-draw what it was.
 export function buildGmxFlow(
   rng: Rng,
   gmxFlowMaxSizeUsd: bigint,
@@ -547,6 +598,8 @@ export function buildGmxFlow(
   maxBurst = 1,
   arrivalRate = 0,
   sizeSigma = 1,
+  exposure: GmxFlowExposure | null = null,
+  oiTargetFrac = 0,
 ): FlowOrderOut[] {
   // Count: Poisson mode (arrivalRate>0) uses poisson(λ) (0-count blocks arise naturally).
   // Legacy mode is a Bernoulli(activityProb) gate -> a uniform burst of 1..maxBurst (byte-compatible).
@@ -559,6 +612,11 @@ export function buildGmxFlow(
     burst = maxBurst <= 1 ? 1 : rng.int(1, maxBurst + 1);
   }
   const orders: FlowOrderOut[] = [];
+  // Tracked through the burst, so two orders in one block see each other.
+  const held =
+    exposure && oiTargetFrac > 0
+      ? { long: { ...exposure.long }, short: { ...exposure.short } }
+      : null;
   for (let i = 0; i < burst; i++) {
     const isLong = rng.bool();
     // size: Poisson mode is lognormal (mean = gmxMax×0.025 = the median of the old uniform. clamped to [0.5%, 10%]).
@@ -576,6 +634,36 @@ export function buildGmxFlow(
       Math.max(1, Math.floor(((sizeUsdNum / 2) * 1e18) / 2100)),
     );
     const fee = defaultPriorityFeeWei + BigInt(rng.int(1, 60)) * 1_000_000n;
+    const side = held ? (isLong ? held.long : held.short) : null;
+    if (
+      side &&
+      exposure &&
+      side.sizeUsd > 0n &&
+      side.sizeUsd >=
+        scaleFraction(
+          isLong ? exposure.longCapUsd : exposure.shortCapUsd,
+          oiTargetFrac,
+        )
+    ) {
+      // A close needs no WETH (the execution fee is ETH), so it goes before the balance guard.
+      const sizeDelta = sizeUsd < side.sizeUsd ? sizeUsd : side.sizeUsd;
+      const collateralDelta = (side.collateralWei * sizeDelta) / side.sizeUsd;
+      side.sizeUsd -= sizeDelta;
+      side.collateralWei -= collateralDelta;
+      orders.push({
+        protocol: "gmx",
+        kind: "uninformed",
+        action: {
+          type: "gmxDecrease",
+          isLong,
+          collateral: "WETH",
+          collateralDeltaAmount: collateralDelta.toString(),
+          sizeDeltaUsd: sizeDelta.toString(),
+        } as unknown as LeafAction,
+        priorityFeeWei: fee,
+      });
+      continue;
+    }
     if (
       balance &&
       balance.wethWei < collateralWei * (canPrepareWeth ? 2n : 1n)
@@ -614,6 +702,10 @@ export function buildGmxFlow(
       action,
       priorityFeeWei: fee,
     });
+    if (side) {
+      side.sizeUsd += sizeUsd;
+      side.collateralWei += collateralWei;
+    }
   }
   return orders;
 }
@@ -853,6 +945,7 @@ export function decodeFlowLimits(wire: FlowContextWire["limits"]): FlowLimits {
     ),
     gmxArrivalRate: Math.max(0, Number(wire.gmxArrivalRate ?? "0")),
     gmxSizeSigma: Math.max(0, Number(wire.gmxSizeSigma ?? "1")),
+    gmxOiTargetFrac: clampProb(wire.gmxOiTargetFrac, 0),
     aaveActorSizeSigma: Math.max(0, Number(wire.aaveActorSizeSigma ?? "0")),
     defaultPriorityFeeWei: BigInt(wire.defaultPriorityFeeWei),
   };
@@ -972,6 +1065,8 @@ export function buildFlowOrders(
           limits.gmxFlowMaxBurst,
           limits.gmxArrivalRate,
           limits.gmxSizeSigma,
+          decodeGmxFlowExposure(ctx.gmxFlowExposure),
+          limits.gmxOiTargetFrac,
         ),
       );
     }

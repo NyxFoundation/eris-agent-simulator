@@ -27,6 +27,10 @@ const FUNDING_INCREASE_FACTOR_PER_SECOND = hashString(
   "FUNDING_INCREASE_FACTOR_PER_SECOND",
 );
 const FUNDING_FEE_AMOUNT_PER_SIZE = hashString("FUNDING_FEE_AMOUNT_PER_SIZE");
+const POOL_AMOUNT = hashString("POOL_AMOUNT");
+const RESERVE_FACTOR = hashString("RESERVE_FACTOR");
+const OPEN_INTEREST_RESERVE_FACTOR = hashString("OPEN_INTEREST_RESERVE_FACTOR");
+const MAX_OPEN_INTEREST = hashString("MAX_OPEN_INTEREST");
 
 // Callback and receiver gas: how much of a participant's own code GMX runs inside the keeper's executeOrder
 // (gmxKeeperRefusal in gmx.ts; core/src/realtime/gmxCallbacks.ts). Plain base keys, not per market.
@@ -112,6 +116,96 @@ export function gmxFundingFeeAmountPerSizeKey(
       [FUNDING_FEE_AMOUNT_PER_SIZE, market, collateralToken, isLong],
     ),
   );
+}
+
+// GMX carries USD at 30 decimals, and its factors at the same precision.
+const USD_SCALE = 10n ** 30n;
+
+function marketTokenKey(base: Hex, market: Address, token: Address): Hex {
+  return keccak256(
+    encodeAbiParameters(
+      [{ type: "bytes32" }, { type: "address" }, { type: "address" }],
+      [base, market, token],
+    ),
+  );
+}
+
+function marketSideKey(base: Hex, market: Address, isLong: boolean): Hex {
+  return keccak256(
+    encodeAbiParameters(
+      [{ type: "bytes32" }, { type: "address" }, { type: "bool" }],
+      [base, market, isLong],
+    ),
+  );
+}
+
+/** Keys.poolAmountKey: the market's balance of one of its two tokens (that token's decimals). */
+export function gmxPoolAmountKey(market: Address, token: Address): Hex {
+  return marketTokenKey(POOL_AMOUNT, market, token);
+}
+
+/** Keys.reserveFactorKey: the share of a side's pool its open positions may reserve (30 decimals). */
+export function gmxReserveFactorKey(market: Address, isLong: boolean): Hex {
+  return marketSideKey(RESERVE_FACTOR, market, isLong);
+}
+
+/** Keys.openInterestReserveFactorKey: the same share, checked on increases only (30 decimals). */
+export function gmxOpenInterestReserveFactorKey(
+  market: Address,
+  isLong: boolean,
+): Hex {
+  return marketSideKey(OPEN_INTEREST_RESERVE_FACTOR, market, isLong);
+}
+
+/** Keys.maxOpenInterestKey: an absolute open-interest ceiling per side (USD, 30 decimals). */
+export function gmxMaxOpenInterestKey(market: Address, isLong: boolean): Hex {
+  return marketSideKey(MAX_OPEN_INTEREST, market, isLong);
+}
+
+/**
+ * How much open interest one side of a market can carry at the current price, in USD (30 decimals).
+ *
+ * An increase is refused once the side's reserved USD would pass `pool value x reserve factor`
+ * (MarketUtils.validateReserve) or `pool value x open-interest reserve factor`
+ * (validateOpenInterestReserve), or once its open interest would pass MAX_OPEN_INTEREST. The pool
+ * that backs longs is the long token's, the one that backs shorts the short token's. A long's
+ * reserve is marked at the index price, which is why the long side's cap moves with the price.
+ * `undefined` when any read is missing: a cap of 0 would read as "closed".
+ */
+export function gmxSideCapUsd(reads: {
+  poolAmount?: bigint;
+  tokenPriceUsd: number;
+  tokenDecimals: number;
+  reserveFactor?: bigint;
+  openInterestReserveFactor?: bigint;
+  maxOpenInterest?: bigint;
+}): bigint | undefined {
+  const {
+    poolAmount,
+    reserveFactor,
+    openInterestReserveFactor,
+    maxOpenInterest,
+  } = reads;
+  if (
+    poolAmount === undefined ||
+    reserveFactor === undefined ||
+    openInterestReserveFactor === undefined ||
+    maxOpenInterest === undefined ||
+    !(reads.tokenPriceUsd > 0)
+  )
+    return undefined;
+  const PRICE_SCALE = 1_000_000n;
+  const poolUsd =
+    (poolAmount *
+      BigInt(Math.round(reads.tokenPriceUsd * Number(PRICE_SCALE))) *
+      USD_SCALE) /
+    (10n ** BigInt(reads.tokenDecimals) * PRICE_SCALE);
+  const factor =
+    reserveFactor < openInterestReserveFactor
+      ? reserveFactor
+      : openInterestReserveFactor;
+  const byReserve = (poolUsd * factor) / USD_SCALE;
+  return byReserve < maxOpenInterest ? byReserve : maxOpenInterest;
 }
 
 /** The DataStore getters both readers use. Kept here so neither has to redeclare them. */

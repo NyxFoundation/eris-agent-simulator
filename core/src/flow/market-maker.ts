@@ -9,6 +9,7 @@
  *   ERIS_FLOW_SEED  seed for the deterministic RNG (coordinator derives it from the run seed)
  *   ERIS_SCENARIO_KEY_FILE / ERIS_SCENARIO_KEY_COMMITMENT  the scenario key to draw under and the
  *                   commitment it must match (ADR 0027; empty path = the public key)
+ *   ERIS_FLOW_STREAM  a continuation of the stream (a resumed practice period); unset = the original
  *
  * Design:
  *   - Never touches the RPC (same separation principle as agents). All needed market state
@@ -46,7 +47,8 @@ try {
   process.exit(1);
 }
 
-const rng = flowRng(flowSeed);
+// Set by a coordinator that resumed a practice period (core/src/realtime/periodResume.ts).
+const rng = flowRng(flowSeed, process.env.ERIS_FLOW_STREAM ?? "");
 const rl = createInterface({ input: process.stdin });
 
 rl.on("line", (line) => {

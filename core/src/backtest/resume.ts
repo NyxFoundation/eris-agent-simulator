@@ -67,7 +67,18 @@ export function readStoredMatrix(dir: string): StoredMatrix {
       `--resume: ${path} not found. Point --resume at a directory a previous ` +
         "`npm run backtest -- --scenarios` wrote (runs/matrix-<timestamp>/)",
     );
-  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    // The runner writes this file whole (writeFileAtomic), so a file that does not parse is not a
+    // write cut short by a stop; it was altered after, or the directory was restored from a backup
+    // taken mid-copy. Say which file, and do not guess at the scenarios it held.
+    throw new Error(
+      `--resume: ${path} is not valid JSON (${error instanceof Error ? error.message : String(error)}). ` +
+        "Restore the matrix directory from its last backup before resuming",
+    );
+  }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error(`--resume: ${path} is not a JSON object`);
   const m = parsed as StoredMatrix;

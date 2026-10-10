@@ -27,8 +27,13 @@ import {
   gmxFundingFeeAmountPerSizeKey,
   gmxFundingFields,
   gmxFundingIncreaseFactorKey,
+  gmxMaxOpenInterestKey,
   gmxOpenInterestKey,
+  gmxOpenInterestReserveFactorKey,
+  gmxPoolAmountKey,
+  gmxReserveFactorKey,
   gmxSavedFundingKey,
+  gmxSideCapUsd,
   type GmxFundingFields,
 } from "./gmxKeys.js";
 import {
@@ -1570,6 +1575,111 @@ function positionExitValueUsd(
   return value;
 }
 
+/** One side of an account's WETH-collateral position in the ETH/USD market. */
+export type GmxSideExposure = { sizeUsd: bigint; collateralWei: bigint };
+
+/**
+ * The background flow's own ETH/USD book against what the market can carry (the flow's OI target).
+ *
+ * The flow opened perps and never closed them, so over a practice day its positions grew until
+ * both sides sat at the reserve cap and every agent's increase on either side was refused. The
+ * flow reads this to close instead of open once its side passes a share of the cap. USD at 30
+ * decimals; `undefined` when a read fails, which the flow treats as "no target" (the old flow)
+ * rather than as a full or an empty book.
+ */
+export type GmxFlowExposure = {
+  long: GmxSideExposure;
+  short: GmxSideExposure;
+  longCapUsd: bigint;
+  shortCapUsd: bigint;
+};
+
+export async function readGmxFlowExposure(
+  ctx: SimContext,
+  account: Address,
+  fairPrice: number,
+): Promise<GmxFlowExposure | undefined> {
+  const market = resolveGmxMarket(ctx, "WETH");
+  let props: MarketProps | undefined;
+  try {
+    props = (await resolveMarketProps(ctx.publicClient, [market])).get(
+      market.toLowerCase(),
+    );
+  } catch {
+    return undefined;
+  }
+  if (!props) return undefined;
+  const getUint = (key: Hex) => ({
+    address: GMX.DataStore,
+    abi: gmxDataStoreReadAbi,
+    functionName: "getUint",
+    args: [key],
+  });
+  const m = props.marketToken;
+  let results: Array<{ status: "success" | "failure"; result?: unknown }>;
+  try {
+    results = (await ctx.publicClient.multicall({
+      contracts: [
+        gmxAccountPositionsCall(account),
+        getUint(gmxPoolAmountKey(m, props.longToken)),
+        getUint(gmxPoolAmountKey(m, props.shortToken)),
+        ...[true, false].flatMap((isLong) => [
+          getUint(gmxReserveFactorKey(m, isLong)),
+          getUint(gmxOpenInterestReserveFactorKey(m, isLong)),
+          getUint(gmxMaxOpenInterestKey(m, isLong)),
+        ]),
+      ] as never,
+      allowFailure: true,
+    })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+  } catch {
+    return undefined;
+  }
+  const uint = (i: number): bigint | undefined => {
+    const r = results[i];
+    return r?.status === "success" && typeof r.result === "bigint"
+      ? r.result
+      : undefined;
+  };
+  if (results[0]?.status !== "success") return undefined;
+  const positions = results[0].result as readonly Position[];
+  const side = (isLong: boolean): GmxSideExposure => {
+    const out: GmxSideExposure = { sizeUsd: 0n, collateralWei: 0n };
+    for (const p of positions) {
+      if (
+        p.addresses.market.toLowerCase() !== market.toLowerCase() ||
+        p.addresses.collateralToken.toLowerCase() !==
+          props.longToken.toLowerCase() ||
+        p.flags.isLong !== isLong
+      )
+        continue;
+      out.sizeUsd += p.numbers.sizeInUsd;
+      out.collateralWei += p.numbers.collateralAmount;
+    }
+    return out;
+  };
+  const longToken = tokenInfoByAddress(props.longToken);
+  const shortToken = tokenInfoByAddress(props.shortToken);
+  if (!longToken || !shortToken) return undefined;
+  const longCapUsd = gmxSideCapUsd({
+    poolAmount: uint(1),
+    tokenPriceUsd: fairPrice,
+    tokenDecimals: longToken.decimals,
+    reserveFactor: uint(3),
+    openInterestReserveFactor: uint(4),
+    maxOpenInterest: uint(5),
+  });
+  const shortCapUsd = gmxSideCapUsd({
+    poolAmount: uint(2),
+    tokenPriceUsd: 1,
+    tokenDecimals: shortToken.decimals,
+    reserveFactor: uint(6),
+    openInterestReserveFactor: uint(7),
+    maxOpenInterest: uint(8),
+  });
+  if (longCapUsd === undefined || shortCapUsd === undefined) return undefined;
+  return { long: side(true), short: side(false), longCapUsd, shortCapUsd };
+}
+
 // ---------------------------------------------------------------------------
 // Historical-block reconstruction (ADR 0006 §4): the read descriptor used by the blockNumber-pinned
 // multicall, plus a pure function that derives position value from its result using the same formula as valueUsdc.
@@ -1691,6 +1801,20 @@ function gmxTokenPrice(
 // position each block against the price the order keeper hands executeOrder (the run's fair price
 // through the mock provider), the same check LiquidationUtils makes on chain.
 // ---------------------------------------------------------------------------
+
+// Order fills per block (issue #225). The keeper's fee sits above the participants' cap, so under
+// `--order fees` its fills go first; without a bound, every order created in the scanned range was
+// sent into one block. What fills a block is gas *used*, not declared -- measured 2026-10-08 on
+// anvil 1.7.1: seven transactions each declaring 6,000,000 all landed in one 30,000,000 block -- and
+// an executeOrder uses up to 2.79M (PR #221, 49,498 fills). Five fills are under half the block,
+// leaving the oracle update and the participants their room. The rest wait, in arrival order, and
+// are re-read on the next pass, so an order cancelled meanwhile is dropped rather than filled late.
+export const MAX_ORDER_FILLS_PER_BLOCK = 5;
+const deferredOrderKeys: Hex[] = [];
+/** Test seam: the deferral queue is module state. */
+export function resetKeeperOrderQueue(): void {
+  deferredOrderKeys.length = 0;
+}
 
 // Liquidations per block. Each declares GMX_KEEPER_EXECUTE_GAS like an order fill; the cap keeps a
 // cascade from declaring the whole block ahead of the participants. The rest go next block.
@@ -1964,6 +2088,9 @@ export const gmxAdapter: ProtocolAdapter = {
       toBlock?: bigint;
       // Told about every order the keeper read and did not execute (gmxKeeperRefusal), or could not read.
       onOrderRefused?: (refusal: GmxKeeperRefusal) => void;
+      // Told when more orders were executable than MAX_ORDER_FILLS_PER_BLOCK: how many went now,
+      // how many wait for the next pass (issue #225).
+      onOrdersDeferred?: (report: { sent: number; deferred: number }) => void;
     },
   ): Promise<void> {
     if (!ctx.gmx.mockProvider) return;
@@ -1979,19 +2106,27 @@ export const gmxAdapter: ProtocolAdapter = {
       fromBlock,
       toBlock,
     });
-    const keys = logs
+    const created = logs
       .filter(
         (l) =>
           (l.topics[1]?.toLowerCase() ?? "") ===
             ORDER_CREATED_HASH.toLowerCase() && l.topics[2],
       )
       .map((l) => l.topics[2] as Hex);
+    // Orders deferred by an earlier pass go first (arrival order), then this range's.
+    const keys = [...new Set([...deferredOrderKeys.splice(0), ...created])];
     if (keys.length === 0) return;
-    const executable = await keeperExecutableKeys(
+    const readable = await keeperExecutableKeys(
       ctx,
       keys,
       opts?.onOrderRefused,
     );
+    const executable = readable.slice(0, MAX_ORDER_FILLS_PER_BLOCK);
+    const deferred = readable.slice(MAX_ORDER_FILLS_PER_BLOCK);
+    if (deferred.length > 0) {
+      deferredOrderKeys.push(...deferred);
+      opts?.onOrdersDeferred?.({ sent: executable.length, deferred: deferred.length });
+    }
     if (executable.length === 0) return;
 
     const keeper = privateKeyToAccount(ctx.keeperPk);

@@ -21,6 +21,7 @@ import {
   parseRevision,
   sanitizeUntrusted,
 } from "../example/agents/runtime/improve.js";
+import { createPublicClient, custom } from "viem";
 import { DECIDE_TIMEOUT_MS } from "../example/agents/runtime/decideTimeout.js";
 
 function agentDir(promptMd: string): string {
@@ -465,6 +466,111 @@ test("compileExecutor: the strategy still reads, logs, submits and sees its data
   assert.deepEqual(captured.logs, [{ round: 3, reason: "hi", signals: { n: 1 } }]);
   assert.deepEqual(captured.submitted, [{ type: "noop", amount: 123n }]);
   assert.ok(captured.submitted[0] instanceof Object, "submitted action is a host-realm object");
+});
+
+// A real viem client over a transport that answers every eth_call with one uint256, so viem walks
+// the arguments exactly as it does in production: getAbiItem calls `abi.filter(cb)` with a callback
+// of the host realm, and whatever the strategy put at `abi.filter` used to be handed it.
+function viemContext(requests: { method: string; params?: unknown }[]) {
+  const publicClient = createPublicClient({
+    transport: custom(
+      {
+        async request(args: { method: string; params?: unknown }) {
+          requests.push(args);
+          if (args.method === "eth_chainId") return "0x7a69";
+          return "0x" + "00".repeat(31) + "2a";
+        },
+      },
+      { retryCount: 0 },
+    ),
+  });
+  return { ...(hostContext({ logs: [], submitted: [] }) as object), publicClient } as never;
+}
+
+const ESCAPE_ABI = `
+  const abi = [{ type: "function", name: "x", inputs: [{ type: "uint256" }], outputs: [{ type: "uint256" }], stateMutability: "view" }];
+  let leaked = "none";
+  const steal = (name) => function (cb, ...rest) {
+    try {
+      if (typeof cb === "function" && leaked === "none")
+        leaked = String(cb.constructor("return process")().env.ERIS_TEST_HOST_SENTINEL);
+    } catch (e) { leaked = "blocked: " + e.message; }
+    return Array.prototype[name].call(this, cb, ...rest);
+  };
+`;
+
+test("compileExecutor: what the strategy passes the client cannot hand it a host callback", async () => {
+  process.env.ERIS_TEST_HOST_SENTINEL = "host-secret";
+  try {
+    // Hidden: non-enumerable methods on the abi. The copy does not carry them, so viem runs its own
+    // filter on a host array and the strategy's function is never called.
+    const hidden = compileExecutor(`${ESCAPE_ABI}
+      for (const name of ["filter", "find", "map", "forEach", "some"])
+        Object.defineProperty(abi, name, { value: steal(name) });
+      const value = await ctx.publicClient.readContract({
+        address: "0x0000000000000000000000000000000000000001", abi, functionName: "x", args: [7n],
+      });
+      return { type: "noop", leaked, value };
+    `);
+    assert.ok(hidden.ok, hidden.ok ? "" : hidden.reason);
+    const requests: { method: string; params?: unknown }[] = [];
+    const result = (await hidden.executor({ round: 1 } as never, viemContext(requests))) as unknown as {
+      leaked: string;
+      value: bigint;
+    };
+    assert.equal(result.leaked, "none");
+    assert.equal(result.value, 42n);
+    assert.ok(requests.some((r) => r.method === "eth_call"), "the read still reached the chain");
+
+    // Visible: an enumerable function on the abi is not plain data, so the read is refused by name
+    // rather than sent with the function silently dropped.
+    const visible = compileExecutor(`${ESCAPE_ABI}
+      abi.filter = steal("filter");
+      try {
+        await ctx.publicClient.readContract({
+          address: "0x0000000000000000000000000000000000000001", abi, functionName: "x", args: [7n],
+        });
+        return { type: "noop", leaked, error: null };
+      } catch (e) {
+        return { type: "noop", leaked, error: e.message };
+      }
+    `);
+    assert.ok(visible.ok, visible.ok ? "" : visible.reason);
+    const refused = (await visible.executor({ round: 1 } as never, viemContext([]))) as unknown as {
+      leaked: string;
+      error: string | null;
+    };
+    assert.equal(refused.leaked, "none");
+    assert.match(String(refused.error), /arguments to publicClient\.readContract is not plain data/);
+  } finally {
+    delete process.env.ERIS_TEST_HOST_SENTINEL;
+  }
+});
+
+test("compileExecutor: an observation callback is never handed a host observation", async () => {
+  const captured = { logs: [] as unknown[], submitted: [] as unknown[] };
+  let deliver: ((obs: unknown) => void) | undefined;
+  const ctx = {
+    ...(hostContext(captured) as object),
+    onObservation: (cb: (obs: unknown) => void) => {
+      deliver = cb;
+      return () => {};
+    },
+  } as never;
+  const r = compileExecutor(`
+    ctx.onObservation((o) => {
+      let reached;
+      try { reached = String(o.constructor.constructor("return process")()); }
+      catch (e) { reached = e.message; }
+      ctx.log({ round: o.round, reached });
+    });
+    return null;
+  `);
+  assert.ok(r.ok, r.ok ? "" : r.reason);
+  await r.executor({ round: 1 } as never, ctx);
+  assert.ok(deliver, "the callback was registered");
+  deliver!({ round: 2 });
+  assert.deepEqual(captured.logs, [{ round: 2, reached: "process is not defined" }]);
 });
 
 test("compileExecutor: the system prompt's 'no process, no network' is what the vm has", async () => {

@@ -29,6 +29,7 @@
 import { formatEther, formatUnits, type Address } from "viem";
 import type { AgentSpec } from "@eris/sdk/types.js";
 import { agentSandboxWarning } from "./agentView.js";
+import { AGENT_STATE_ROOT_ENV } from "./agentState.js";
 import {
   checkRoleKeys,
   publicTestAddresses,
@@ -88,6 +89,26 @@ export function liveWeekRefusals(opts: {
     reasons.push(
       `run.agentSandbox is ${opts.sandbox}: submitted agents would run as plain processes on this ` +
         "host, outside the rules §2.3 caps and the network isolation (infra/docker-agent/run-agent.sh)",
+    );
+
+  // Rules §2.5: every agent revises through the operator's proxy, on the participant's own
+  // credential. Without the URL the agents have no model at all (an isolated container has no
+  // other way out), and the week would run sixty epochs of unrevised strategies and say nothing.
+  if (!opts.env.ERIS_INFERENCE_BASE_URL)
+    reasons.push(
+      "no inference proxy for the agents: set ERIS_INFERENCE_BASE_URL (and ERIS_INFERENCE_SECRET) " +
+        "to the operator's proxy started with --keys (infra/inference-proxy/README.md)",
+    );
+
+  // Rules §4.7.1: an agent's internal state, the strategies it revised under §2.5 included, is
+  // carried from epoch to epoch, in a persistent area the organizer provides. The runner does that
+  // with --agent-state-root (issue #77); without it every epoch starts every agent at version 0, and
+  // sixty epochs run against the rules with nothing in the record saying so (issue #264).
+  if (!opts.env[AGENT_STATE_ROOT_ENV])
+    reasons.push(
+      "no agent state root: the live week carries each unit's internal state across epochs " +
+        "(rules §4.7.1); pass --agent-state-root <dir> (an empty directory for a fresh week, or the " +
+        "one the matrix being resumed ran with)",
     );
 
   const custom = opts.agents
@@ -189,4 +210,47 @@ export function stateDumpRefusal(manifest: {
     `: ${manifest.publicTestAccounts.map((a) => `${a.address} (${formatEther(BigInt(a.balanceWei))} ETH)`).join(", ")}. ` +
     regenerate
   );
+}
+
+/**
+ * What GET /healthz on the inference proxy has to say for the live week: the proxy forwards the
+ * participants' own credentials (`--keys`), not the operator's. A proxy on the operator's keys would
+ * revise every agent on one key the operator pays for, the opposite of rules §2.5, and nothing else
+ * in the run would show it. Pure: the caller fetches, this reads.
+ */
+export function inferenceProxyRefusal(health: unknown): string | undefined {
+  const h = health as { ok?: unknown; credentials?: unknown } | null;
+  if (!h || typeof h !== "object" || h.ok !== true)
+    return "the inference proxy at ERIS_INFERENCE_BASE_URL did not answer GET /healthz with {ok: true}";
+  if (h.credentials !== "participant")
+    return (
+      `the inference proxy forwards the ${String(h.credentials ?? "operator")}'s credentials: start it ` +
+      "with --keys <keys.yaml> so each agent revises on the credential its participant submitted (rules §2.5)"
+    );
+  return undefined;
+}
+
+/**
+ * Fetch the proxy's /healthz and read it with inferenceProxyRefusal. The URL the agents use may be a
+ * container-network name this host cannot resolve; ERIS_INFERENCE_PROBE_URL names the same proxy as
+ * this host reaches it.
+ */
+export async function probeInferenceProxy(
+  env: Record<string, string | undefined>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string | undefined> {
+  const base = env.ERIS_INFERENCE_PROBE_URL ?? env.ERIS_INFERENCE_BASE_URL;
+  if (!base) return undefined; // liveWeekRefusals already names the missing URL
+  let body: unknown;
+  try {
+    const res = await fetchImpl(`${base.replace(/\/$/, "")}/healthz`);
+    body = await res.json();
+  } catch (error) {
+    return (
+      `the inference proxy at ${base} is not reachable from this host (${
+        error instanceof Error ? error.message : String(error)
+      }); set ERIS_INFERENCE_PROBE_URL if the agents' URL is a container-network name`
+    );
+  }
+  return inferenceProxyRefusal(body);
 }

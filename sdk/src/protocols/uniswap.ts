@@ -977,6 +977,14 @@ export function lpPositionValueUsdc(
 // The raw positions(tokenId) tuple the NPM returns.
 export type PositionTuple = Parameters<typeof lpPositionValueUsdc>[0];
 
+// The most LP NFTs one agent's valuation enumerates at a boundary (issue #196). The count is the
+// agent's own to raise -- minting a position costs it gas and nothing else -- and each one is two
+// reads (tokenOfOwnerByIndex, positions) plus its pool's state, at every boundary and at every block
+// of the median window. Past the bound the positions are not read and the agent is told so in its
+// value (`uniswap-lp-unscanned`, like `lending-unscanned`), rather than the field paying for them.
+// 128 holds every reference strategy many times over; the same figure as USER_MARKET_LIMIT.
+export const LP_POSITIONS_LIMIT = 128;
+
 // UniswapV3Factory.getPool returns this for a pair/fee that has no pool.
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
@@ -1361,6 +1369,11 @@ function validate(
 
 export const uniswapAdapter: ProtocolAdapter = {
   id: "uniswap",
+  // The stable leg the bundle validator moves on a swap or a mint (action.ts applyLeafSpend). It was
+  // missing here alone, so a uniswap leg moved no USDC at all: a bundle that sold on uniswap and
+  // bought elsewhere with the proceeds was refused, and two uniswap buys passed over the balance
+  // and the second reverted on chain (issue #276).
+  stableToken: TOKENS.USDC.address,
   parse,
   bundleable: () => true,
   validate,
@@ -1507,13 +1520,17 @@ export const uniswapAdapter: ProtocolAdapter = {
     // An unreadable NFT count makes every position the agent holds disappear at once, which reads
     // exactly like having closed them all — report it rather than treating it as "holds none" (#44).
     const countFailed: string[] = [];
+    const overLimit: Array<{ agentId: string; total: bigint }> = [];
     ctx.agents.forEach((agent, i) => {
       const raw = stage1[markets.length + i];
       if (typeof raw !== "bigint") {
         countFailed.push(agent.id);
         return;
       }
-      for (let k = 0n; k < raw; k++)
+      if (raw > BigInt(LP_POSITIONS_LIMIT))
+        overLimit.push({ agentId: agent.id, total: raw });
+      const n = raw > BigInt(LP_POSITIONS_LIMIT) ? BigInt(LP_POSITIONS_LIMIT) : raw;
+      for (let k = 0n; k < n; k++)
         owners.push({ agentId: agent.id, owner: agent.address, index: k });
     });
     const unreadableCount = (out: Record<string, AgentProtocolValue>) => {
@@ -1523,6 +1540,18 @@ export const uniswapAdapter: ProtocolAdapter = {
           amountRaw: "",
           reason: "read-failed",
           read: "NonfungiblePositionManager.balanceOf",
+        });
+      }
+      // Beyond the per-agent bound: the agent's own doing, and said in its value rather than
+      // silently left out of it (issue #196).
+      for (const { agentId, total } of overLimit) {
+        out[agentId].unpriced.push({
+          source: "uniswap-lp-unscanned",
+          amountRaw: (total - BigInt(LP_POSITIONS_LIMIT)).toString(),
+          reason: "read-failed",
+          read:
+            `NonfungiblePositionManager.tokenOfOwnerByIndex: ${LP_POSITIONS_LIMIT} of ${total} ` +
+            `positions read (LP_POSITIONS_LIMIT ${LP_POSITIONS_LIMIT}); the rest are not in this value`,
         });
       }
       return out;

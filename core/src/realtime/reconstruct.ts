@@ -43,6 +43,7 @@ import type {
   UnpricedHoldingDetail,
   ValuationContext,
   ValuationRun,
+  ValuationRead,
 } from "@eris/sdk/protocols/types.js";
 import type { BalanceSnapshot, ProtocolId } from "@eris/sdk/types.js";
 import { firstBoundaryV0, type V0Rule } from "../scoring/endowmentV0.js";
@@ -247,8 +248,30 @@ function adaptersForIds(ids: ProtocolId[]): ProtocolAdapter[] {
 // Stage 0 also carries the scorer's own reads, so an adapter's first stage costs no extra round trip.
 // ctx.fairByBase() is only populated once stage 0 returns -- an adapter that returns before its first
 // yield must not depend on it.
-async function runValuations(opts: {
-  runs: Array<{ id: ProtocolId; gen: ValuationRun }>;
+// Drive one venue's staged valuation alone, for the agents it was started with. The field-wide
+// loop below batches every venue's stage together; this is the fallback that runs a venue for one
+// agent after it threw for the field.
+async function driveAlone(
+  gen: ValuationRun,
+  call: MulticallFn,
+  blockNumber: bigint,
+): Promise<Record<string, AgentProtocolValue>> {
+  let input: unknown[] | undefined;
+  while (true) {
+    const step = await gen.next(input as never);
+    if (step.done) return step.value;
+    input = await call(step.value as MulticallContract[], blockNumber);
+  }
+}
+
+export async function runValuations(opts: {
+  // `start` opens the venue's valuation for a set of agents: the field at first, and one agent at
+  // a time when the field-wide run threw (issue #196).
+  runs: Array<{
+    id: ProtocolId;
+    start: (agents: ReconstructionAgent[]) => ValuationRun;
+  }>;
+  agents: ReconstructionAgent[];
   scorerReads: MulticallContract[];
   call: MulticallFn;
   blockNumber: bigint;
@@ -256,7 +279,9 @@ async function runValuations(opts: {
 }): Promise<Map<ProtocolId, Record<string, AgentProtocolValue>>> {
   const pending = opts.runs.map((r) => ({
     ...r,
+    gen: r.start(opts.agents),
     done: false,
+    error: undefined as unknown,
     input: undefined as unknown[] | undefined,
   }));
   const values = new Map<ProtocolId, Record<string, AgentProtocolValue>>();
@@ -267,7 +292,18 @@ async function runValuations(opts: {
     for (let i = 0; i < pending.length; i++) {
       const run = pending[i];
       if (run.done) continue;
-      const step = await run.gen.next(run.input as never);
+      let step: IteratorResult<ValuationRead[], Record<string, AgentProtocolValue>>;
+      try {
+        step = await run.gen.next(run.input as never);
+      } catch (error) {
+        // A venue's valuation threw for the whole field. Reads that fail are already each read's
+        // own (allowFailure above); this is the venue's code refusing some agent's state -- a
+        // position tuple it cannot decode, a pool it cannot resolve. It is retried below one agent
+        // at a time, so the agent whose state it is carries the failure and nobody else does.
+        run.done = true;
+        run.error = error;
+        continue;
+      }
       if (step.done) {
         run.done = true;
         values.set(run.id, step.value);
@@ -287,6 +323,42 @@ async function runValuations(opts: {
     }
     stage++;
     if (spans.length === 0) break;
+  }
+  for (const run of pending) {
+    if (run.error === undefined) continue;
+    const out: Record<string, AgentProtocolValue> = {};
+    const threw: string[] = [];
+    for (const agent of opts.agents) {
+      try {
+        const alone = await driveAlone(run.start([agent]), opts.call, opts.blockNumber);
+        out[agent.id] = alone[agent.id] ?? {
+          valueUsdc: 0,
+          liquidatableValueUsdc: 0,
+          unpriced: [],
+        };
+      } catch (error) {
+        threw.push(agent.id);
+        out[agent.id] = {
+          valueUsdc: 0,
+          liquidatableValueUsdc: 0,
+          unpriced: [
+            {
+              source: run.id,
+              amountRaw: "",
+              reason: "read-failed",
+              read: `${run.id} valuation threw for this agent: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            },
+          ],
+        };
+      }
+    }
+    // Every agent alone throws too: the venue's code cannot read this block for anyone, which is
+    // the environment's failure and the boundary's (rules §4.4.2 falls back to the last readable
+    // one), not a value of zero for the whole field at that venue.
+    if (threw.length === opts.agents.length && opts.agents.length > 0) throw run.error;
+    values.set(run.id, out);
   }
   return values;
 }
@@ -428,8 +500,13 @@ export async function readValueSnapshotAtBlock(opts: {
       .filter((a) => a.valueAtBlock)
       .map((a) => ({
         id: a.id,
-        gen: (a.valueAtBlock as (c: ValuationContext) => ValuationRun)(ctx),
+        start: (forAgents: ReconstructionAgent[]) =>
+          (a.valueAtBlock as (c: ValuationContext) => ValuationRun)({
+            ...ctx,
+            agents: forAgents,
+          }),
       })),
+    agents,
     scorerReads: head,
     call,
     blockNumber,

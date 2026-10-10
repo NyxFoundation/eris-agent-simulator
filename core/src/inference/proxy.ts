@@ -125,7 +125,42 @@ export type ProxyOptions = {
   // The operator's token for GET /admin/recording. Absent = that path does not exist. It is not an
   // agent token and must not be derived from `secret`: agents hold HMAC(secret, their own id).
   statsToken?: string;
+  // The participants' own upstream credentials, by agent id and provider (rules §2.5: "推論には、
+  // 参加者が提出した参加者認証情報を用います", terms 第8条の2). When set, every forwarded call
+  // carries the calling agent's key and an agent with none on file for the provider is refused --
+  // the model list's `apiKeyEnv` is not a fallback, because a call made on the operator's key is a
+  // call the operator pays for, which is the opposite of what the rules say. Absent = the operator's
+  // keys from `apiKeyEnv` (local use, the reference field).
+  participantKeys?: ParticipantKeys;
 };
+
+// agent id -> provider -> that participant's upstream key. Read from a file the operator keeps
+// outside the repository (loadParticipantKeys), never from an agent's environment.
+export type ParticipantKeys = Record<string, Partial<Record<Provider, string>>>;
+
+const PROVIDERS: readonly Provider[] = ["ollama", "openai", "anthropic"];
+
+export function loadParticipantKeys(doc: unknown): ParticipantKeys {
+  const d = doc as { participants?: unknown } | null;
+  if (!d || typeof d !== "object" || !d.participants || typeof d.participants !== "object")
+    throw new Error("the keys file must contain a `participants` map (agent id -> provider -> key)");
+  const out: ParticipantKeys = {};
+  for (const [agentId, entry] of Object.entries(d.participants as Record<string, unknown>)) {
+    if (!agentId) throw new Error("a participant needs an agent id");
+    if (!entry || typeof entry !== "object" || Array.isArray(entry))
+      throw new Error(`participant ${agentId}: expected a provider -> key map`);
+    const keys: Partial<Record<Provider, string>> = {};
+    for (const [provider, key] of Object.entries(entry as Record<string, unknown>)) {
+      if (!PROVIDERS.includes(provider as Provider))
+        throw new Error(`participant ${agentId}: unknown provider ${provider} (ollama | openai | anthropic)`);
+      if (typeof key !== "string" || key.trim() === "")
+        throw new Error(`participant ${agentId}: the ${provider} key must be a non-empty string`);
+      keys[provider as Provider] = key.trim();
+    }
+    out[agentId] = keys;
+  }
+  return out;
+}
 
 export type RecordedCall = {
   ts: string;
@@ -370,6 +405,11 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
   const env = opts.env ?? process.env;
   const now = opts.now ?? (() => Date.now());
   const byName = new Map(config.models.map((m) => [m.name, m]));
+  const credentialsMode: "participant" | "operator" = opts.participantKeys
+    ? "participant"
+    : "operator";
+  let credentialsRefused = 0;
+  const refusedOnce = new Set<string>();
   const replay = opts.replayDir ? new Replay(opts.replayDir) : null;
   const seq = new Map<string, number>();
   const recent = new Map<string, number[]>();
@@ -509,7 +549,11 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
     const url = new URL(req.url ?? "/", "http://proxy");
     // Liveness, and only that (issue #218). Every agent can reach this proxy, so anything counted
     // here is counted for the whole field to read.
-    if (req.method === "GET" && url.pathname === "/healthz") return send(res, 200, { ok: true });
+    // `credentials` says whose keys this proxy forwards -- the participants' (the live week's
+    // posture, which the runner checks here) or the operator's. It is the rules' own statement,
+    // not a secret.
+    if (req.method === "GET" && url.pathname === "/healthz")
+      return send(res, 200, { ok: true, credentials: credentialsMode });
     // The recording stats, for whoever runs the proxy. Behind the operator's own token, and absent
     // that token the path does not exist at all, so the default surface an agent sees is `{ok}`.
     if (req.method === "GET" && url.pathname === "/admin/recording") {
@@ -520,7 +564,12 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
         return send(res, 401, {
           error: "unauthorized: the operator's stats token is required (ERIS_INFERENCE_STATS_TOKEN)",
         });
-      return send(res, 200, { ok: true, recording: stats(), handlerErrors });
+      return send(res, 200, {
+        ok: true,
+        recording: stats(),
+        handlerErrors,
+        credentials: { mode: credentialsMode, refused: credentialsRefused },
+      });
     }
     if (req.method === "GET" && url.pathname === "/v1/models")
       return send(res, 200, {
@@ -584,6 +633,31 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
         rejected,
       });
 
+    // ---- whose key goes upstream ----
+    // Before the rate limit and the call count: a refusal here is not a call the agent made, so it
+    // neither spends the agent's minute nor shifts the record's numbering (a replay serves the
+    // record and forwards nothing, so it needs no key).
+    let key: string | undefined;
+    if (!replay) {
+      if (opts.participantKeys) {
+        key = opts.participantKeys[who]?.[provider];
+        // A local Ollama is the one upstream that takes no key at all.
+        const keyless = provider === "ollama" && entry.apiKeyEnv === undefined;
+        if (key === undefined && !keyless) {
+          credentialsRefused++;
+          if (!refusedOnce.has(`${who}/${provider}`)) {
+            refusedOnce.add(`${who}/${provider}`);
+            log(`no ${provider} credential on file for ${who}: refused (rules §2.5)`);
+          }
+          return send(res, 403, {
+            error:
+              `no ${provider} credential on file for ${who}: this proxy forwards the participant's ` +
+              "own submitted credential (rules §2.5) and the operator's key is not a fallback",
+          });
+        }
+      } else key = entry.apiKeyEnv ? env[entry.apiKeyEnv] : undefined;
+    }
+
     // ---- rate limit ----
     const limit = config.maxCallsPerMinute ?? 0;
     if (limit > 0) {
@@ -640,7 +714,6 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
         : provider === "openai"
           ? `${upstream}/chat/completions`
           : `${upstream}/messages`;
-    const key = entry.apiKeyEnv ? env[entry.apiKeyEnv] : undefined;
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (provider === "anthropic") {
       if (key) headers["x-api-key"] = key;
