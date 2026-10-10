@@ -9,6 +9,10 @@ import {
   type StressEventConfig,
 } from "../core/src/realtime/events.js";
 import {
+  LAUNCH_WALLET_SLOTS,
+  LAUNCH_WALLET_USDC_UNITS,
+  LAUNCH_WAVE_USDC_UNITS,
+  launchWalletFunding,
   scaleUnits,
   tokenLaunchEndowments,
   waveUsdcUnits,
@@ -169,8 +173,9 @@ test("endowments: the launch wallet holds the USDC side, the wave wallet its mul
   assert.equal(endow.length, s.events[0].launches!.length);
   for (const [i, e] of endow.entries()) {
     const l = s.events[0].launches![i];
-    assert.equal(e.launchKey, `launch:0:${i}`);
-    assert.equal(e.waveKey, `launch-wave:0:${i}`);
+    assert.equal(e.slot, i);
+    assert.equal(e.launchKey, `launch:${i}`);
+    assert.equal(e.waveKey, `launch-wave:${i}`);
     assert.equal(e.liquidityUsdcUnits, BigInt(l.liquidityUsdc) * 1_000_000n);
     if (l.dud) assert.equal(e.waveUsdcUnits, 0n);
     else
@@ -192,6 +197,44 @@ test("endowments: the launch wallet holds the USDC side, the wave wallet its mul
     }),
     75_000_000_000n,
   );
+});
+
+test("launch wallets are a fixed set of slots, funded the same whether or not anything lists", () => {
+  const floors = Array.from({ length: LAUNCH_WALLET_SLOTS }, (_, slot) => ({
+    slot,
+    launchKey: `launch:${slot}`,
+    waveKey: `launch-wave:${slot}`,
+    launchUsdcUnits: LAUNCH_WALLET_USDC_UNITS,
+    waveUsdcUnits: LAUNCH_WAVE_USDC_UNITS,
+  }));
+  // No launch in the schedule: every slot still exists and holds the fixed amounts.
+  assert.deepEqual(launchWalletFunding(new EventSchedule([], 5, 360)), floors);
+  // Draws inside the fixed amounts change nothing a setup block or a balance would show.
+  for (let seed = 1; seed <= 20; seed++) {
+    const s = new EventSchedule(
+      [LAUNCH({ liquidityUsdc: [20_000, 100_000], waveUsdcMult: [0.25, 1] })],
+      seed,
+      360,
+    );
+    assert.deepEqual(launchWalletFunding(s), floors, `seed ${seed}`);
+  }
+});
+
+test("a draw beyond the fixed amounts is funded rather than capped, and too many tokens refuse", () => {
+  const big = new EventSchedule(
+    [LAUNCH({ tokenCount: [1, 1], liquidityUsdc: [500_000, 500_000], waveUsdcMult: [2, 2], dudProb: [0, 0] })],
+    5,
+    360,
+  );
+  const [slot0] = launchWalletFunding(big);
+  assert.equal(slot0.launchUsdcUnits, 500_000n * 1_000_000n);
+  assert.equal(slot0.waveUsdcUnits, 1_000_000n * 1_000_000n);
+  const many = new EventSchedule(
+    [LAUNCH({ tokenCount: [LAUNCH_WALLET_SLOTS + 1, LAUNCH_WALLET_SLOTS + 1] })],
+    5,
+    360,
+  );
+  assert.throws(() => launchWalletFunding(many), /launch wallet slots/);
 });
 
 test("scaleUnits pins one exact target per fraction", () => {

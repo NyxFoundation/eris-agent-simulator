@@ -11,3 +11,6 @@ export declare function feeRuleViolation(
   fees: TxFees,
   capWei: bigint,
 ): { kind: "max_fee_above_tip" | "over_cap"; message: string } | null;
+
+export declare const CALL_GAS_METHODS: Set<string>;
+export declare function capCallGas(calls: unknown[], capGas: bigint): number;
