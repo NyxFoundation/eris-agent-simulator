@@ -191,6 +191,13 @@ const dataStoreAbi = [
     ],
     outputs: [{ type: "uint256" }],
   },
+  {
+    type: "function",
+    name: "getAddress",
+    stateMutability: "view",
+    inputs: [{ name: "key", type: "bytes32" }],
+    outputs: [{ type: "address" }],
+  },
 ] as const;
 
 const mockOracleProviderAbi = [
@@ -2584,6 +2591,20 @@ export const gmxAdapter: ProtocolAdapter = {
         }),
       },
     );
+    // The providers the tokens point at now: the deploy's own MockOracleProvider (its setPrice has no
+    // owner check), or a previous run's on a chain that is not reset. Read before reassigning so they
+    // can be disabled below.
+    const previousProviders = new Set<Address>();
+    for (const token of oracleTokens) {
+      const current = (await ctx.publicClient.readContract({
+        address: GMX.DataStore,
+        abi: dataStoreAbi,
+        functionName: "getAddress",
+        args: [oracleProviderForTokenKey(GMX.Oracle, token)],
+      })) as Address;
+      if (current !== zeroAddress && current.toLowerCase() !== mock.toLowerCase())
+        previousProviders.add(current);
+    }
     // Every token the keeper passes, WBTC included: GMX checks each price against the provider
     // registered for that token, and WBTC's was left on the deploy's own provider.
     for (const token of oracleTokens) {
@@ -2616,6 +2637,26 @@ export const gmxAdapter: ProtocolAdapter = {
         }),
       },
     );
+
+    // Retire the providers replaced above (SPECA audit, ascon-ops#48). No token points at them any
+    // more, so GMX would already refuse their prices; disabling them makes that hold even if a later
+    // assignment pointed back at one, and leaves exactly one enabled provider this run owns.
+    for (const provider of previousProviders) {
+      await sendAndMine(
+        ctx.publicClient,
+        ctx.walletClient,
+        ctx.chain,
+        ctx.adminPk,
+        {
+          to: GMX.DataStore,
+          data: encodeFunctionData({
+            abi: dataStoreAbi,
+            functionName: "setBool",
+            args: [isOracleProviderEnabledKey(provider), false],
+          }),
+        },
+      );
+    }
 
     ctx.gmx.mockProvider = mock;
     ctx.gmx.oracleTokens = oracleTokens;
