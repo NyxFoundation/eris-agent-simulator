@@ -31,6 +31,7 @@ import type {
 } from "./competition";
 import { scenarioAgents, scenarioLabel, scenarioRunId } from "./competition";
 import { listRuns, loadRunHeader } from "./runArtifacts";
+import { parseManifestParticipants } from "./manifestRoster";
 import type { RunSummary } from "./runArtifacts";
 import { scenarioAgentEnds, scenarioAgentP } from "./scenarioP";
 
@@ -105,9 +106,10 @@ async function loadLiveSeries(
     }
     return "";
   };
-  const [intervalsText, head] = await Promise.all([
+  const [intervalsText, head, manifestText] = await Promise.all([
     fetchSeries(),
     loadRunHeader(runId),
+    fetchText("manifest.json"),
   ]);
   const boundaries: Record<string, number | null>[] = [];
   for (const line of intervalsText.split("\n")) {
@@ -142,6 +144,17 @@ async function loadLiveSeries(
       if (a.baseline) baselineIds.push(a.id);
       if (typeof a.address === "string")
         addressByAgent[a.id] = a.address.toLowerCase();
+    }
+  }
+  // The head is only the first 128 KB, and a mid-period registration re-emits the roster far past
+  // it (7 MB in, on the practice devnet: issue #181). manifest.json is rewritten with the full roster
+  // on the same registration and is served to the public view, so where it parses it is the roster.
+  const participants = parseManifestParticipants(manifestText);
+  if (participants) {
+    baselineIds.length = 0;
+    for (const a of participants) {
+      if (a.baseline) baselineIds.push(a.id);
+      if (a.address) addressByAgent[a.id] = a.address.toLowerCase();
     }
   }
   return { valuesByAgent, baselineIds, addressByAgent };

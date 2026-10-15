@@ -92,3 +92,23 @@ test("a mid-day registrant is still not placed, and the floor is its own reason"
   assert.equal(d.notPlaced.dust, "below-capital-floor");
   assert.deepEqual(Object.keys(d.returnByAgent).sort(), ["a", "b"]);
 });
+
+// ---- the roster behind "Find your agent" (issue #181) ----
+
+test("the manifest's participants are the roster, including agents registered mid-period", async () => {
+  const { parseManifestParticipants } = await import("../dashboard/src/data/manifestRoster.js");
+  const manifest = JSON.stringify({
+    participants: [
+      { id: "noop", address: "0xAbC0000000000000000000000000000000000001", external: false, baseline: true },
+      { id: "ops-canary", address: "0x00000000000000000000000000000000000000c4", external: true, baseline: false },
+      { address: "0x0000000000000000000000000000000000000bad" },
+    ],
+  });
+  assert.deepEqual(parseManifestParticipants(manifest), [
+    { id: "noop", address: "0xAbC0000000000000000000000000000000000001", baseline: true },
+    { id: "ops-canary", address: "0x00000000000000000000000000000000000000c4" },
+  ]);
+  assert.equal(parseManifestParticipants(null), null);
+  assert.equal(parseManifestParticipants("{not json"), null);
+  assert.equal(parseManifestParticipants(JSON.stringify({ chain: {} })), null);
+});
