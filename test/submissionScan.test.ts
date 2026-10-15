@@ -245,3 +245,25 @@ test("a UTF-8 BOM does not make a hash-pinned requirements.txt look unpinned", (
   const dir = fixtureDir(t, { [`${AGENT}/requirements.txt`]: `\ufeff${pinned}` });
   assert.deepEqual(blocks(scan(dir)), []);
 });
+
+test("a zip bomb is refused without being extracted", (t) => {
+  // 60 MB of zeros deflates to ~60 KB: over the declared-size cap and the ratio cap. The size check
+  // in walk_dir only runs on what was extracted, so its absence shows nothing was written.
+  const dir = mkdtempSync(join(tmpdir(), "eris-scanbomb-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const out = join(dir, "bomb.zip");
+  const py = `
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as zf:
+    zf.writestr("${AGENT}/agent.ts", "export function decide() { return []; }\\n")
+    zf.writestr("${AGENT}/zeros.ts", b"\\0" * (60 * 1024 * 1024))
+`;
+  const r = spawnSync(PY, ["-c", py, out], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  const report = scan(out);
+  assert.equal(report.accept, false);
+  const found = blocks(report).join("\n");
+  assert.match(found, /declared unpacked size/);
+  assert.match(found, /zip bomb/);
+  assert.doesNotMatch(found, /unpacked too large/, "walk_dir saw extracted files");
+});

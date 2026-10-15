@@ -255,11 +255,21 @@ def walk_dir(root):
 
 def safe_extract(zf, dest):
     # zip-bomb + path-traversal guards
-    comp = sum(i.compress_size for i in zf.infolist()) or 1
-    uncomp = sum(i.file_size for i in zf.infolist())
-    if uncomp > MAX_UNZIP_MB * 1024 * 1024: add("BLOCK", "(archive)", f"declared unpacked size {uncomp//1024//1024} MB > {MAX_UNZIP_MB}")
-    if uncomp / comp > 100: add("BLOCK", "(archive)", f"suspicious compression ratio {uncomp/comp:.0f}x (zip bomb)")
-    for i in zf.infolist():
+    # These are judged from the central directory, before anything is written: recording a BLOCK
+    # and extracting anyway (as this did) still writes the bomb to disk. zipfile stops each entry at
+    # its declared file_size, so declared sizes that pass here also bound what extraction writes.
+    infos = zf.infolist()
+    comp = sum(i.compress_size for i in infos) or 1
+    uncomp = sum(i.file_size for i in infos)
+    refused = False
+    if uncomp > MAX_UNZIP_MB * 1024 * 1024:
+        add("BLOCK", "(archive)", f"declared unpacked size {uncomp//1024//1024} MB > {MAX_UNZIP_MB}"); refused = True
+    if uncomp / comp > 100:
+        add("BLOCK", "(archive)", f"suspicious compression ratio {uncomp/comp:.0f}x (zip bomb)"); refused = True
+    if len(infos) > MAX_FILES:
+        add("BLOCK", "(archive)", f"too many entries ({len(infos)} > {MAX_FILES})"); refused = True
+    if refused: return  # not extracted: the BLOCK already rejects it
+    for i in infos:
         if i.filename.startswith("/") or ".." in i.filename.split("/"):
             add("BLOCK", i.filename, "path traversal / absolute path in archive"); continue
         # zipfile writes a symlink entry out as a small file holding the target path, so the body
