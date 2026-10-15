@@ -1,437 +1,297 @@
 /**
- * noah: submission entry. Three layers, tried in order, each gated by what the last two years
- * of reference agents in this repo learned the hard way.
+ * noah: fair-anchored executable arbitrage around the starting basket.
  *
- *   1. 2-leg delta-neutral arbitrage (multi-arb / max-profit-arb's opportunity scan, base-agnostic
- *      via marketViews()). Buy the cheapest venue, sell the richest, same bundle, only when the
- *      spread clears both venues' fees plus a safety margin. Carries no directional beta -- this is
- *      the "does not lose big" foundation (competition-strategy.md §3.6: clean-arb's discipline
- *      measured 0 systematic loss where multi-arb's single-leg fallback lost -1,650 USDC on a WBTC
- *      injection event in a 60-block calm regime).
- *   2. Single-leg fallback, taken only when (1) found nothing. Gated by BOTH a fee-aware threshold
- *      AND a z-score confirmation (stat-arb's RollingStats, per base): a raw gap above the fee band
- *      is not enough on its own -- multi-arb's fallback fired on exactly that and lost systematically
- *      on WBTC. Requiring the gap to also be statistically unusual for *that* base's own recent
- *      distribution is the fix.
- *   3. Adaptive priority-fee bidding (adaptive-arb / max-profit-arb): bid the minimum needed to beat
- *      the observed top competitor, never more than a fraction of the trade's own expected profit.
+ * The score (ASCON rules §4.4.1) is a per-epoch z-score of P = V_K - V_0, and base balances are
+ * marked at the reference (fair) price. So a fill whose executable price beats fair is profit
+ * booked the moment it lands, and the starting basket (§4.2: 25k USDC + 8 WETH + 0.4 WBTC), which
+ * every participant holds, is the neutral position -- drifting away from it is a bet against the
+ * field. The strategy is therefore one rule, applied per base and venue:
  *
- * Among candidates within a layer, the one with the largest *expected USDC profit* wins (not the
- * largest raw gap/spread) -- profit is the closer proxy for what the scorer actually measures (P =
- * V_K - V_0), which is max-profit-arb's departure from multi-arb.
+ *   trade only when the quote AT THE ACTUAL SIZE (quote.ts: QuoterV2 / querySwap / get_dy) clears
+ *   fair by a margin, and size to the profit-maximising rung of a size ladder.
  *
- * Every branch, including noop, calls ctx.log with a reason and signals (issue #101: 351 consecutive
- * unexplained noops is what "not logging why" looks like from the outside). Every leg is sized
- * through lib/affordable.ts's canFund/sized, which is the one thing this file never skips (issue
- * #54: an unfunded leg self-rejects and scores identically to a strategy that chose not to trade --
- * silently, which is the worst way to be broken).
+ * The margin depends on direction. Moving *away* from the basket needs OPEN_EDGE_BPS (it takes on
+ * relative beta and pays for fair being a block stale); moving *back* toward it needs only
+ * RESTORE_EDGE_BPS. In a calm market that leaves the agent idle (measured on calm#101: the previous
+ * mid-price/z-score version lost 170-430 USDC of alpha against a do-nothing baseline). In a crash or
+ * spike (§3.2 regimes 6/8: a 15-22% fair gap while the pools still quote the old price) the same rule
+ * sells into or buys out of the stale pools at size, bids hard for inclusion, and buys the basket
+ * back once pools trade through fair. In the last CLOSE_OUT_BLOCKS of an epoch only restoring trades
+ * are allowed, so the epoch ends near the basket.
  *
- * Out of scope for v1 (see plan): GMX perps, Aave borrow/liquidation, LST/Liquity. Reasons are
- * mechanical, not laziness -- GMX cannot be compiled locally on this box's arm64 (spot EC2 only),
- * lst/liquity are in the ASCON scope (scope §2.1) but marketViews() only reads uniswap/balancer/curve,
- * so their markets and the regime 7/11 pools (discoveredPools) are never traded by this file, and
- * liquidating other participants' positions is a run(ctx)
- * agent shape that cannot coexist with prompt.md (kind: improve) in one submission. A run that never
- * touches those venues just noops through the regimes that need them, which is not a disqualifying
- * outcome -- it is what "not attempted" looks like in this scoring model.
+ * Every branch logs a reason and signals (issue #101). Out of scope here: GMX, Aave, LST, Liquity
+ * and the regime 7/11 pools -- quote.ts only reads uniswap/balancer/curve markets.
  *
- * JP: 3層構成。①2レグdelta-neutral裁定（方向性リスクゼロ、最優先）②z-score確認付きの単発
- * フォールバック（①が無いときだけ。素の乖離幅だけでなく「そのbase自身の直近分布から見て
- * 異常か」も要求することで、multi-arbが単発フォールバックでWBTC投入時に出した実測-1,650 USDCの
- * 再現を防ぐ）③adaptive-arb/max-profit-arb由来の適応入札。候補選択は「乖離幅最大」ではなく
- * 「期待USDC利益最大」（採点対象=Pに近い代理指標）。資金チェック（canFund/sized）とログ
- * （ctx.log、noopでも理由付き）は全分岐で必須。v1はAMM裁定のみでGMX/Aave/LST/Liquityは
- * 対象外（理由は上のコメント参照）。
+ * JP: fair 基準・実サイズ見積もりの裁定。評価は fair 建てなので「実サイズの約定価格が fair を
+ * 上回る（下回る）」分はその場で P に確定する。初期バスケットが中立なので、バスケットから離れる取引は
+ * 高い閾値（OPEN）、戻す取引は低い閾値（RESTORE）。calm では何もせず、crash/spike では古い価格の
+ * プールに実サイズで当て、強く入札する。エポック終盤は戻す取引だけ。
  */
 import type { AgentAction, AgentContext, AgentObservation } from "@eris/sdk";
-import { sized } from "../lib/affordable.js";
-import { marketViews, type MarketView } from "../lib/markets.js";
-import { RollingStats } from "../lib/rolling-stats.js";
+import { marketViews, type AgentVenue, type MarketView } from "../lib/markets.js";
+import { quoteOut, type Side, type Venue } from "./quote.js";
 
-// ---- layer 1: 2-leg delta-neutral arbitrage ----
-const SAFETY_MARGIN_BPS = Number(process.env.NOAH_SAFETY_MARGIN_BPS ?? "50");
-const MIN_SIZE_BPS = 250;
-const MAX_SIZE_BPS = 2500; // 25% of the relevant balance at the largest edge
-const SPREAD_GAIN = 200_000; // linear gain from net edge -> size
-const LEG_SLIPPAGE_BPS = 120;
+// ---- tunables (one place, so a revision can change them as literals) ----
+const PARAMS = {
+  openEdgeBps: Number(process.env.NOAH_OPEN_EDGE_BPS ?? "40"), // min avg-fill edge vs fair, away from basket
+  restoreEdgeBps: Number(process.env.NOAH_RESTORE_EDGE_BPS ?? "0"), // min avg-fill edge vs fair, back toward basket
+  minProfitUsdc: Number(process.env.NOAH_MIN_PROFIT_USDC ?? "3"), // below this the gas and the stale fair eat it
+  maxDevFrac: 1.0, // inventory may range over baseline x [1 - maxDevFrac, 1 + maxDevFrac]
+  ladder: [0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0], // fractions of the available room, quoted in order
+  maxLegs: 4,
+  slipFracOfEdge: 0.5, // slippage bound = this share of the quoted edge...
+  minSlipBps: 10,
+  maxSlipBps: 300, // ...clamped to this band
+  ceilFraction: Number(process.env.NOAH_CEIL_FRACTION ?? "0.5"), // max share of profit bid as priority fee
+  bigProfitUsdc: 100, // at or above this, bid the full ceiling: crash/spike edges go to the highest bid
+  gasBudgetEth: 0.5, // of the 1 ETH gas stipend (rules §4.2); ETH is marked into V too
+  closeOutBlocks: 30,
+};
 
-// ---- layer 2: z-score-gated single-leg fallback (deliberately more conservative than layer 1) ----
-const SINGLE_SAFETY_MARGIN_BPS = Number(
-  process.env.NOAH_SINGLE_SAFETY_MARGIN_BPS ?? "60",
-);
-const SINGLE_MIN_SIZE_BPS = 100;
-const SINGLE_MAX_SIZE_BPS = 1000; // 10% cap, vs layer 1's 25% -- this leg carries directional risk
-const SINGLE_SLIPPAGE_BPS = 75;
-const Z_ENTER = Number(process.env.NOAH_Z_ENTER ?? "1.5");
-const Z_AGGRESSIVE = Number(process.env.NOAH_Z_AGGRESSIVE ?? "2.5");
-const BURN_IN = Math.max(
-  2,
-  Math.floor(Number(process.env.NOAH_BURN_IN ?? "20")),
-);
-const STATS_WINDOW = Math.max(
-  2,
-  Math.floor(Number(process.env.NOAH_STATS_WINDOW ?? "64")),
-);
-
-// ---- layer 3: adaptive priority-fee bidding ----
-const GAS_UNITS_ESTIMATE = 180_000n;
-const CEIL_FRACTION = Number(process.env.NOAH_CEIL_FRACTION ?? "0.8");
+const GAS_PER_LEG = 200_000n;
 const ONE_GWEI = 1_000_000_000n;
 
-if (!Number.isFinite(SAFETY_MARGIN_BPS) || SAFETY_MARGIN_BPS < 0) {
-  process.stderr.write(
-    `invalid NOAH_SAFETY_MARGIN_BPS: ${process.env.NOAH_SAFETY_MARGIN_BPS}\n`,
-  );
-  process.exit(1);
-}
-if (
-  !Number.isFinite(SINGLE_SAFETY_MARGIN_BPS) ||
-  SINGLE_SAFETY_MARGIN_BPS < 0
-) {
-  process.stderr.write(
-    `invalid NOAH_SINGLE_SAFETY_MARGIN_BPS: ${process.env.NOAH_SINGLE_SAFETY_MARGIN_BPS}\n`,
-  );
-  process.exit(1);
-}
-if (!Number.isFinite(Z_ENTER) || Z_ENTER <= 0) {
-  process.stderr.write(`invalid NOAH_Z_ENTER: ${process.env.NOAH_Z_ENTER}\n`);
-  process.exit(1);
-}
-if (!Number.isFinite(Z_AGGRESSIVE) || Z_AGGRESSIVE <= Z_ENTER) {
-  process.stderr.write(
-    `invalid NOAH_Z_AGGRESSIVE (must be > NOAH_Z_ENTER): ${process.env.NOAH_Z_AGGRESSIVE}\n`,
-  );
-  process.exit(1);
-}
-if (!Number.isFinite(CEIL_FRACTION) || CEIL_FRACTION <= 0) {
-  process.stderr.write(
-    `invalid NOAH_CEIL_FRACTION: ${process.env.NOAH_CEIL_FRACTION}\n`,
-  );
-  process.exit(1);
+for (const [k, v] of Object.entries(PARAMS)) {
+  if (typeof v === "number" && (!Number.isFinite(v) || v < 0)) {
+    process.stderr.write(`noah: invalid PARAMS.${k}: ${v}\n`);
+    process.exit(1);
+  }
 }
 
-function baseToFloat(amountBaseWei: bigint, decimals: number): number {
-  return Number(amountBaseWei) / 10 ** decimals;
-}
-function floatToBase(amount: number, decimals: number): bigint {
-  return BigInt(Math.max(0, Math.floor(amount * 10 ** decimals)));
+// ---- epoch-local state (one process per epoch; a worker reload after a timeout resets it) ----
+// The starting basket, pinned on first sight of each base. A re-pin after a reload can only make
+// the agent treat its current inventory as neutral, which is the conservative failure.
+const baselineByBase = new Map<string, bigint>();
+let gasSpentWei = 0n;
+
+function baselineOf(base: string, balance: bigint): bigint {
+  if (!baselineByBase.has(base)) baselineByBase.set(base, balance);
+  return baselineByBase.get(base) ?? balance;
 }
 
-// Priority-fee ceiling implied by an expected profit: never bid away more than CEIL_FRACTION of the
-// trade's own edge. gasUnits should be 2x the per-tx estimate for a 2-leg bundle (the bid applies to
-// both legs at once).
-function profitCeilingPerGas(
-  profitUsdc: number,
-  fair: number,
-  gasUnits: bigint,
-): bigint {
-  const profitWei =
-    BigInt(Math.max(0, Math.floor((profitUsdc / fair) * 1e9))) * ONE_GWEI;
-  const ceilNum = BigInt(Math.max(0, Math.floor(CEIL_FRACTION * 10_000)));
-  return (profitWei * ceilNum) / 10_000n / gasUnits;
+const toFloat = (raw: bigint, decimals: number): number => Number(raw) / 10 ** decimals;
+const toRaw = (x: number, decimals: number): bigint =>
+  BigInt(Math.max(0, Math.floor(x * 10 ** decimals)));
+
+type Candidate = {
+  base: string;
+  venue: AgentVenue;
+  side: Side;
+  isRestore: boolean;
+  amountIn: bigint;
+  fillPx: number; // USDC per base at the quoted size
+  edgeBps: number; // fill vs fair, positive = in our favour
+  profitUsdc: number; // vs fair, before gas
+};
+
+// Probe-size price from the observation: a cheap pre-filter so only venues that could clear the
+// margin are quoted at size.
+function probePx(v: AgentVenue, side: Side): number {
+  const fee = v.feeBps / 10_000;
+  if (side === "sell") return v.sellPrice ?? v.price * (1 - fee);
+  return v.buyPrice ?? v.price / (1 - fee);
 }
 
-// Minimum bid needed to beat the observed top competitor, capped at the profit ceiling. Null means
-// even the environment's floor bid would already exceed the ceiling -- the edge is too thin to pay
-// gas for, so the caller should noop rather than trade at a loss on fees alone.
-function adaptiveBid(
-  obs: AgentObservation,
-  ceilingPerGas: bigint,
-): bigint | null {
+function edgeBpsOf(side: Side, fillPx: number, fair: number): number {
+  return (side === "sell" ? fillPx / fair - 1 : 1 - fillPx / fair) * 10_000;
+}
+
+// How much may move in this direction, in the INPUT token's raw units (base for a sell, USDC for a
+// buy): `restoreRoom` only back to the basket, `openRoom` out to the deviation bound (or, while
+// closing out, no further than the basket either).
+function roomFor(
+  view: MarketView,
+  side: Side,
+  usdcBal: bigint,
+  isClosingOut: boolean,
+): { restoreRoom: bigint; openRoom: bigint } {
+  const inv = BigInt(view.baseBalanceWei || "0");
+  const baseline = baselineOf(view.base, inv);
+  const dev = toRaw(toFloat(baseline, view.baseDecimals) * PARAMS.maxDevFrac, view.baseDecimals);
+  if (side === "sell") {
+    const restore = inv > baseline ? inv - baseline : 0n;
+    const floor = baseline > dev ? baseline - dev : 0n;
+    const open = isClosingOut ? restore : inv > floor ? inv - floor : 0n;
+    return { restoreRoom: restore, openRoom: open };
+  }
+  const usdcFor = (baseRaw: bigint): bigint =>
+    toRaw(toFloat(baseRaw, view.baseDecimals) * view.fair, 6);
+  const cap = (x: bigint): bigint => (x < usdcBal ? x : usdcBal);
+  const restore = inv < baseline ? usdcFor(baseline - inv) : 0n;
+  const ceiling = baseline + dev;
+  const open = isClosingOut ? restore : inv < ceiling ? usdcFor(ceiling - inv) : 0n;
+  return { restoreRoom: cap(restore), openRoom: cap(open) };
+}
+
+// Quote a ladder of sizes and keep the rung with the highest profit whose average fill still
+// clears the margin. Profit is concave in size, so the ladder stops at the first rung that is worse.
+async function bestRung(
+  ctx: AgentContext,
+  view: MarketView,
+  venue: AgentVenue,
+  side: Side,
+  room: bigint,
+  thresholdBps: number,
+  problems: string[],
+): Promise<{ amountIn: bigint; fillPx: number; edgeBps: number; profitUsdc: number } | null> {
+  let best: { amountIn: bigint; fillPx: number; edgeBps: number; profitUsdc: number } | null = null;
+  for (const frac of PARAMS.ladder) {
+    const amountIn = (room * BigInt(Math.round(frac * 10_000))) / 10_000n;
+    if (amountIn <= 0n) continue;
+    const q = await quoteOut(ctx.publicClient, venue.protocol as Venue, view.base, side, amountIn);
+    if (!q.ok) {
+      problems.push(q.error);
+      break;
+    }
+    const baseAmt = toFloat(side === "sell" ? amountIn : q.out, view.baseDecimals);
+    const usdcAmt = toFloat(side === "sell" ? q.out : amountIn, 6);
+    if (!(baseAmt > 0)) break;
+    const fillPx = usdcAmt / baseAmt;
+    const edgeBps = edgeBpsOf(side, fillPx, view.fair);
+    const profitUsdc = side === "sell" ? usdcAmt - baseAmt * view.fair : baseAmt * view.fair - usdcAmt;
+    if (edgeBps < thresholdBps) break;
+    if (best && profitUsdc <= best.profitUsdc) break;
+    best = { amountIn, fillPx, edgeBps, profitUsdc };
+  }
+  return best;
+}
+
+async function candidatesFor(
+  ctx: AgentContext,
+  view: MarketView,
+  usdcBal: bigint,
+  isClosingOut: boolean,
+  problems: string[],
+): Promise<Candidate[]> {
+  const out: Candidate[] = [];
+  for (const side of ["sell", "buy"] as const) {
+    const r = roomFor(view, side, usdcBal, isClosingOut);
+    // Try the open margin first (it allows the larger room), then fall back to restoring only.
+    const tiers = [
+      { room: r.openRoom, thresholdBps: PARAMS.openEdgeBps, isRestore: false },
+      { room: r.restoreRoom, thresholdBps: PARAMS.restoreEdgeBps, isRestore: true },
+    ];
+    // Venues are quoted in parallel: in a crash every venue is a candidate, and a sequential ladder
+    // over all of them is what would run into the 5 s decide limit (rules §2.3).
+    const perVenue = await Promise.all(
+      view.venues.map(async (venue): Promise<Candidate | null> => {
+        const probeEdge = edgeBpsOf(side, probePx(venue, side), view.fair);
+        for (const tier of tiers) {
+          if (tier.room <= 0n || probeEdge < tier.thresholdBps) continue;
+          const rung = await bestRung(ctx, view, venue, side, tier.room, tier.thresholdBps, problems);
+          if (!rung || rung.profitUsdc < PARAMS.minProfitUsdc) continue;
+          return { base: view.base, venue, side, isRestore: tier.isRestore, ...rung };
+        }
+        return null;
+      }),
+    );
+    let best: Candidate | null = null;
+    for (const c of perVenue) if (c && (!best || c.profitUsdc > best.profitUsdc)) best = c;
+    if (best) out.push(best);
+  }
+  return out;
+}
+
+// Priority fee: the minimum that beats the last block's top competitor for ordinary edges; the
+// whole ceiling for big ones (a crash gap is winner-take-most). Never more than ceilFraction of the
+// profit, never past the epoch's gas budget.
+function bidFor(obs: AgentObservation, profitUsdc: number, legs: number): bigint | null {
   const minBid = BigInt(obs.limits.defaultPriorityFeePerGasWei);
   const maxBid = BigInt(obs.limits.maxPriorityFeePerGasWei);
-  if (ceilingPerGas < minBid) return null;
-
-  const comp = obs.competition;
-  const competitorMax = BigInt(comp?.maxCompetitorPriorityFeeWei ?? "0");
-  const revertRate = comp?.recentRevertRate ?? 0;
-  const marginFrac = revertRate > 0.4 ? 60n : 20n;
-  const margin =
-    (competitorMax * marginFrac) / 100n > minBid
-      ? (competitorMax * marginFrac) / 100n
-      : minBid;
-  let bid = competitorMax + margin;
-  if (bid > ceilingPerGas) bid = ceilingPerGas;
+  const gasUnits = GAS_PER_LEG * BigInt(legs);
+  const ethPx = obs.fairPriceUsdcPerWeth;
+  const profitWei = BigInt(Math.max(0, Math.floor((profitUsdc / ethPx) * 1e9))) * ONE_GWEI;
+  const ceiling = (profitWei * BigInt(Math.floor(PARAMS.ceilFraction * 10_000))) / 10_000n / gasUnits;
+  if (ceiling < minBid) return null;
+  const competitorMax = BigInt(obs.competition?.maxCompetitorPriorityFeeWei ?? "0");
+  let bid =
+    profitUsdc >= PARAMS.bigProfitUsdc ? ceiling : competitorMax + competitorMax / 5n + minBid;
+  if (bid > ceiling) bid = ceiling;
   if (bid < minBid) bid = minBid;
   if (bid > maxBid) bid = maxBid;
+  const budgetWei = BigInt(Math.floor(PARAMS.gasBudgetEth * 1e9)) * ONE_GWEI;
+  if (gasSpentWei + bid * gasUnits > budgetWei) bid = minBid;
   return bid;
 }
 
-// The inventory the epoch handed us (ASCON rules §4.2: 25,000 USDC + 8 WETH + 0.4 WBTC). Every
-// participant starts holding the same basket and the score is a z-score across participants
-// (§4.4.1), so the basket's price drift is the field's, not ours -- selling it is a directional bet
-// against everyone else. Captured on the first observation of each base; a worker reload after a
-// decide timeout re-captures it from the then-current balance, which can only make this stricter.
-const baselineByBase = new Map<string, bigint>();
-function excessBaseWei(base: string, balanceWei: bigint): bigint {
-  if (!baselineByBase.has(base)) baselineByBase.set(base, balanceWei);
-  const baseline = baselineByBase.get(base) ?? 0n;
-  return balanceWei > baseline ? balanceWei - baseline : 0n;
+function slipBps(edgeBps: number): number {
+  return Math.round(
+    Math.min(PARAMS.maxSlipBps, Math.max(PARAMS.minSlipBps, edgeBps * PARAMS.slipFracOfEdge)),
+  );
 }
 
-function computeGap(price: number, fair: number): number | null {
-  if (!Number.isFinite(price) || price <= 0) return null;
-  if (!Number.isFinite(fair) || fair <= 0) return null;
-  return fair / price - 1;
+function legAction(c: Candidate): Record<string, unknown> {
+  const leg: Record<string, unknown> = {
+    type: c.venue.swapType,
+    tokenIn: c.side === "sell" ? c.base : "USDC",
+    amountIn: c.amountIn.toString(),
+    slippageBps: slipBps(c.edgeBps),
+  };
+  if (c.base !== "WETH") leg.base = c.base;
+  return leg;
 }
 
-// One estimator per base (ADR 0013): WBTC's gap distribution is not WETH's, and pooling them would
-// score a normal WBTC dislocation against WETH's variance.
-const statsByBase = new Map<string, RollingStats>();
-const seenByBase = new Map<string, Set<number>>();
-
-function statsFor(base: string): RollingStats {
-  let s = statsByBase.get(base);
-  if (!s) statsByBase.set(base, (s = new RollingStats(STATS_WINDOW)));
-  return s;
-}
-function seenFor(base: string): Set<number> {
-  let s = seenByBase.get(base);
-  if (!s) seenByBase.set(base, (s = new Set<number>()));
-  return s;
-}
-
-// history carries only the WETH pool/fair pair, so only WETH's estimator can be warm-started from
-// it; other bases burn in live.
-function seedFromHistory(history: AgentObservation["history"] | undefined): void {
-  if (!history || history.length === 0) return;
-  const stats = statsFor("WETH");
-  const seen = seenFor("WETH");
-  for (const point of history) {
-    if (seen.has(point.round)) continue;
-    const gap = computeGap(point.poolPriceUsdcPerWeth, point.fairPriceUsdcPerWeth);
-    if (gap === null) continue;
-    stats.update(gap);
-    seen.add(point.round);
-  }
-}
-
-// Score against the model BEFORE folding the new sample in -- otherwise the latest point pulls the
-// mean toward itself and damps its own signal.
-function zscoreAndUpdate(base: string, round: number, gap: number): number {
-  const stats = statsFor(base);
-  const seen = seenFor(base);
-  const z = stats.zscore(gap);
-  if (!seen.has(round)) {
-    stats.update(gap);
-    seen.add(round);
-  }
-  return z;
-}
-
-type TwoLeg = {
-  base: string;
-  spread: number;
-  cheap: MarketView["venues"][number];
-  rich: MarketView["venues"][number];
-  usdcIn: bigint;
-  baseSell: bigint;
-  profitUsdc: number;
-};
-
-type OneLeg = {
-  base: string;
-  venue: MarketView["venues"][number];
-  gapAbs: number;
-  absZ: number;
-  tokenIn: string;
-  amountIn: bigint;
-  profitUsdc: number;
-};
-
-export function decide(
+export async function decide(
   obs: AgentObservation,
   ctx: AgentContext,
-): AgentAction | Record<string, unknown> | null {
+): Promise<AgentAction | Record<string, unknown> | null> {
   const round = obs.round;
   const signals: Record<string, number> = {};
+  const problems: string[] = [];
   const noop = (reason: string): AgentAction => {
     const action: AgentAction = { type: "noop", reason };
-    ctx.log({ round, action, reason, signals });
+    ctx.log({ round, action, reason, signals, ...(problems.length ? { state: { problems } } : {}) });
     return action;
   };
 
-  const fair = obs.fairPriceUsdcPerWeth;
-  if (!Number.isFinite(fair) || fair <= 0) return noop("invalid fair price");
-
+  if (!(obs.fairPriceUsdcPerWeth > 0)) return noop("invalid fair price");
   const views = marketViews(obs);
   if (views.length === 0) return noop("no venue quoting any base");
 
-  seedFromHistory(obs.history);
   const usdcBal = BigInt(obs.balances.usdcUnits || "0");
+  const isClosingOut =
+    typeof obs.blocksRemaining === "number" && obs.blocksRemaining <= PARAMS.closeOutBlocks;
+  signals.closingOut = isClosingOut ? 1 : 0;
 
-  // ---- update every base's z-score bookkeeping this round, regardless of what fires below ----
-  // (keeps layer 2's statistics warm even on rounds where layer 1 trades instead.)
-  const gapInfo = new Map<string, { gap: number; absZ: number; burnedIn: boolean }>();
+  const candidates: Candidate[] = [];
   for (const view of views) {
-    excessBaseWei(view.base, BigInt(view.baseBalanceWei || "0")); // pin the baseline before any trade
-
-    const signalVenue =
-      view.venues.find((v) => v.protocol === "uniswap") ?? view.venues[0];
-    if (!signalVenue) continue;
-    const gap = computeGap(signalVenue.price, view.fair);
-    if (gap === null) continue;
-    const z = zscoreAndUpdate(view.base, round, gap);
-    gapInfo.set(view.base, {
-      gap,
-      absZ: Math.abs(z),
-      burnedIn: statsFor(view.base).count() >= BURN_IN,
-    });
+    const inv = BigInt(view.baseBalanceWei || "0");
+    const baseline = baselineOf(view.base, inv);
+    signals[`dev_${view.base}`] =
+      toFloat(inv, view.baseDecimals) - toFloat(baseline, view.baseDecimals);
+    candidates.push(...(await candidatesFor(ctx, view, usdcBal, isClosingOut, problems)));
   }
+  if (candidates.length === 0) return noop("no fill clears fair by the margin at any size");
 
-  // ---- layer 1: 2-leg delta-neutral, ranked by expected USDC profit ----
-  let bestTwo: TwoLeg | null = null;
-  for (const view of views) {
-    if (view.venues.length < 2) continue;
-    let cheap = view.venues[0];
-    let rich = view.venues[0];
-    for (const v of view.venues) {
-      if (v.price < cheap.price) cheap = v;
-      if (v.price > rich.price) rich = v;
-    }
-    if (cheap.price <= 0 || rich.price <= 0) continue;
-    const spread = rich.price / cheap.price - 1;
-    const roundtripCost = (cheap.feeBps + rich.feeBps + SAFETY_MARGIN_BPS) / 10000;
-    if (spread <= roundtripCost) continue;
-    if (usdcBal <= 0n) continue;
+  candidates.sort((a, b) => b.profitUsdc - a.profitUsdc);
+  // One leg per (base, venue): two legs on one pool would quote against the same state twice.
+  const seen = new Set<string>();
+  const legs = candidates.filter((c) => {
+    const key = `${c.base}:${c.venue.protocol}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, PARAMS.maxLegs);
 
-    const netEdge = spread - roundtripCost;
-    const sizeBps = Math.min(
-      MAX_SIZE_BPS,
-      Math.max(MIN_SIZE_BPS, Math.floor(netEdge * SPREAD_GAIN)),
-    );
-    const usdcIn = sized(obs, "USDC", sizeBps);
-    if (usdcIn <= 0n) continue;
+  const profitUsdc = legs.reduce((s, c) => s + c.profitUsdc, 0);
+  const bid = bidFor(obs, profitUsdc, legs.length);
+  if (bid === null) return noop(`edge +${profitUsdc.toFixed(2)} USDC too thin for the floor bid`);
+  gasSpentWei += bid * GAS_PER_LEG * BigInt(legs.length);
 
-    // Net against base this strategy accumulated above the epoch's starting basket, so leftover
-    // rounding inventory is drained instead of compounding into unpriced beta. The starting basket
-    // itself is never sold here: draining 8 WETH on a $250 arb would turn a delta-neutral trade into
-    // a large short against the field.
-    const existingBase = baseToFloat(
-      excessBaseWei(view.base, BigInt(view.baseBalanceWei || "0")),
-      view.baseDecimals,
-    );
-    const boughtBase = baseToFloat(usdcIn, 6) / cheap.price;
-    const baseSell = floatToBase(existingBase + boughtBase * 0.98, view.baseDecimals);
-    if (baseSell <= 0n) continue;
-
-    const profitUsdc = baseToFloat(usdcIn, 6) * netEdge;
-    if (!bestTwo || profitUsdc > bestTwo.profitUsdc)
-      bestTwo = { base: view.base, spread, cheap, rich, usdcIn, baseSell, profitUsdc };
-  }
-
-  if (bestTwo) {
-    const ceiling = profitCeilingPerGas(bestTwo.profitUsdc, fair, 2n * GAS_UNITS_ESTIMATE);
-    const bid = adaptiveBid(obs, ceiling);
-    if (bid !== null) {
-      signals.layer = 1;
-      signals.spreadBps = bestTwo.spread * 10_000;
-      signals.profitUsdc = bestTwo.profitUsdc;
-      signals.bidGwei = Number(bid) / 1e9;
-      const withBase = (a: Record<string, unknown>): Record<string, unknown> =>
-        bestTwo!.base === "WETH" ? a : { ...a, base: bestTwo!.base };
-      const action = {
-        type: "bundle",
-        actions: [
-          withBase({
-            type: bestTwo.cheap.swapType,
-            tokenIn: "USDC",
-            amountIn: bestTwo.usdcIn.toString(),
-            slippageBps: LEG_SLIPPAGE_BPS,
-          }),
-          withBase({
-            type: bestTwo.rich.swapType,
-            tokenIn: bestTwo.base,
-            amountIn: bestTwo.baseSell.toString(),
-            slippageBps: LEG_SLIPPAGE_BPS,
-          }),
-        ],
-        maxPriorityFeePerGasWei: bid.toString(),
-      };
-      ctx.log({
-        round,
-        action,
-        signals,
-        reason: `${bestTwo.base} 2-leg ${(bestTwo.spread * 10_000).toFixed(1)}bps spread, expected +${bestTwo.profitUsdc.toFixed(2)} USDC`,
-      });
-      return action;
-    }
-    // A profitable spread existed but the floor bid already eats the whole edge -- fall through to
-    // layer 2 rather than trading it away on fees.
-  }
-
-  // ---- layer 2: z-score-gated single-leg fallback ----
-  let bestOne: OneLeg | null = null;
-  for (const view of views) {
-    const info = gapInfo.get(view.base);
-    if (!info || !info.burnedIn || info.absZ < Z_ENTER) continue;
-    for (const venue of view.venues) {
-      const gap = view.fair / venue.price - 1;
-      const gapAbs = Math.abs(gap);
-      const singleLegCost = (venue.feeBps + SINGLE_SAFETY_MARGIN_BPS) / 10000;
-      if (gapAbs <= singleLegCost) continue;
-
-      const buyBase = gap > 0;
-      const tokenIn = buyBase ? "USDC" : view.base;
-      const cap = buyBase ? usdcBal : BigInt(view.baseBalanceWei || "0");
-      if (cap <= 0n) continue;
-
-      // Size ramps with |z| between Z_ENTER and Z_AGGRESSIVE, but into the single-leg's own
-      // (tighter) band -- this leg carries directional risk, so it never sizes as large as layer 1.
-      const span = Math.max(0.0001, Z_AGGRESSIVE - Z_ENTER);
-      const t = Math.max(0, Math.min(1, (info.absZ - Z_ENTER) / span));
-      const sizeBps = Math.max(
-        SINGLE_MIN_SIZE_BPS,
-        Math.min(
-          SINGLE_MAX_SIZE_BPS,
-          Math.floor(SINGLE_MIN_SIZE_BPS + (SINGLE_MAX_SIZE_BPS - SINGLE_MIN_SIZE_BPS) * t),
-        ),
-      );
-      const amountIn = sized(obs, tokenIn, sizeBps);
-      if (amountIn <= 0n) continue;
-
-      const sizeUsdc =
-        tokenIn === "USDC"
-          ? baseToFloat(amountIn, 6)
-          : baseToFloat(amountIn, view.baseDecimals) * venue.price;
-      const netEdge = gapAbs - singleLegCost;
-      const profitUsdc = sizeUsdc * netEdge;
-      if (!bestOne || profitUsdc > bestOne.profitUsdc)
-        bestOne = { base: view.base, venue, gapAbs, absZ: info.absZ, tokenIn, amountIn, profitUsdc };
-    }
-  }
-
-  if (!bestOne) {
-    const burning = [...gapInfo.entries()].filter(([, i]) => !i.burnedIn);
-    return noop(
-      burning.length > 0
-        ? `burn-in (${burning.map(([b]) => `${b} ${statsFor(b).count()}/${BURN_IN}`).join(", ")})`
-        : "no z-confirmed gap worth taking",
-    );
-  }
-
-  const ceiling = profitCeilingPerGas(bestOne.profitUsdc, fair, GAS_UNITS_ESTIMATE);
-  const bid = adaptiveBid(obs, ceiling);
-  if (bid === null) return noop("z-confirmed edge too thin to cover the floor bid");
-
-  signals.layer = 2;
-  signals.gapBps = bestOne.gapAbs * 10_000;
-  signals.absZ = bestOne.absZ;
-  signals.profitUsdc = bestOne.profitUsdc;
+  signals.legs = legs.length;
+  signals.profitUsdc = profitUsdc;
+  signals.maxEdgeBps = Math.max(...legs.map((c) => c.edgeBps));
   signals.bidGwei = Number(bid) / 1e9;
-  const action: Record<string, unknown> = {
-    type: bestOne.venue.swapType,
-    tokenIn: bestOne.tokenIn,
-    amountIn: bestOne.amountIn.toString(),
-    maxPriorityFeePerGasWei: bid.toString(),
-    slippageBps: SINGLE_SLIPPAGE_BPS,
-  };
-  if (bestOne.base !== "WETH") action.base = bestOne.base;
-  ctx.log({
-    round,
-    action,
-    signals,
-    reason: `${bestOne.base} single-leg, z=${bestOne.absZ.toFixed(2)}, gap ${(bestOne.gapAbs * 10_000).toFixed(1)}bps, expected +${bestOne.profitUsdc.toFixed(2)} USDC`,
-  });
+  signals.restoring = legs.every((c) => c.isRestore) ? 1 : 0;
+
+  const leaves = legs.map(legAction);
+  const action: Record<string, unknown> =
+    leaves.length === 1
+      ? { ...leaves[0], maxPriorityFeePerGasWei: bid.toString() }
+      : { type: "bundle", actions: leaves, maxPriorityFeePerGasWei: bid.toString() };
+  const describe = legs
+    .map((c) => `${c.side} ${c.base}@${c.venue.protocol} ${c.edgeBps.toFixed(0)}bps +${c.profitUsdc.toFixed(2)}${c.isRestore ? " (restore)" : ""}`)
+    .join("; ");
+  ctx.log({ round, action, signals, reason: describe });
   return action;
 }
