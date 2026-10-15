@@ -223,8 +223,9 @@ agents:
 | env | Non-string keys or values |
 
 `AUTO` derives a key from the environment's secret as `HMAC-SHA256(secret, ["eris-wallet/v1", "agent", agentId])` (issue #189).
-The secret is random per process and never written anywhere, except in the practice period, which reads
-`ERIS_WALLET_SECRET_FILE` so a restart comes back to the same keys (never published). **It is never derived from
+The secret is random per process and never written anywhere, except in the practice period and the live week,
+which read `ERIS_WALLET_SECRET_FILE` so a restart comes back to the same keys (never published; a keyed plan refuses
+to start without it, issue #249). **It is never derived from
 the seed**: an agent holding its own key could search seeds until one reproduced it, and then compute every other
 agent's key and every environment wallet's.
 

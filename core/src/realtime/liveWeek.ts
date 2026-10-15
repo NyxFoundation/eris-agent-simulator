@@ -30,6 +30,7 @@ import { formatEther, formatUnits, type Address } from "viem";
 import type { AgentSpec } from "@eris/sdk/types.js";
 import { agentSandboxWarning } from "./agentView.js";
 import { AGENT_STATE_ROOT_ENV } from "./agentState.js";
+import { WALLET_SECRET_FILE_ENV } from "../walletKeys.js";
 import {
   checkRoleKeys,
   publicTestAddresses,
@@ -109,6 +110,19 @@ export function liveWeekRefusals(opts: {
       "no agent state root: the live week carries each unit's internal state across epochs " +
         "(rules §4.7.1); pass --agent-state-root <dir> (an empty directory for a fresh week, or the " +
         "one the matrix being resumed ran with)",
+    );
+
+  // Issue #249: every AUTO agent, flow wallet and victim key is derived from the wallet secret, which
+  // is random per process unless it comes from a file. The k epochs run across several processes
+  // (--resume), so without the file every restart moves every one of those addresses mid-week: the
+  // scores survive (they are read by id), but the dashboard's agent pages and the explorer break at
+  // each restart, and nothing says why.
+  if (!opts.env[WALLET_SECRET_FILE_ENV]?.trim())
+    reasons.push(
+      `no wallet secret file: set ${WALLET_SECRET_FILE_ENV} to a file from ` +
+        "`npm run competition -- wallet-keygen` (one made for the week, not the practice period's). " +
+        "Without it the environment's wallets are derived from a per-process random secret, and " +
+        "every --resume moves every AUTO agent and flow wallet to a new address",
     );
 
   const custom = opts.agents

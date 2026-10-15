@@ -41,6 +41,7 @@ const isolated = {
   ERIS_AGENT_INTERNAL: "1",
   ERIS_INFERENCE_BASE_URL: "http://inference:8790",
   ERIS_AGENT_STATE_ROOT: "/srv/eris/state",
+  ERIS_WALLET_SECRET_FILE: "/srv/eris/secrets/wallet-secret.yaml",
 };
 
 const posture = (
@@ -110,7 +111,7 @@ test("a shared network, an open route out and bind-mount mode are each refused",
 
 test("the network switches are read per roster entry, as the launcher reads them", () => {
   const reasons = posture({
-    env: { ERIS_INFERENCE_BASE_URL: "http://inference:8790", ERIS_AGENT_STATE_ROOT: "/srv/eris/state" },
+    env: { ERIS_INFERENCE_BASE_URL: "http://inference:8790", ERIS_AGENT_STATE_ROOT: "/srv/eris/state", ERIS_WALLET_SECRET_FILE: "/srv/eris/secrets/wallet-secret.yaml" },
     agents: [
       { id: "unit-a", wallet: "AUTO", env: isolated },
       { id: "unit-b", wallet: "AUTO" },
@@ -207,7 +208,7 @@ test("the dump measurement finds public accounts that hold ETH or signed, and no
 // ---- the inference proxy (rules §2.5, issue #260) ----
 
 test("a live week with no inference proxy for the agents is refused", () => {
-  const reasons = posture({ env: { ERIS_AGENT_ISOLATE: "1", ERIS_AGENT_INTERNAL: "1", ERIS_AGENT_STATE_ROOT: "/srv/eris/state" } });
+  const reasons = posture({ env: { ERIS_AGENT_ISOLATE: "1", ERIS_AGENT_INTERNAL: "1", ERIS_AGENT_STATE_ROOT: "/srv/eris/state", ERIS_WALLET_SECRET_FILE: "/srv/eris/secrets/wallet-secret.yaml" } });
   assert.equal(reasons.length, 1);
   assert.match(reasons[0], /ERIS_INFERENCE_BASE_URL/);
 });
@@ -251,3 +252,15 @@ test("a live week without --agent-state-root is refused: the rules carry each un
   assert.match(reasons[0], /4\.7\.1/);
 });
 
+
+// ---- the wallet secret (issue #249) ----
+
+test("a live week without a wallet secret file is refused: --resume would move every AUTO address", () => {
+  const { ERIS_WALLET_SECRET_FILE: _omitted, ...withoutSecret } = isolated;
+  for (const env of [withoutSecret, { ...withoutSecret, ERIS_WALLET_SECRET_FILE: "  " }]) {
+    const reasons = posture({ env });
+    assert.equal(reasons.length, 1);
+    assert.match(reasons[0], /ERIS_WALLET_SECRET_FILE/);
+    assert.match(reasons[0], /wallet-keygen/);
+  }
+});

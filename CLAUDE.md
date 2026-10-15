@@ -383,7 +383,8 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   `HMAC-SHA256(secret, ["eris-wallet/v1", kind, id])`。以前は `keccak("auto-wallet:<seed>:<id>")` 等で、自分の AUTO 鍵から
   seed を総当たりで逆算でき、そこから他の agent・環境ウォレットの鍵が全部計算できた（ゲートウェイは送信者を検査しない）。
   secret は**既定でプロセスごとの乱数**（どこにも書かない。run・同一プロセスの行列内では同じアドレス、次のプロセスで変わる）、
-  練習期間だけ `ERIS_WALLET_SECRET_FILE`（再起動しても同じ財布に戻るため）。**scenario key とは別物**で、同じ値なら起動時に落とす
+  練習期間とライブ週は `ERIS_WALLET_SECRET_FILE`（再起動しても同じ財布に戻るため。ライブ週は `--resume` で
+  複数プロセスにまたがるので、鍵付きプランはこれが無いと起動を拒否する = issue #249。練習期間とは別のファイル）。**scenario key とは別物**で、同じ値なら起動時に落とす
   （scenario key は結果発表後に公開するので、それから導出すると全部の鍵が公開される）。財布の秘密は**結果発表後も公開しない**
   （再現に要らない: ADR 0027 (c) が再現するのはシナリオと、アドレスで読む採点だけ）。agent の env には渡さない
   （`ERIS_WALLET_SECRET*` は環境専用）。`npm run manifest -- --participant` は AUTO の鍵を出すのにこのファイルが要り、

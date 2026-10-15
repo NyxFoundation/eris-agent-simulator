@@ -158,6 +158,8 @@ instead, so one unattended process runs the live week (ADR 0026):
 ```bash
 npm run competition -- plan --hidden hidden.yaml --lottery lottery.yaml --k 60 \
   --starts-at 2026-11-01T00:00:00+09:00 --ends-at 2026-11-08T00:00:00+09:00 --out plan.yaml   # one every 168 min
+npm run competition -- wallet-keygen <secret-dir>/live-wallet-secret.yaml   # once per week; never published
+ERIS_WALLET_SECRET_FILE=<secret-dir>/live-wallet-secret.yaml \
 npm run backtest -- --scenarios plan.yaml --agents field.yaml --follow-schedule \
   --scenario-key <secret-dir>/scenario-key.yaml \  # ADR 0027: a plan refuses to start without a key
   --agent-state-root <state-dir>                   # rules §4.7.1: a keyed plan refuses to start without one
@@ -187,6 +189,14 @@ npm run backtest -- --scenarios plan.yaml --agents field.yaml --follow-schedule 
   directory; a `--resume` runs with the directory the matrix ran with. Back the root up with the
   matrix directory: its `.snapshots/end-s<N>` checkpoints are what a re-run of a voided epoch
   restores from.
+- **So is `ERIS_WALLET_SECRET_FILE`** (issue #249). Every AUTO agent, flow wallet and victim key is
+  derived from the wallet secret (issue #189), which is random per process unless it comes from a
+  file. The week runs across several processes (`--resume`), so without the file each restart moves
+  every one of those addresses: the scores survive (they are read by id), the dashboard's agent pages
+  and the explorer do not. Make one with `npm run competition -- wallet-keygen` for the week — not the
+  practice period's file, and not the scenario key (the same value is refused at start, because the
+  key is published after the results and the secret never is). Back it up with the scenario key, and
+  start every process of the week with the same file.
 - A slot shorter than an epoch's wall time (360 blocks = 12 min of block time plus setup and
   reconstruction) makes every epoch after it late. The runner reports it; the plan is where it is
   fixed.

@@ -78,7 +78,7 @@ agents:
 | key | required | description |
 |---|---|---|
 | `id` | ✓ | The agent's identifier. Points at `example/agents/<id>/` (log output goes to `runs/<run_id>/agents/<id>.jsonl`) |
-| `wallet` | ✓ | `AGENT0_PRIVATE_KEY`–`AGENT6_PRIVATE_KEY` (the name of the env var carrying the private key; put it in `.env.local`; locally it falls back to an Anvil dev key even if unset) or `AUTO` (made by the environment from a secret of its own — random per process, or `ERIS_WALLET_SECRET_FILE` for the practice period; never from the seed, issue #189). A named wallet cannot be duplicated within the same roster |
+| `wallet` | ✓ | `AGENT0_PRIVATE_KEY`–`AGENT6_PRIVATE_KEY` (the name of the env var carrying the private key; put it in `.env.local`; locally it falls back to an Anvil dev key even if unset) or `AUTO` (made by the environment from a secret of its own — random per process, or `ERIS_WALLET_SECRET_FILE` for the practice period and the live week; never from the seed, issue #189). A named wallet cannot be duplicated within the same roster |
 | `dir` | | Override for the real directory (when lining up multiple instances of the same strategy under different ids) |
 | `baseline` | | `true` treats it as a zero-skill baseline (noop / random) |
 | `description` | | Human-readable description |
