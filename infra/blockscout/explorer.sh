@@ -9,8 +9,10 @@
 #   explorer.sh reset         wipe the indexer DB and restart — run this after every chain
 #                             reset (resetFork / snapshot-revert rewinds the chain, which
 #                             the indexer cannot follow)
-#   explorer.sh tag [runDir]  name the agent wallets from a run's summary.json as address
-#                             tags (default: the newest runs/*/summary.json)
+#   explorer.sh tag [runDir]  name the agent wallets as address tags, from the run's last
+#                             agents_registered event (so a running period and agents
+#                             registered mid-period are covered), else its summary.json.
+#                             Default: the newest run directory under runs/ that has either
 #   explorer.sh status        compose ps + recent backend log lines
 #   explorer.sh check         only the 403 check (e.g. on the live box after a deploy)
 set -euo pipefail
@@ -118,28 +120,57 @@ cmd_tag() {
   require_docker
   local run_dir="${1:-}"
   if [ -z "$run_dir" ]; then
-    local d
-    for d in $(ls -td "${REPO_ROOT}"/runs/*/ 2>/dev/null); do
-      if [ -f "${d}summary.json" ]; then run_dir="${d%/}"; break; fi
-    done
-    if [ -z "${run_dir:-}" ]; then
-      echo "no runs/*/summary.json found — pass a run directory explicitly" >&2
+    # A practice period writes events.jsonl from its first block but summary.json only when a
+    # segment (a day) closes, so the newest of either is the run to tag (issue #182). Segments
+    # sit below the period directory, hence the depth.
+    local newest
+    newest="$(find "${REPO_ROOT}/runs" -maxdepth 4 \( -name events.jsonl -o -name summary.json \) \
+      -exec ls -t {} + 2>/dev/null | head -1)"
+    if [ -z "$newest" ]; then
+      echo "no runs/**/events.jsonl or summary.json found — pass a run directory explicitly" >&2
       exit 1
     fi
+    run_dir="$(dirname "$newest")"
   fi
-  if [ ! -f "${run_dir}/summary.json" ]; then
-    echo "no summary.json in ${run_dir}" >&2
+  if [ ! -f "${run_dir}/events.jsonl" ] && [ ! -f "${run_dir}/summary.json" ]; then
+    echo "no events.jsonl or summary.json in ${run_dir}" >&2
     exit 1
   fi
   echo "tagging agent wallets from ${run_dir}"
-  python3 - "$run_dir" <<'PY' | "${COMPOSE[@]}" exec -T db psql -q -U blockscout -d blockscout -v ON_ERROR_STOP=1 -f -
-import json, sys, pathlib
+  python3 - "$run_dir" "${REPO_ROOT}/sdk/src/constants.local.ts" <<'PY' | "${COMPOSE[@]}" exec -T db psql -q -U blockscout -d blockscout -v ON_ERROR_STOP=1 -f -
+import json, re, sys, pathlib
 
-summary = json.loads((pathlib.Path(sys.argv[1]) / "summary.json").read_text())
-rows = [(a["id"], a["address"]) for a in summary.get("agents", []) if a.get("address")]
-# The environment/deployer key (anvil account 0) seeds every venue and moves LP in
-# liquidityPull windows — worth naming so its txs don't read as a participant's.
-rows.append(("env:deployer", "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"))
+run_dir, constants = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+
+# The coordinator re-emits agents_registered with the whole roster whenever a registration is
+# added mid-period, so the last one is the current roster; summary.json is only there once a
+# segment has closed.
+agents = None
+events = run_dir / "events.jsonl"
+if events.is_file():
+    with events.open() as f:
+        for line in f:
+            if '"agents_registered"' not in line:
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue  # the line being written right now
+            if event.get("type") == "agents_registered":
+                agents = event.get("agents", [])
+if agents is None:
+    agents = json.loads((run_dir / "summary.json").read_text()).get("agents", [])
+rows = [(a["id"], a["address"]) for a in agents if a.get("address")]
+print(f"-- {len(rows)} agents", file=sys.stderr)
+
+# The deployer seeds every venue and moves LP in liquidityPull windows — worth naming so its txs
+# don't read as a participant's. It is not anvil account 0 on a chain deployed from a secret
+# mnemonic (issue #74), so read it where the deploy wrote it: Aave's ACL admin is the deployer.
+m = constants.is_file() and re.search(r'AclAdmin:\s*"(0x[0-9a-fA-F]{40})"', constants.read_text())
+if m:
+    rows.append(("env:deployer", m.group(1)))
+else:
+    print(f"-- no AclAdmin in {constants}: env:deployer not tagged", file=sys.stderr)
 
 def q(s: str) -> str:
     return s.replace("'", "''")
