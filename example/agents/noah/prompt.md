@@ -18,9 +18,26 @@ The strategy has three layers, tried in order:
    fee-aware threshold (`NOAH_SINGLE_SAFETY_MARGIN_BPS`) and a z-score confirmation
    (`NOAH_Z_ENTER`/`NOAH_Z_AGGRESSIVE` against a per-base `RollingStats`). This layer carries
    directional risk on purpose, sized deliberately smaller than layer 1
-   (`NOAH_SINGLE_SIZE` band is 1–10%, layer 1's is 2.5–25%).
+   (`SINGLE_MIN/MAX_SIZE_BPS` band is 1–10%, layer 1's `MIN/MAX_SIZE_BPS` is 2.5–25%).
 3. **Adaptive bidding** (`adaptiveBid`) — bid the minimum needed to beat the observed top competitor,
    capped at `NOAH_CEIL_FRACTION` of the trade's own expected profit.
+
+## The competition this runs in (ASCON Round 1)
+
+- **Score = z-score of epoch PnL across all participants** (rules §4.4.1), averaged over 60 epochs
+  with later epochs weighted up to 1.5×. Beating the field matters, not beating zero; a large loss
+  in one epoch is also what the tie-break (worst epoch, consistency) looks at.
+- **Every participant starts with the same basket: 25,000 USDC + 8 WETH + 0.4 WBTC** (+1 ETH gas,
+  §4.2). Its price drift is shared by the whole field. `excessBaseWei` protects it: layer 1 only
+  drains base *above* the starting basket. Never rewrite that to sell the whole balance — that turns
+  a delta-neutral arb into a large short against everyone else.
+- Valuation (§4.1) is the one-sided executable price for the whole position, median of the last 5
+  blocks. Leftover non-basket inventory at the end is marked with slippage.
+- 2-second blocks, in-block order by priority fee with no cap (§2.6). The reference price is written
+  before each block, so `obs.fairPriceUsdcPerWeth` is one block old when you trade against it.
+- Out of bounds (§8 / scope §3), regardless of how profitable: trades aimed at moving the price at
+  the valuation point, self-dealing, oracle/PriceFeed/admin functions, MarketRegistry, defects in the
+  unmodified upstream protocol code, valuation-calculation errors. Do not add any of these.
 
 ## When to leave it alone
 
@@ -74,6 +91,11 @@ Read this table before writing anything. Most rows are **not** a threshold chang
 ## Constraints
 
 - Only `obs`, `ctx` and standard JavaScript. No `require`, `import`, `process` or `fetch`.
+- **The `NOAH_*` names in the table above are environment knobs of the shipped file only.** A
+  revision cannot read `process.env`, so "raise `NOAH_Z_ENTER`" means: write it as a literal
+  constant in the body. Version 0 also imports `sized`, `marketViews` and `RollingStats` from
+  `../lib`; a rewrite must carry its own copies of whatever it uses. That makes the first rewrite a
+  large one — one more reason to return `null` unless the evidence is specific.
 - **Never remove the `canFund`/`sized` calls.** An action the runtime rejects scores the same as
   doing nothing, and it now shows up as a `rejected (...)` line — but silently proposing unfundable
   legs was the single most common way agents in this repo ended a run at exactly 0.00 PnL (issue #54).

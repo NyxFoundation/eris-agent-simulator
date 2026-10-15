@@ -28,8 +28,9 @@
  *
  * Out of scope for v1 (see plan): GMX perps, Aave borrow/liquidation, LST/Liquity. Reasons are
  * mechanical, not laziness -- GMX cannot be compiled locally on this box's arm64 (spot EC2 only),
- * lst/liquity are absent from obs.protocols unless ENABLED_PROTOCOLS names them (a self-hosted-agent
- * trap this repo's own docs warn about), and liquidating other participants' positions is a run(ctx)
+ * lst/liquity are in the ASCON scope (scope §2.1) but marketViews() only reads uniswap/balancer/curve,
+ * so their markets and the regime 7/11 pools (discoveredPools) are never traded by this file, and
+ * liquidating other participants' positions is a run(ctx)
  * agent shape that cannot coexist with prompt.md (kind: improve) in one submission. A run that never
  * touches those venues just noops through the regimes that need them, which is not a disqualifying
  * outcome -- it is what "not attempted" looks like in this scoring model.
@@ -156,6 +157,18 @@ function adaptiveBid(
   return bid;
 }
 
+// The inventory the epoch handed us (ASCON rules §4.2: 25,000 USDC + 8 WETH + 0.4 WBTC). Every
+// participant starts holding the same basket and the score is a z-score across participants
+// (§4.4.1), so the basket's price drift is the field's, not ours -- selling it is a directional bet
+// against everyone else. Captured on the first observation of each base; a worker reload after a
+// decide timeout re-captures it from the then-current balance, which can only make this stricter.
+const baselineByBase = new Map<string, bigint>();
+function excessBaseWei(base: string, balanceWei: bigint): bigint {
+  if (!baselineByBase.has(base)) baselineByBase.set(base, balanceWei);
+  const baseline = baselineByBase.get(base) ?? 0n;
+  return balanceWei > baseline ? balanceWei - baseline : 0n;
+}
+
 function computeGap(price: number, fair: number): number | null {
   if (!Number.isFinite(price) || price <= 0) return null;
   if (!Number.isFinite(fair) || fair <= 0) return null;
@@ -251,6 +264,8 @@ export function decide(
   // (keeps layer 2's statistics warm even on rounds where layer 1 trades instead.)
   const gapInfo = new Map<string, { gap: number; absZ: number; burnedIn: boolean }>();
   for (const view of views) {
+    excessBaseWei(view.base, BigInt(view.baseBalanceWei || "0")); // pin the baseline before any trade
+
     const signalVenue =
       view.venues.find((v) => v.protocol === "uniswap") ?? view.venues[0];
     if (!signalVenue) continue;
@@ -288,9 +303,14 @@ export function decide(
     const usdcIn = sized(obs, "USDC", sizeBps);
     if (usdcIn <= 0n) continue;
 
-    // Net against any base already sitting in the wallet, not just the freshly bought amount, so
-    // leftover rounding inventory is actively drained instead of compounding into unpriced beta.
-    const existingBase = baseToFloat(BigInt(view.baseBalanceWei || "0"), view.baseDecimals);
+    // Net against base this strategy accumulated above the epoch's starting basket, so leftover
+    // rounding inventory is drained instead of compounding into unpriced beta. The starting basket
+    // itself is never sold here: draining 8 WETH on a $250 arb would turn a delta-neutral trade into
+    // a large short against the field.
+    const existingBase = baseToFloat(
+      excessBaseWei(view.base, BigInt(view.baseBalanceWei || "0")),
+      view.baseDecimals,
+    );
     const boughtBase = baseToFloat(usdcIn, 6) / cheap.price;
     const baseSell = floatToBase(existingBase + boughtBase * 0.98, view.baseDecimals);
     if (baseSell <= 0n) continue;
