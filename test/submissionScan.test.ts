@@ -288,3 +288,18 @@ test("ordinary write()/link() calls that are not fs are not read as file writes"
   });
   assert.deepEqual(writeWarns(scan(dir)), []);
 });
+
+// The vendored sdk/runtime/lib are compared with this checkout, which moves with every operator
+// update; extraction never copies them. A copy from another release is a WARN, not a rejection.
+test("a vendored sdk file that differs from this checkout is a WARN, not a BLOCK", (t) => {
+  const dir = fixtureDir(t, {
+    [`${AGENT}/agent.ts`]: AGENT_TS,
+    "sdk/src/constants.ts": "// an earlier release of this file\nexport const X = 1;\n",
+    "agents/runtime/removed-in-a-later-release.ts": "export const Y = 2;\n",
+  });
+  const report = scan(dir);
+  assert.deepEqual(blocks(report), []);
+  const warns = report.findings.filter((f) => f.severity === "WARN").map((f) => f.path);
+  assert.ok(warns.includes("sdk/src/constants.ts"), warns.join("\n"));
+  assert.ok(warns.includes("agents/runtime/removed-in-a-later-release.ts"), warns.join("\n"));
+});

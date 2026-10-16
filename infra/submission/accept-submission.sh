@@ -7,15 +7,15 @@
 # a ZIP into that shape, so the pipeline had a gap exactly where a competition needs an audit trail.
 #
 # What it does, in order, stopping at the first failure:
-#   1. scan     -- scan-submission.py must accept (this is also what catches a tampered vendored sdk)
+#   1. scan     -- scan-submission.py must accept (a vendored sdk that differs from this checkout is a WARN)
 #   2. extract  -- ONLY the participant's own agent directory, into example/agents/<team-id>/
 #   3. check    -- check:strategy over the extracted code (cheatcode static check, ADR 0006 §5)
 #   4. build    -- eris-agent:<team-id>, and print the digest that the replay audit checks
 #
 # Step 2 takes the participant's directory and NOTHING else. The bundle also carries sdk/, runtime/
-# and lib/; those are the operator's, step 1 has already proved they are byte-identical to this
-# repo's, and copying a participant's copy over the operator's is how a tampered runtime would get
-# in through the back door after passing the front one.
+# and lib/; those are the operator's, and copying a participant's copy over the operator's is how a
+# tampered runtime would get in through the back door. Because they are never copied, step 1 only
+# WARNs when they differ from this checkout -- usually a bundle built at an earlier release.
 #
 # Step 2 also re-scans what `unzip` actually wrote, because the scan in step 1 reads the archive
 # with Python's zipfile and the extraction uses Info-ZIP. They disagree on symlinks (zipfile writes

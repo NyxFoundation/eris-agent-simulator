@@ -185,8 +185,13 @@ def scan_requirements(path, text):
 # them ours, none in the participant's directory.
 #
 # Skipping them outright would be worse: a participant can edit the vendored copy. So compare each
-# against the repo and skip only the bodies that are byte-identical; anything altered or unknown is
-# a BLOCK, which is the finding that actually matters here.
+# against the repo and skip only the bodies that are byte-identical. Anything altered or unknown is a
+# WARN, not a BLOCK: accept-submission.sh extracts the participant's agent directory and nothing
+# else, so these copies never reach an image -- the image carries the operator's frozen commit. And
+# the reference here is whatever this checkout is, so every operator update turned every bundle
+# built from an earlier, genuine release into a "MODIFIED" BLOCK that the participant could only
+# clear by rebundling. The WARN still names the file, so a deliberate edit is visible to the
+# operator; the participant-side question is whether the agent runs on the frozen SDK.
 VENDORED = (("sdk/", "sdk/"), ("agents/runtime/", "example/agents/runtime/"), ("agents/lib/", "example/agents/lib/"))
 REPO_ROOT = os.environ.get("ERIS_REPO") or os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -204,12 +209,12 @@ def check_vendored(rel, fp):
     if ref is None:
         return False
     if not os.path.exists(ref):
-        add("BLOCK", rel, "file under an operator-shipped path that the repo does not have (added to the vendored runtime?)")
+        add("WARN", rel, "file under an operator-shipped path that this checkout does not have (another release, or added to the vendored runtime?) -- discarded at extraction; the image uses the operator's copy")
         return True
     h = lambda q: hashlib.sha256(open(q, "rb").read()).hexdigest()
     try:
         if h(fp) != h(ref):
-            add("BLOCK", rel, "operator-shipped file MODIFIED (the vendored sdk/runtime must be byte-identical to the distributed one)")
+            add("WARN", rel, "operator-shipped file differs from this checkout (bundled at another commit, or edited) -- discarded at extraction; the image uses the operator's copy")
     except OSError:
         add("WARN", rel, "could not read operator-shipped file to compare")
     return True

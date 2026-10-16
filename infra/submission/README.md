@@ -62,13 +62,15 @@ file under `sdk/`, `agents/runtime/` and `agents/lib/` is compared byte-for-byte
 | | |
 |---|---|
 | identical | body not scanned (it is operator code doing its job) |
-| **modified** | **BLOCK** — "operator-shipped file MODIFIED" |
-| **not in the repo** | **BLOCK** — something was added to the vendored runtime |
+| **differs from this checkout** | **WARN** — bundled at another commit, or edited |
+| **not in this checkout** | **WARN** — another release, or something was added to the vendored runtime |
 
-This is stricter than before, not looser. Previously a tampered `sdk/src/config.ts` looked exactly
-like an untampered one: both BLOCK'd for `child_process`, and the finding said nothing about
-tampering. Verified: a stock bundle accepts (0 BLOCK); the same bundle with a shell-exec appended to
-`sdk/src/config.ts` rejects; adding `agents/runtime/backdoor.ts` rejects.
+These were BLOCKs until 2026-10-16. They are WARNs because the copies never reach an image:
+extraction (below) takes the participant's agent directory and nothing else, and the image carries
+the operator's frozen commit. The reference is whatever this checkout is, so as a BLOCK every
+operator update turned every bundle built from an earlier, genuine release into a rejection the
+participant could only clear by rebundling. The WARN still names each file, so a deliberate edit is
+visible; what matters for the participant is whether the agent runs on the frozen SDK.
 
 `ERIS_REPO` overrides the reference checkout (default: this script's repo root).
 
@@ -91,9 +93,10 @@ the image digest the replay audit compares against `runs/<id>/images.jsonl`.
 proved they are byte-identical to this repo's, and copying a participant's copy over the operator's
 is how a tampered runtime would walk in the back door after passing the front one.
 
-Verified: a stock bundle accepts and produces `eris-agent:team-demo`; a bundle with a modified
-`sdk/src/config.ts` is rejected at step 1 with **no directory and no image created**; a second
-submission for a team that already exists stops rather than overwriting.
+Verified: a stock bundle accepts and produces `eris-agent:team-demo`; a second submission for a
+team that already exists stops rather than overwriting. (A bundle with a modified `sdk/src/config.ts`
+used to be rejected at step 1; since 2026-10-16 it is a WARN, and the modified copy is still never
+extracted.)
 
 ## The whole path, exercised end to end (2026-09-17)
 
