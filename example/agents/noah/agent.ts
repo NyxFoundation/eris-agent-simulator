@@ -19,16 +19,25 @@
  * back once pools trade through fair. In the last CLOSE_OUT_BLOCKS of an epoch only restoring trades
  * are allowed, so the epoch ends near the basket.
  *
- * Every branch logs a reason and signals (issue #101). Out of scope here: GMX, Aave, LST, Liquity
- * and the regime 7/11 pools -- quote.ts only reads uniswap/balancer/curve markets.
+ * Every branch logs a reason and signals (issue #101). Out of scope here: GMX, Aave, LST and the
+ * regime 7/11 pools -- quote.ts only reads uniswap/balancer/curve markets. Liquity (eUSD) is a
+ * second, independent candidate source (liquity.ts, ported from example/agents/redemption-arb):
+ * finishing a redemption already in flight (redeem/sell/wrap/unwind) always takes priority over a
+ * fresh trade, since holding eUSD or ETH across blocks while chasing an AMM edge is a price bet
+ * nobody chose to take; a fresh eUSD buy is ranked against the AMM candidates on the same
+ * profitUsdc basis and the better of the two is taken (never both in the same block).
  *
  * JP: fair 基準・実サイズ見積もりの裁定。評価は fair 建てなので「実サイズの約定価格が fair を
  * 上回る（下回る）」分はその場で P に確定する。初期バスケットが中立なので、バスケットから離れる取引は
  * 高い閾値（OPEN）、戻す取引は低い閾値（RESTORE）。calm では何もせず、crash/spike では古い価格の
- * プールに実サイズで当て、強く入札する。エポック終盤は戻す取引だけ。
+ * プールに実サイズで当て、強く入札する。エポック終盤は戻す取引だけ。Liquity(eUSD)は独立した
+ * もう一つの候補源（liquity.ts）: 前回までの償還の後始末（redeem/sell/wrap/unwind）は常に最優先、
+ * 新規のeUSD購入はAMM候補とprofitUsdcで比較して良い方だけを採る。
  */
 import type { AgentAction, AgentContext, AgentObservation } from "@eris/sdk";
+import { TOKENS } from "@eris/sdk/constants.js";
 import { marketViews, type AgentVenue, type MarketView } from "../lib/markets.js";
+import { decideLiquity, LIQUITY_PARAMS, type LiquityDecision } from "./liquity.js";
 import { quoteOut, type Side, type Venue } from "./quote.js";
 
 // ---- tunables (one place, so a revision can change them as literals) ----
@@ -63,6 +72,18 @@ for (const [k, v] of Object.entries(PARAMS)) {
 // the agent treat its current inventory as neutral, which is the conservative failure.
 const baselineByBase = new Map<string, bigint>();
 let gasSpentWei = 0n;
+
+// Liquity side's own baselines. redemption-arb can fix these once at the start of the run, because
+// it never touches WETH/ETH any other way. noah cannot: its own AMM side buys and sells WETH on
+// every open/restore trade, so a baseline fixed once would make ordinary AMM inventory look like
+// redemption proceeds forever after -- exactly what happened on the first local test (the Liquity
+// branch's `unwind` fired every block from early on, each time undoing whatever the AMM side had
+// just bought). The fix: track the live balance by default (so an AMM-driven move is never "above
+// baseline"), and only freeze it for the one block where a redemption is in flight, so that block's
+// increase -- and only that one -- reads as proceeds.
+let liquityBaselineEthWei: bigint | null = null;
+let liquityBaselineWethWei: bigint | null = null;
+let awaitingRedeemProceeds = false;
 
 function baselineOf(base: string, balance: bigint): bigint {
   if (!baselineByBase.has(base)) baselineByBase.set(base, balance);
@@ -220,6 +241,52 @@ function slipBps(edgeBps: number): number {
   );
 }
 
+// The non-"buy" kinds are a 1:1 port of redemption-arb's own action mapping (same action types,
+// same fields). "buy" is folded in too so callers have one place to build a Liquity action from a
+// decision; "hold" has no action (callers check for it before reaching here).
+function liquityAction(decision: LiquityDecision, fee: string): Record<string, unknown> | null {
+  switch (decision.kind) {
+    case "buy":
+      return {
+        type: "liquitySwapEusd",
+        tokenIn: "USDC",
+        amountIn: decision.usdcIn.toString(),
+        slippageBps: LIQUITY_PARAMS.slippageBps,
+        maxPriorityFeePerGasWei: fee,
+      };
+    case "sell":
+      return {
+        type: "liquitySwapEusd",
+        tokenIn: "EUSD",
+        amountIn: decision.eusdIn.toString(),
+        slippageBps: LIQUITY_PARAMS.slippageBps,
+        maxPriorityFeePerGasWei: fee,
+      };
+    case "redeem":
+      return {
+        type: "liquityRedeem",
+        amountEusdWei: decision.eusdIn.toString(),
+        maxPriorityFeePerGasWei: fee,
+      };
+    case "wrap":
+      return {
+        type: "rawTx",
+        tx: { to: TOKENS.WETH.address, data: "0xd0e30db0", value: decision.ethWei.toString() },
+        maxPriorityFeePerGasWei: fee,
+      };
+    case "unwind":
+      return {
+        type: "swap",
+        tokenIn: "WETH",
+        amountIn: decision.wethWei.toString(),
+        slippageBps: LIQUITY_PARAMS.slippageBps,
+        maxPriorityFeePerGasWei: fee,
+      };
+    default:
+      return null;
+  }
+}
+
 function legAction(c: Candidate): Record<string, unknown> {
   const leg: Record<string, unknown> = {
     type: c.venue.swapType,
@@ -245,10 +312,50 @@ export async function decide(
   };
 
   if (!(obs.fairPriceUsdcPerWeth > 0)) return noop("invalid fair price");
-  const views = marketViews(obs);
-  if (views.length === 0) return noop("no venue quoting any base");
-
   const usdcBal = BigInt(obs.balances.usdcUnits || "0");
+  const fee = obs.limits.defaultPriorityFeePerGasWei;
+
+  // Liquity: finish any position already open before anything else -- holding eUSD or ETH across
+  // blocks while chasing an AMM edge is a price bet nobody chose to take (same ordering as
+  // redemption-arb's own decideRedemption). A fresh buy is held back to compare against the AMM
+  // candidates below instead of taken unconditionally.
+  type LiquityBuy = Extract<LiquityDecision, { kind: "buy" }>;
+  let liquityBuy: LiquityBuy | null = null;
+  const liquity = obs.protocols.liquity;
+  if (liquity) {
+    const ethWei = BigInt(obs.balances.ethWei || "0");
+    const liqWethWei = BigInt(obs.balances.wethWei || "0");
+    // Track the live balance unless a redemption is in flight (see the comment on the state
+    // above) -- otherwise re-baseline every call, so only that one block's increase can ever look
+    // like proceeds.
+    if (!awaitingRedeemProceeds || liquityBaselineEthWei === null) liquityBaselineEthWei = ethWei;
+    if (!awaitingRedeemProceeds || liquityBaselineWethWei === null)
+      liquityBaselineWethWei = liqWethWei;
+    const ld = decideLiquity({
+      liquity,
+      usdcUnits: usdcBal,
+      wethWei: liqWethWei,
+      ethWei,
+      ethBaselineWei: liquityBaselineEthWei,
+      wethBaselineWei: liquityBaselineWethWei,
+      canSellEth: obs.enabledProtocols.includes("uniswap"),
+    });
+    signals.eusd = Number(liquity.eusdBalanceWei) / 1e18;
+    signals.discountBps = liquity.discountBps;
+    if (ld.kind === "buy") {
+      liquityBuy = ld;
+    } else if (ld.kind !== "hold") {
+      // unwind/wrap close out what redeem opened -- resume tracking the live balance from here.
+      awaitingRedeemProceeds = ld.kind === "redeem";
+      const action = liquityAction(ld, fee) ?? { type: "noop", reason: `liquity ${ld.kind}` };
+      ctx.log({ round, action, signals, reason: `liquity ${ld.kind}` });
+      return action;
+    }
+  }
+
+  const views = marketViews(obs);
+  if (views.length === 0 && !liquityBuy) return noop("no venue quoting any base");
+
   const isClosingOut =
     typeof obs.blocksRemaining === "number" && obs.blocksRemaining <= PARAMS.closeOutBlocks;
   signals.closingOut = isClosingOut ? 1 : 0;
@@ -261,9 +368,25 @@ export async function decide(
       toFloat(inv, view.baseDecimals) - toFloat(baseline, view.baseDecimals);
     candidates.push(...(await candidatesFor(ctx, view, usdcBal, isClosingOut, problems)));
   }
+  candidates.sort((a, b) => b.profitUsdc - a.profitUsdc);
+
+  // The better of the two venues wins outright -- a Liquity buy never shares a block with an AMM
+  // leg (neither strategy's sizing accounts for the other spending the same USDC balance).
+  if (liquityBuy && liquityBuy.profitUsdc >= (candidates[0]?.profitUsdc ?? -Infinity)) {
+    const action = liquityAction(liquityBuy, fee) as Record<string, unknown>;
+    signals.profitUsdc = liquityBuy.profitUsdc;
+    signals.maxEdgeBps = liquityBuy.edgeBps;
+    ctx.log({
+      round,
+      action,
+      signals,
+      reason: `liquity buy ${liquityBuy.edgeBps.toFixed(0)}bps +${liquityBuy.profitUsdc.toFixed(2)}`,
+    });
+    return action;
+  }
+
   if (candidates.length === 0) return noop("no fill clears fair by the margin at any size");
 
-  candidates.sort((a, b) => b.profitUsdc - a.profitUsdc);
   // One leg per (base, venue): two legs on one pool would quote against the same state twice.
   const seen = new Set<string>();
   const legs = candidates.filter((c) => {

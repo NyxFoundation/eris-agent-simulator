@@ -1,0 +1,30 @@
+# config/rosters/noah-diagnosis.yaml — ad-hoc comparison for the ASCON standings diagnosis
+# (2026-10-19). Not a long-term reference roster; delete once the question is answered.
+#
+# Compares:
+#   - noah-v0      : the architecture believed to still be live on ASCON (old 3-layer, z-gated)
+#   - noah         : the current fair-anchored rewrite, frozen (no in-run LLM revision, so the
+#                    comparison isolates the architecture/PARAMS change from revision noise)
+#   - noah-tuned   : same fair-anchored code, with NOAH_CEIL_FRACTION raised from the 0.5 default
+#                    toward the 0.9 ceiling prompt.md's own symptom table prescribes for "losing the
+#                    bid race" -- the fix 18/18 observed local self-revisions diagnosed but never made
+#
+# Run: npm run backtest -- --regime calm --seed 101 --agents config/rosters/noah-diagnosis.yaml
+#      npm run backtest -- --regime crash --seed 101 --agents config/rosters/noah-diagnosis.yaml
+agents:
+  - id: noop
+    wallet: AUTO
+    baseline: true
+    description: does nothing (baseline)
+  - id: noah-v0
+    wallet: AUTO
+    description: old 3-layer delta-neutral + z-gated single-leg + adaptive bid (believed live on ASCON today)
+  - id: noah
+    wallet: AUTO
+    env: { ERIS_AGENT_FROZEN: "1" }
+    description: current fair-anchored at-size-quote arbitrage, frozen (no self-revision)
+  - id: noah-tuned
+    dir: noah
+    wallet: AUTO
+    env: { ERIS_AGENT_FROZEN: "1", NOAH_CEIL_FRACTION: "0.85" }
+    description: same as noah, with the priority-fee ceiling raised to stop losing bid races

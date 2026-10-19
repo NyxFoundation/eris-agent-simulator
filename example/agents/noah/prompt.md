@@ -1,7 +1,7 @@
 ---
 kind: improve
 name: noah
-description: Fair-anchored executable arbitrage around the starting basket — trades only when the quote at the actual size beats the reference price, bids hard on crash/spike gaps, revised in-run.
+description: Fair-anchored executable arbitrage around the starting basket, plus eUSD redemption-arb on the Liquity venue — trades only when the quote at the actual size beats the reference price, bids hard on crash/spike gaps, revised in-run.
 model: claude-cli:haiku
 reviseEveryBlocks: 60
 ---
@@ -23,6 +23,14 @@ the most profitable rung that still clears the margin wins.
   ceiling (`PARAMS.ceilFraction` of the profit) at or above `PARAMS.bigProfitUsdc`, never past
   `PARAMS.gasBudgetEth`.
 
+A second, independent rule for the Liquity (eUSD) venue (`liquity.ts`'s `decideLiquity`, ported
+from `redemption-arb`): if a redemption is already in flight (there's eUSD or ETH left over from a
+prior block), finish it — sell/redeem the eUSD, or wrap/sell the ETH a redemption paid out — before
+anything else, every block. Only once nothing is in flight does a fresh eUSD buy get sized against
+the pool's discount; that buy is then ranked against the AMM candidates above on expected
+`profitUsdc`, and only the better of the two trades that block (never both — a Liquity buy and an
+AMM leg are never bundled together).
+
 ## Why it is built this way (facts you must not break)
 
 - **Score = per-epoch z-score of PnL across participants** (ASCON rules §4.4.1), 60 epochs, later
@@ -37,6 +45,12 @@ the most profitable rung that still clears the margin wins.
   what a trade clears at. Never replace the at-size quote (`quoteOut`) with an observation price.
 - The money is in the event regimes: a crash or spike moves fair 15–22% in one block while pools
   still quote the old price. That is what the open margin and the big-edge bid are for.
+- **The Liquity branch only has work on depeg-shaped days** (eUSD trading off par). On every other
+  day `obs.protocols.liquity` is either absent or shows `discountBps` near 0, and holding at idle
+  is correct — do not loosen `LIQUITY_PARAMS` just because the branch has been quiet.
+- **The redemption fee (`redemptionRateBps`) only rises inside a run** (it decays on a ~12h
+  half-life, which a single epoch never reaches) — the first redemption in an epoch is the cheapest
+  one, and whoever moves first prices everyone who follows.
 
 ## What you are shown
 
@@ -44,8 +58,9 @@ the most profitable rung that still clears the margin wins.
   latency and block position, and the value change split into the market's share and the trades'.
 - **`market history`** — per base, fair high/low and each venue's gap against fair.
 - **`recent decisions`** — each with what its transaction did. The logged `signals` are `legs`,
-  `profitUsdc`, `maxEdgeBps`, `bidGwei`, `restoring` (1 = only restore legs), `closingOut`, and
-  `dev_<BASE>` (inventory minus the basket, in base units).
+  `profitUsdc`, `maxEdgeBps`, `bidGwei`, `restoring` (1 = only restore legs), `closingOut`,
+  `dev_<BASE>` (inventory minus the basket, in base units), and, whenever the Liquity venue is
+  enabled, `eusd` (eUSD balance held) and `discountBps` (pool price vs par; positive = below par).
 - **`latest observation`** — the current block in full.
 
 ## Symptom → evidence → change
@@ -60,17 +75,31 @@ the most profitable rung that still clears the margin wins.
 | `dev_<BASE>` stays far from 0 into the last 60 blocks | signals | lower `restoreEdgeBps` toward 0 (never below −10) |
 | `problems` lists quote errors every block | noop `state.problems` | a bug — fix the guard, not the thresholds |
 | PnL down, trades' own share positive | the market/trade split | **none** — the market moved |
+| `discountBps` clearly above `redemptionRateBps + 55` for several blocks but no `liquity buy` | signals, recent decisions | lower `LIQUITY_PARAMS.safetyBps` a little (floor ~10) |
+| `liquity redeem`/`sell` never follows a `liquity buy` within a block or two | recent decisions | a bug (the buy's eUSD should trigger redeem/sell next block) — fix the guard, not the thresholds |
+| `liquity buy` fires but later settles worse than fair | settled trade value | raise `LIQUITY_PARAMS.exitCostBps` (the AMM leg that turns redeemed ETH back to USDC is costing more than assumed) |
 
 ## Constraints
 
 - Only `obs`, `ctx` and standard JavaScript. No `require`, `import`, `process` or `fetch`. The
   shipped file reads some `PARAMS` from `process.env`; in a rewrite, write them as literals.
-- Version 0 imports `marketViews` (../lib/markets) and `quoteOut` (./quote, which reads the venues
-  through `ctx.publicClient` using addresses from the SDK). A rewrite has no imports, so it would have
-  to carry its own copies including contract addresses. **That is a large, risky rewrite — prefer
-  `executorTs: null`, and when a change is justified keep it to the `PARAMS` values.**
-- Keep: the at-size quote, the open/restore split, the close-out window, the gas budget, and a
-  `ctx.log({ reason, signals })` on every branch.
+- Version 0 imports `marketViews` (../lib/markets), `quoteOut` (./quote, which reads the venues
+  through `ctx.publicClient` using addresses from the SDK), and `decideLiquity`/`LIQUITY_PARAMS`
+  (./liquity, which reads only `obs.protocols.liquity` — no chain reads). A rewrite has no imports,
+  so it would have to carry its own copies including contract addresses. **That is a large, risky
+  rewrite — prefer `executorTs: null`, and when a change is justified keep it to the `PARAMS` /
+  `LIQUITY_PARAMS` values.**
+- Keep: the at-size quote, the open/restore split, the close-out window, the gas budget, the
+  Liquity finish-before-fresh-trade ordering, and a `ctx.log({ reason, signals })` on every branch.
+- This run's action vocabulary, by venue (`sdk/src/action.ts`'s `ACTION_TYPES_BY_PROTOCOL` is the
+  single source — do not invent a type not listed here): uniswap/balancer/curve use `swap` /
+  `balancerSwap` / `curveSwap` (already wrapped by `legAction` — a rewrite that touches the AMM side
+  still goes through that, not these names directly); Liquity uses `liquityRedeem` and
+  `liquitySwapEusd` (both already wrapped by `liquityAction`). Liquity also has
+  `liquityOpenTrove` / `liquityAdjustTrove` / `liquityCloseTrove` / `liquityProvideToSP` /
+  `liquityWithdrawFromSP` / `liquityLiquidate` — **out of scope**: opening a Trove needs WETH this
+  evaluation profile does not fund, and the SP/liquidation actions are a different strategy
+  (`sp-underwriter`'s), not this one's.
 - Out of bounds regardless of profit (rules §8 / scope §3): trades aimed at moving the price at the
   valuation point, self-dealing, oracle/PriceFeed/admin functions, MarketRegistry, defects in the
   unmodified upstream protocol code, valuation-calculation errors.
