@@ -26,10 +26,13 @@ the most profitable rung that still clears the margin wins.
 A second, independent rule for the Liquity (eUSD) venue (`liquity.ts`'s `decideLiquity`, ported
 from `redemption-arb`): if a redemption is already in flight (there's eUSD or ETH left over from a
 prior block), finish it — sell/redeem the eUSD, or wrap/sell the ETH a redemption paid out — before
-anything else, every block. Only once nothing is in flight does a fresh eUSD buy get sized against
+anything else, every block, **even inside the close-out window**. Only once nothing is in flight,
+and the epoch is not in `PARAMS.closeOutBlocks` of its end, does a fresh eUSD buy get sized against
 the pool's discount; that buy is then ranked against the AMM candidates above on expected
 `profitUsdc`, and only the better of the two trades that block (never both — a Liquity buy and an
-AMM leg are never bundled together).
+AMM leg are never bundled together). The close-out gate on fresh buys only (not on finishing) is
+`decideLiquity`'s own `closingOut` input, computed from the same `PARAMS.closeOutBlocks` as the AMM
+side's — not a second, independently-tuned window.
 
 ## Why it is built this way (facts you must not break)
 
@@ -51,6 +54,12 @@ AMM leg are never bundled together).
 - **The redemption fee (`redemptionRateBps`) only rises inside a run** (it decays on a ~12h
   half-life, which a single epoch never reaches) — the first redemption in an epoch is the cheapest
   one, and whoever moves first prices everyone who follows.
+- **eUSD (and DAI) are marked at realizable value: selling the whole holding at once, not mid**
+  (the practice-env changelog's valuation change). The curve is concave, so anything held above
+  ~$1,000 is marked down, and a buy taken too late to round-trip back to cash before the scoring
+  boundary pays that markdown for nothing. That is why fresh Liquity buys stop in the close-out
+  window even though finishing an in-flight one does not — do not remove that gate to "let the
+  branch keep working to the last block."
 
 ## What you are shown
 
@@ -78,6 +87,7 @@ AMM leg are never bundled together).
 | `discountBps` clearly above `redemptionRateBps + 55` for several blocks but no `liquity buy` | signals, recent decisions | lower `LIQUITY_PARAMS.safetyBps` a little (floor ~10) |
 | `liquity redeem`/`sell` never follows a `liquity buy` within a block or two | recent decisions | a bug (the buy's eUSD should trigger redeem/sell next block) — fix the guard, not the thresholds |
 | `liquity buy` fires but later settles worse than fair | settled trade value | raise `LIQUITY_PARAMS.exitCostBps` (the AMM leg that turns redeemed ETH back to USDC is costing more than assumed) |
+| `discountBps` wide but no `liquity buy` **only in the last `closeOutBlocks` blocks**, `closing out` hold reason in signals | recent decisions | **none** — correct: a buy this late can't round-trip back to cash before the scoring boundary, and leftover eUSD is marked at realizable value, not par |
 
 ## Constraints
 
@@ -89,8 +99,9 @@ AMM leg are never bundled together).
   so it would have to carry its own copies including contract addresses. **That is a large, risky
   rewrite — prefer `executorTs: null`, and when a change is justified keep it to the `PARAMS` /
   `LIQUITY_PARAMS` values.**
-- Keep: the at-size quote, the open/restore split, the close-out window, the gas budget, the
-  Liquity finish-before-fresh-trade ordering, and a `ctx.log({ reason, signals })` on every branch.
+- Keep: the at-size quote, the open/restore split, the close-out window (on both the AMM side and
+  fresh Liquity buys), the gas budget, the Liquity finish-before-fresh-trade ordering, and a
+  `ctx.log({ reason, signals })` on every branch.
 - This run's action vocabulary, by venue (`sdk/src/action.ts`'s `ACTION_TYPES_BY_PROTOCOL` is the
   single source — do not invent a type not listed here): uniswap/balancer/curve use `swap` /
   `balancerSwap` / `curveSwap` (already wrapped by `legAction` — a rewrite that touches the AMM side

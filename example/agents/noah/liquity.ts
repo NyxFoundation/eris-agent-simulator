@@ -17,7 +17,11 @@
  * ranking. `redeem` / `sell` / `wrap` / `unwind` are "finish what was already started," not a fresh
  * opportunity to rank against the AMM side -- agent.ts takes them immediately, before even building
  * the AMM candidates, for the same reason the original orders them first: holding eUSD or ETH
- * across blocks while chasing a different trade is a price bet nobody chose to take.
+ * across blocks while chasing a different trade is a price bet nobody chose to take. The other
+ * addition: `closingOut` gates step 3 (a fresh `buy`) off inside the AMM side's own close-out
+ * window, because eUSD/DAI score at realizable value (sell the whole holding at once, concave in
+ * size) -- a buy taken too late to round-trip back to cash before the epoch's scoring boundary
+ * pays that markdown for nothing. Steps 1-2 (finishing what is already in flight) ignore it.
  *
  * JP: redemption-arb の decideRedemption を noah 自身のディレクトリに複製したもの（提出は
  * 1 agent = 1 ディレクトリなので他 agent への import はできない）。buy 判断にのみ
@@ -87,6 +91,13 @@ export function decideLiquity(input: {
   ethBaselineWei: bigint;
   wethBaselineWei: bigint;
   canSellEth: boolean;
+  // True inside the AMM side's close-out window (noah's PARAMS.closeOutBlocks). A fresh buy here
+  // takes at least ~3 blocks to round-trip (buy lands -> redeem/sell sent -> proceeds land -> sell
+  // proceeds), so one started this late is still eUSD or ETH in hand at the scoring boundary. Under
+  // the realizable-value rule that eUSD/DAI are marked at (sell the whole holding at once, concave in
+  // size), that is a markdown a buy taken earlier would not have paid. Finishing what is already in
+  // flight (steps 1-2 below) is unaffected -- only a fresh buy (step 3) is gated.
+  closingOut: boolean;
 }): LiquityDecision {
   const l = input.liquity;
   const eusd = BigInt(l.eusdBalanceWei);
@@ -123,7 +134,16 @@ export function decideLiquity(input: {
     };
   }
 
-  // 3. Buy the discount, if it clears every cost between here and USDC.
+  // 3. Buy the discount, if it clears every cost between here and USDC -- but not this late in the
+  //    epoch, when the round trip back to cash can no longer finish before the scoring boundary.
+  if (input.closingOut) {
+    return {
+      kind: "hold",
+      reason:
+        "closing out: a fresh buy could not redeem/sell back to cash before the epoch's scoring " +
+        "boundary, and eUSD held into it is marked at its realizable (sell-it-all-now) value, not par",
+    };
+  }
   const buyEdge =
     l.discountBps - l.redemptionRateBps - LIQUITY_PARAMS.exitCostBps - LIQUITY_PARAMS.safetyBps;
   if (buyEdge > 0 && input.usdcUnits >= MIN_USDC_UNITS) {

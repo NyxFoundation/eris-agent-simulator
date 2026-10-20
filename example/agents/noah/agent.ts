@@ -25,14 +25,19 @@
  * finishing a redemption already in flight (redeem/sell/wrap/unwind) always takes priority over a
  * fresh trade, since holding eUSD or ETH across blocks while chasing an AMM edge is a price bet
  * nobody chose to take; a fresh eUSD buy is ranked against the AMM candidates on the same
- * profitUsdc basis and the better of the two is taken (never both in the same block).
+ * profitUsdc basis and the better of the two is taken (never both in the same block). A fresh buy
+ * is additionally gated off inside CLOSE_OUT_BLOCKS (same window as the AMM restore-only rule):
+ * eUSD/DAI score at realizable (sell-it-all-now) value, not par, so a buy too late to redeem/sell
+ * back to cash before the scoring boundary pays a markdown for nothing -- finishing one already in
+ * flight is unaffected, only a fresh one is held back.
  *
  * JP: fair 基準・実サイズ見積もりの裁定。評価は fair 建てなので「実サイズの約定価格が fair を
  * 上回る（下回る）」分はその場で P に確定する。初期バスケットが中立なので、バスケットから離れる取引は
  * 高い閾値（OPEN）、戻す取引は低い閾値（RESTORE）。calm では何もせず、crash/spike では古い価格の
  * プールに実サイズで当て、強く入札する。エポック終盤は戻す取引だけ。Liquity(eUSD)は独立した
  * もう一つの候補源（liquity.ts）: 前回までの償還の後始末（redeem/sell/wrap/unwind）は常に最優先、
- * 新規のeUSD購入はAMM候補とprofitUsdcで比較して良い方だけを採る。
+ * 新規のeUSD購入はAMM候補とprofitUsdcで比較して良い方だけを採る。ただし新規購入はAMM側と同じ終盤窓で
+ * 止める（eUSD/DAIは一括売却額で評価されるため、現金化し切れない買いは評価額を損するだけ）。
  */
 import type { AgentAction, AgentContext, AgentObservation } from "@eris/sdk";
 import { TOKENS } from "@eris/sdk/constants.js";
@@ -315,6 +320,13 @@ export async function decide(
   const usdcBal = BigInt(obs.balances.usdcUnits || "0");
   const fee = obs.limits.defaultPriorityFeePerGasWei;
 
+  // Computed before the Liquity branch (not just the AMM one below) because a fresh eUSD buy needs
+  // it too: it takes a few blocks to round-trip back to cash, and eUSD held into the scoring
+  // boundary is marked at its realizable value, not par (see liquity.ts's `closingOut` comment).
+  const isClosingOut =
+    typeof obs.blocksRemaining === "number" && obs.blocksRemaining <= PARAMS.closeOutBlocks;
+  signals.closingOut = isClosingOut ? 1 : 0;
+
   // Liquity: finish any position already open before anything else -- holding eUSD or ETH across
   // blocks while chasing an AMM edge is a price bet nobody chose to take (same ordering as
   // redemption-arb's own decideRedemption). A fresh buy is held back to compare against the AMM
@@ -339,6 +351,7 @@ export async function decide(
       ethBaselineWei: liquityBaselineEthWei,
       wethBaselineWei: liquityBaselineWethWei,
       canSellEth: obs.enabledProtocols.includes("uniswap"),
+      closingOut: isClosingOut,
     });
     signals.eusd = Number(liquity.eusdBalanceWei) / 1e18;
     signals.discountBps = liquity.discountBps;
@@ -355,10 +368,6 @@ export async function decide(
 
   const views = marketViews(obs);
   if (views.length === 0 && !liquityBuy) return noop("no venue quoting any base");
-
-  const isClosingOut =
-    typeof obs.blocksRemaining === "number" && obs.blocksRemaining <= PARAMS.closeOutBlocks;
-  signals.closingOut = isClosingOut ? 1 : 0;
 
   const candidates: Candidate[] = [];
   for (const view of views) {
