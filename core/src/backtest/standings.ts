@@ -90,6 +90,13 @@ export function scenarioId(regime: string, seed: number): string {
   return `${regime}#${seed}`;
 }
 
+// The scenarios that produced no results: the same test computeStandings uses to mark an epoch
+// invalid. The CLI exits nonzero when there are any, so a script or a person reading only the exit
+// status cannot take a matrix whose every scenario failed for a finished one.
+export function failedScenarios(results: ScenarioResult[]): ScenarioResult[] {
+  return results.filter((r) => !r.agents || r.agents.length === 0);
+}
+
 // The prefix an agent's flag carries in standings.json: which epoch raised it, by ordinal.
 export function epochFlagPrefix(s: number): string {
   return `s=${s}: `;

@@ -6,6 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   computeStandings,
+  failedScenarios,
   type ScenarioResult,
 } from "../core/src/backtest/standings.js";
 import { weightOf } from "../core/src/scoring/deviationScore.js";
@@ -92,4 +93,22 @@ test("epochs carry their scenario identity and run directory back out", () => {
   assert.equal(s.epochs[0].regime, "depeg");
   assert.equal(s.epochs[0].seed, 701);
   assert.equal(s.epochs[0].runDir, "runs/x");
+});
+
+// The CLI exits 1 when this is non-empty, so it has to agree with what computeStandings treats as a
+// lost epoch: no agents at all, or an empty list.
+test("failedScenarios: exactly the scenarios that produced no results", () => {
+  const ok: ScenarioResult = { s: 1, regime: "calm", seed: 1, agents: [agent("a", 1)] };
+  const missing: ScenarioResult = { s: 2, regime: "crash", seed: 1, error: "forge artifact missing" };
+  const empty: ScenarioResult = { s: 3, regime: "spike", seed: 1, agents: [] };
+  assert.deepEqual(failedScenarios([ok]), []);
+  assert.deepEqual(
+    failedScenarios([ok, missing, empty]).map((r) => r.s),
+    [2, 3],
+  );
+  const standings = computeStandings([ok, missing, empty], 3);
+  assert.deepEqual(
+    standings.epochs.filter((e) => e.excluded === "invalid").map((e) => e.s),
+    failedScenarios([ok, missing, empty]).map((r) => r.s),
+  );
 });

@@ -37,6 +37,7 @@ import { join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   computeStandings,
+  failedScenarios,
   scenarioId,
   type AgentScore,
   type ScenarioResult,
@@ -1090,6 +1091,17 @@ async function main(): Promise<void> {
         );
       console.log("");
       console.log(`wrote ${outDir}/matrix.json and standings.json`);
+    }
+    // Each failed scenario is printed above as FAILED, but the run used to exit 0 regardless, so a
+    // matrix whose every scenario failed (e.g. missing forge artifacts) looked finished to anything
+    // that checks the exit status.
+    const failed = failedScenarios(results);
+    if (failed.length > 0) {
+      console.error(
+        `[backtest] ${failed.length} of ${results.length} scenario(s) produced no results: ` +
+          failed.map((r) => scenarioId(r.regime, r.seed)).join(", "),
+      );
+      process.exitCode = 1;
     }
   } finally {
     if (keepAnvil) {
