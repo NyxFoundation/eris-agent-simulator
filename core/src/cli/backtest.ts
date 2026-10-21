@@ -35,6 +35,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { INFERENCE_ENV_LOCAL, loadEnvLocal } from "./bootstrapEnv.js";
 import {
   computeStandings,
   scenarioId,
@@ -281,6 +282,9 @@ function loadScenarioSet(
 }
 
 async function main(): Promise<void> {
+  // The agents' inference keys, from where the README says to put them. Without this every revision
+  // call of a keyed backend fails with 401 unless the shell exported the key first.
+  loadEnvLocal(".env.local", INFERENCE_ENV_LOCAL);
   const flags = parseFlags(process.argv);
   if (flags.config)
     throw new Error(

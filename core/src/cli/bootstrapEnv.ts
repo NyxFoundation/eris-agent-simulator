@@ -14,14 +14,31 @@
 import { existsSync, readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 
+// The inference backends' credentials and endpoints (example/agents/runtime/llm.ts), which the README
+// tells participants to put in .env.local. The backtest reads only these from the file: it runs on
+// its own state dump, and the file's deployer and wallet keys belong to the deployer anvil.
+export const INFERENCE_ENV_LOCAL: readonly string[] = [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OLLAMA_API_KEY",
+  "ERIS_OLLAMA_API_KEY",
+  "ERIS_OLLAMA_BASE_URL",
+];
+
 // Load repo-root .env.local (secrets: RPC URLs, agent private keys, ANTHROPIC_API_KEY/OLLAMA_API_KEY;
 // see CLAUDE.md). Existing process.env values win, so a shell export still overrides the file.
-export function loadEnvLocal(path = ".env.local"): void {
+// `only` restricts the load to those names.
+export function loadEnvLocal(
+  path = ".env.local",
+  only?: readonly string[],
+): void {
   if (!existsSync(path)) return;
   for (const line of readFileSync(path, "utf8").split("\n")) {
     const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
     if (!m) continue;
     const [, key, rawValue] = m;
+    if (only && !only.includes(key)) continue;
     if (process.env[key] !== undefined) continue;
     process.env[key] = rawValue.replace(/^(['"])(.*)\1$/, "$2");
   }
