@@ -90,6 +90,7 @@ import {
   restoreAllAgentState,
   snapshotAllAgentState,
 } from "../realtime/agentState.js";
+import { claimRunDir } from "../logger.js";
 
 const ROOT = process.cwd(); // npm scripts run at the repo root
 
@@ -795,12 +796,19 @@ async function main(): Promise<void> {
     // Prepared before the loop, and rewritten after every scenario. A full private matrix is ~6 h;
     // holding the results in memory until the end means an OOM, an anvil death or a Ctrl-C at
     // scenario 29 of 30 throws away everything already computed.
+    //
+    // A new matrix claims its directory the way a run does (claimRunDir, logger.ts): two backtests
+    // started in the same millisecond from one checkout would otherwise both flush into one
+    // runs/matrix-<time>/, each overwriting the other's matrix.json and standings.json.
+    const runsRoot = resolve(ROOT, "runs");
     const outDir = matrixMode
       ? (resumeDir ??
-        resolve(
-          ROOT,
-          "runs",
-          `matrix-${new Date().toISOString().replace(/[:.]/g, "-")}`,
+        join(
+          runsRoot,
+          claimRunDir(
+            runsRoot,
+            `matrix-${new Date().toISOString().replace(/[:.]/g, "-")}`,
+          ),
         ))
       : undefined;
     if (outDir) mkdirSync(outDir, { recursive: true });

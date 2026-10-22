@@ -79,6 +79,7 @@ import {
 } from "./agentView.js";
 import { spawnSync } from "node:child_process";
 import {
+  claimRunDir,
   RunLogger,
   txFeeColumns,
   type RunArtifactWriter,
@@ -950,9 +951,13 @@ export async function runRealtimeSimulation(
   }
   const cp = resume?.checkpoint;
 
+  // A fresh run claims its directory before anything is written (claimRunDir, logger.ts): the start
+  // time alone is not unique when two runs start in the same millisecond on one runs/. The claimed id
+  // is the one everything below uses -- the run directory or the period's competition directory, the
+  // agent views and their run-start.json, the agent state snapshots, the summary.
   const runId = resume
     ? resume.period.competitionId
-    : new Date().toISOString().replace(/[:.]/g, "-");
+    : claimRunDir(config.runDirRoot, new Date().toISOString().replace(/[:.]/g, "-"));
   // Cut the period's directory back to where the checkpoint was written before anything opens it
   // (periodResume.cutArtifactsToCheckpoint): a pass that did not finish, a roll the checkpoint did
   // not see, and -- when the chain went back -- everything past the block it went back to.
