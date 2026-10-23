@@ -16,6 +16,10 @@ oversized files; source red flags in .ts/.js — child_process/exec, eval/Functi
 target; reads are not a finding), outbound HTTP/WS (WARN — confirm it targets the allowed RPC/LLM),
 process.env reads (WARN); package.json install
 lifecycle hooks (supply-chain) and non-registry deps; hardcoded secrets and crypto-miner signatures.
+Additional secret checks cover non-code UTF-8 text files outside vendored copies, forge artifacts and node_modules,
+unless handled by an existing specialized path (package-manager configuration, manifests/locks, requirements or Solidity sources).
+The entire file must decode as UTF-8 without NUL bytes. Matches WARN; secret-material names (`.env` / `.env.*` except `.env.example`,
+`.env.sample`, `.env.template`; `*.pem`, `*.key`, `id_rsa`, `id_ed25519`, `*.p12`, `*.pfx`) also WARN regardless of content.
 
 Calibration: all 24 `example/agents/*` accept (0 BLOCK); a sample agent using child_process + fetch +
 a cheatcode + a postinstall hook is rejected (3 BLOCK; its fs writes are a WARN). Not a sandbox and not exhaustive —

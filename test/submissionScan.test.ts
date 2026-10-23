@@ -17,8 +17,8 @@ const AGENT = "agents/team-x"; // not the bundle root: a package.json there is a
 interface Finding { severity: string; path: string; message: string }
 interface Report { accept: boolean; blocks: number; findings: Finding[] }
 
-function scan(target: string): Report {
-  const r = spawnSync(PY, [SCAN, target, "--json"], { encoding: "utf8" });
+function scan(target: string, repo?: string): Report {
+  const r = spawnSync(PY, [SCAN, target, "--json"], { encoding: "utf8", env: { ...process.env, ...(repo ? { ERIS_REPO: repo } : {}) } });
   assert.ok(r.status === 0 || r.status === 1, `scanner crashed: ${r.stderr}`);
   const report = JSON.parse(r.stdout) as Report;
   assert.equal(r.status, report.accept ? 0 : 1);
@@ -29,7 +29,7 @@ function blocks(report: Report): string[] {
   return report.findings.filter((f) => f.severity === "BLOCK").map((f) => `${f.path}: ${f.message}`);
 }
 
-function fixtureDir(t: { after(fn: () => void): void }, files: Record<string, string>): string {
+function fixtureDir(t: { after(fn: () => void): void }, files: Record<string, string | Buffer>): string {
   const dir = mkdtempSync(join(tmpdir(), "eris-scan-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const [rel, body] of Object.entries(files)) {
@@ -324,4 +324,128 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as zf:
   assert.match(found, /declared unpacked size/);
   assert.match(found, /zip bomb/);
   assert.doesNotMatch(found, /unpacked too large/, "walk_dir saw extracted files");
+});
+
+// Synthetic tokens only: exercise both submission formats without shipping real credentials.
+const SECRET = "sk-" + "a".repeat(24);
+const secretWarns = (report: Report) => report.findings.filter((f) =>
+  f.severity === "WARN" && f.message === "looks like a hardcoded secret/key/token");
+const secretNameWarns = (report: Report) => report.findings.filter((f) =>
+  f.severity === "WARN" && f.message.startsWith("secret-material file name"));
+
+for (const format of ["directory", "zip"] as const) {
+  test(`secrets in non-code UTF-8 text WARN without rejecting a ${format}`, (t) => {
+    const names = [".env", "notes.md", "notes.txt", "config.yaml", "config.yml", "config.toml",
+      "config.ini", "config.cfg", "README", ".env.example", "agent.ts"];
+    const files = Object.fromEntries(names.map((name) => [`${AGENT}/${name}`, `// ${SECRET}\n`]));
+    const target = format === "directory" ? fixtureDir(t, files) : fixtureZip(t,
+      Object.entries(files).map(([name, body]) => ({ name, body })));
+    const report = scan(target); // scan() also asserts exit 0 when accept is true
+    assert.equal(report.accept, true);
+    assert.deepEqual(blocks(report), []);
+    assert.deepEqual(secretWarns(report).map((f) => f.path).sort(), Object.keys(files).sort());
+    assert.deepEqual(secretNameWarns(report).map((f) => f.path), [`${AGENT}/.env`]);
+  });
+}
+
+test("secret-material names WARN once regardless of contents; env templates are exempt", (t) => {
+  const names = [".env", ".env.local", ".env.production", "cert.pem", "signing.key",
+    "id_rsa", "id_ed25519", "cert.p12", "cert.pfx"];
+  const files: Record<string, string | Buffer> = { [`${AGENT}/agent.ts`]: AGENT_TS };
+  for (const name of names) files[`${AGENT}/${name}`] = Buffer.from([0xff, 0]);
+  for (const name of [".env.example", ".env.sample", ".env.template", "env", "key.txt"])
+    files[`${AGENT}/${name}`] = "placeholder\n";
+  const report = scan(fixtureDir(t, files));
+  assert.equal(report.accept, true);
+  assert.deepEqual(secretNameWarns(report).map((f) => f.path).sort(), names.map((n) => `${AGENT}/${n}`).sort());
+  assert.deepEqual(secretWarns(report), []);
+});
+
+test("binary contents are not text-scanned even when they contain a token", (t) => {
+  const dir = fixtureDir(t, {
+    [`${AGENT}/agent.ts`]: AGENT_TS,
+    [`${AGENT}/invalid.dat`]: Buffer.concat([Buffer.from(SECRET + " ".repeat(65536)), Buffer.from([0xff])]),
+    [`${AGENT}/nul.dat`]: `${SECRET}${" ".repeat(65536)}\0`,
+  });
+  const report = scan(dir);
+  assert.equal(report.accept, true);
+  assert.deepEqual(secretWarns(report), []);
+});
+
+test("a secret split across text read boundaries still WARNs once", (t) => {
+  const dir = fixtureDir(t, {
+    [`${AGENT}/agent.ts`]: AGENT_TS,
+    [`${AGENT}/notes.md`]: " ".repeat(65534) + SECRET + "\n" + SECRET,
+  });
+  const report = scan(dir);
+  assert.equal(report.accept, true);
+  assert.deepEqual(secretWarns(report).map((f) => f.path), [`${AGENT}/notes.md`]);
+});
+
+
+for (const format of ["directory", "zip"] as const) {
+  test(`bundled operator copies keep their body-scan exemption in a ${format}`, (t) => {
+    const body = `export const ID = "0x${"a".repeat(64)}";\n`;
+    const refs = {
+      "sdk/src/fixture.ts": body,
+      "example/agents/runtime/fixture.ts": body,
+      "example/agents/lib/fixture.md": body,
+    };
+    const repo = fixtureDir(t, refs);
+    const files = {
+      [`${AGENT}/agent.ts`]: AGENT_TS,
+      "sdk/src/fixture.ts": body,
+      "agents/runtime/fixture.ts": body,
+      "agents/lib/fixture.md": body,
+    };
+    const target = format === "directory" ? fixtureDir(t, files) : fixtureZip(t,
+      Object.entries(files).map(([name, body]) => ({ name, body })));
+    assert.deepEqual(scan(target, repo).findings, []);
+  });
+}
+
+test("forge artifact bytecode retains its INFO without a secret WARN", (t) => {
+  const report = scan(fixtureDir(t, {
+    [`${AGENT}/agent.ts`]: AGENT_TS,
+    "out/Fixture.sol/Fixture.json": JSON.stringify({ bytecode: { object: "0x" + "ab".repeat(1000) } }),
+  }));
+  assert.deepEqual(report.findings, [{ severity: "INFO", path: "out/Fixture.sol/Fixture.json",
+    message: "forge artifact, 1000 bytes of creation bytecode (deployment is permitted; issue #40)" }]);
+});
+
+test("node_modules bodies and binary extensions do not gain secret WARNs", (t) => {
+  const report = scan(fixtureDir(t, {
+    [`${AGENT}/agent.ts`]: AGENT_TS,
+    "node_modules/dep/index.js": SECRET,
+    "node_modules/dep/notes.md": SECRET,
+    [`${AGENT}/payload.bin`]: SECRET,
+  }));
+  assert.deepEqual(secretWarns(report), []);
+  assert.equal(report.blocks, 1);
+  assert.deepEqual(report.findings.filter((f) => f.severity === "WARN").map((f) => f.path), ["node_modules/"]);
+});
+
+test("specialized file paths retain their existing scan without secret WARNs", (t) => {
+  const report = scan(fixtureDir(t, {
+    [`${AGENT}/agent.ts`]: AGENT_TS,
+    [`${AGENT}/package.json`]: JSON.stringify({ description: SECRET }),
+    [`${AGENT}/package-lock.json`]: lock({}),
+    [`${AGENT}/requirements.txt`]: `# ${SECRET}\n`,
+    [`${AGENT}/Fixture.sol`]: `// ${SECRET}\n`,
+  }));
+  assert.deepEqual(secretWarns(report), []);
+  assert.deepEqual(blocks(report), []);
+});
+
+test("code retains the original secret WARN even with NUL or invalid UTF-8", (t) => {
+  const files = {
+    [`${AGENT}/agent.ts`]: Buffer.concat([Buffer.from(`// ${SECRET}\0`), Buffer.from([0xff])]),
+  };
+  assert.deepEqual(secretWarns(scan(fixtureDir(t, files))).map((f) => f.path), Object.keys(files));
+});
+
+test("vendored secret-material names still WARN, without scanning their bodies", (t) => {
+  const report = scan(fixtureDir(t, { "sdk/fixture.key": SECRET, [`${AGENT}/agent.ts`]: AGENT_TS }));
+  assert.deepEqual(secretNameWarns(report).map((f) => f.path), ["sdk/fixture.key"]);
+  assert.deepEqual(secretWarns(report), []);
 });
