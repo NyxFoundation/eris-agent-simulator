@@ -484,7 +484,9 @@ chain runs.
 
 Participants post `team` / `agent id` / `address` in the ASCON Discord channel ([step 1 of the
 participant section](#1-create-a-wallet-and-register-its-address)); each post becomes one entry, with
-`participant` set to the team, added with `register.sh`. The `/faucet` bot in
+`participant` set to the team, added with [`infra/devnet/register.sh`](../../infra/devnet/register.sh)
+(`ERIS_OPS_BOX=<user>@<box> infra/devnet/register.sh --participant <team> <id> <address>`; `--dry-run`
+checks without writing). The `/faucet` bot in
 [`infra/discord-faucet/`](../../infra/discord-faucet/README.md) is not deployed for this competition.
 Check the team against the registration form, and that it has no other live agent (rules §2.2). A post that carries anything that looks like a private key is a key
 that has to be discarded: tell them, and register nothing from it.
