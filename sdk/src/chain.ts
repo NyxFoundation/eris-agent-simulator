@@ -62,6 +62,12 @@ export function makeClients(
   const transport = http(rpcUrl, {
     timeout: 120_000,
     retryCount: 2,
+    // viem (>= 2.3x) tries eth_fillTransaction before every send whose gas or fees are left to it.
+    // The RPC gateway refuses that method with HTTP 403, which viem reads as a transport error: it
+    // retries after 150 ms and 300 ms and never learns the method is unsupported, so every send paid
+    // ~450 ms (measured by a participant: decision-to-send median ~90 ms -> ~520 ms). Excluding it
+    // here fails the attempt locally, and viem falls back to the individual calls at once.
+    methods: { exclude: ["eth_fillTransaction"] },
     batch: opts.batch ? true : undefined,
     fetchOptions: Object.keys(headers).length ? { headers } : undefined,
   });
