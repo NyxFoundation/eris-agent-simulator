@@ -424,8 +424,9 @@ stress:
 # prefunded dev accounts once started a run with $3.0bn against a fresh address's $34k, and their
 # scores were a report on one large ETH holding. The run records `initial_endowment` and warns above
 # a 2x spread, but a level field starts with fresh addresses.
-# `participant` is the rules §2.2 unit (a person or a team). A unit may enter two agents and is
-# scored on the higher; two entries with the same `participant` are that unit's two submissions.
+# `participant` is the rules §2.2 unit (a person or a team). The live week runs one agent per unit
+# (§2.2); in this period the operator may bind a second agent to a unit, and the practice standings
+# rank the unit on its better one.
 # Optional -- an entry without one is its own unit.
 # The resident field. A practice period whose standings are one flat line teaches nobody anything:
 # a participant needs to see that the number moves, in both directions, and to have something to be

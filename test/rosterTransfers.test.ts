@@ -275,7 +275,7 @@ test("a flag is charged to both ends when both chose it, and to the sender alone
     movements: [
       // Same unit, direct: both ends chose it.
       { route: "erc20", from: "team-x-a", to: "team-x-b", token: USDC, amountRaw: 5_000_000_000n, block: 10 },
-      // Same unit, routed: the route does not matter between two submissions of one unit.
+      // Same unit, routed: the route does not matter between two agents of one unit.
       { route: "lending", from: "team-x-b", to: "team-x-a", token: USDC, amountRaw: 7_000_000_000n, block: 11, via: "0xm", viaKind: "lendingMarket", viaCreator: "team-x-a" },
       // Strangers, routed: a trade. Reported, not flagged -- taking the other side of a venue a
       // participant built is a skill the environment rewards, and 1% of 20,000 is 200 USDC.
@@ -312,7 +312,7 @@ test("a flag is charged to both ends when both chose it, and to the sender alone
   assert.ok(sibling);
   assert.match(
     rosterTransferFlag(sibling, "team-x-a"),
-    /^value moved between registered addresses: sent 5000\.00 USDC to team-x-b in 1 ERC-20 transfer\(s\) -- same participant unit team-x: self-dealing between two submissions \(rules §8; for the operator to judge\)$/,
+    /^value moved between registered addresses: sent 5000\.00 USDC to team-x-b in 1 ERC-20 transfer\(s\) -- same participant unit team-x: self-dealing between two agents of one unit \(rules §8; for the operator to judge\)$/,
   );
   assert.match(
     rosterTransferFlag(sibling, "team-x-b"),

@@ -411,8 +411,9 @@ export interface ParticipantRow {
 }
 
 /**
- * The standings folded to participant units: a unit that entered two submissions is ranked on the
- * higher of the two (rules §2.2, "両者を平均することはありません"). Agents with no participant
+ * The standings folded to participant units: a unit with more than one agent is ranked on its
+ * better one. Only the practice period has such units -- the live week runs one agent per unit
+ * (rules §2.2), so there the fold changes nothing. Agents with no participant
  * recorded are units of their own. Ties keep the agents' order, which is already the §4.6 order.
  */
 export function participantStandings(standings: Standings): ParticipantRow[] {

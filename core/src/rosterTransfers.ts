@@ -1,9 +1,11 @@
 // Value moved between registered addresses (issue #208; rules §8).
 //
-// Rules §8 forbids a participant unit from moving assets between its own two submissions, and the
-// scoring makes the incentive concrete: P is per agent, a unit's final score is the higher of its
-// two (§2.2), and the population's σ is shared -- so a sacrificial agent that hands its endowment to
-// its sibling lifts the sibling's P and compresses everyone else's T at once. Nothing in the trade
+// Rules §8 forbids moving assets on purpose between agents of one participant unit or of colluding
+// units, and the scoring makes the incentive concrete: P is per agent and the population's σ is
+// shared -- so a sacrificial agent that hands its endowment to another lifts that agent's P and
+// compresses everyone else's T at once. The live week runs one agent per unit (§2.2), so there the
+// case is collusion between units; two agents of one unit exist only in the practice period, where
+// the operator binds a second one. Nothing in the trade
 // path can refuse it: `rawTx` carries any `to`, any `value`, any calldata, and the environment is
 // not supposed to decode a participant's transactions before they land.
 //
@@ -23,7 +25,7 @@
 // participant-created venue is the competition working (the hunter draining the leaky vault is the
 // Hacker skill, issue #40), and a large direct transfer between strangers is at worst strange; so a
 // cross-unit movement is flagged only above a threshold (`run.rosterTransferFlagBps` of the smaller
-// endowment of the pair). Between two submissions of the *same* unit any amount is flagged: there
+// endowment of the pair). Between two agents of the *same* unit any amount is flagged: there
 // is no legitimate reason for one to pay the other. Everything found, flagged or not, is written to
 // summary.json and events.jsonl; the flagged ones travel into matrix.json as `flags` beside the
 // score (scenarioScores.ts), where the operator judges them. Nothing here changes P.
@@ -121,7 +123,7 @@ export type RosterTransferReason =
   | "unpriced";
 
 /**
- * Who a flagged movement is charged to. "both" where each end chose it -- two submissions of one
+ * Who a flagged movement is charged to. "both" where each end chose it -- two agents of one
  * unit paying each other, or a transfer over the threshold, which takes a real position to make.
  * "sender" where the far end had no say: an ERC-20 transfer cannot be refused, so a flag on the
  * receiver would be a line anyone could write into anyone's record.
@@ -485,7 +487,7 @@ export function summarizeRosterTransfers(opts: {
       // both ends of a swap through somebody's pool, a supply and a borrow in the same lending
       // market. Those are what the environment rewards -- taking the other side of a venue a
       // participant built is named as a skill, and 1% of the endowment is ~760 USDC, which the
-      // reference agents cross in ordinary play. Between two submissions of one unit the route
+      // reference agents cross in ordinary play. Between two agents of one unit the route
       // does not matter (above); between strangers a routed movement is reported and not flagged.
       const direct = m.route === "eth" || m.route === "erc20";
       if (direct && priced.valueUsdc >= threshold) {
@@ -580,7 +582,7 @@ function thresholdUsdc(
 }
 
 // The flagged transfers each agent is a side of, by agent id. Both sides carry the same record:
-// the sibling that received is as much a party to §8 as the one that sent.
+// the agent that received is as much a party to §8 as the one that sent.
 export function flaggedRosterTransfersByAgent(
   transfers: readonly RosterTransfer[],
 ): Record<string, RosterTransfer[]> {
@@ -627,7 +629,7 @@ export function rosterTransferFlag(t: RosterTransfer, agentId: string): string {
   })();
   const why =
     t.reason === "same-participant"
-      ? `same participant unit ${t.participant ?? ""}: self-dealing between two submissions`
+      ? `same participant unit ${t.participant ?? ""}: self-dealing between two agents of one unit`
       : t.reason === "unpriced"
         ? "a direct transfer the scorer cannot price"
         : `over the ${t.thresholdUsdc === undefined ? "flag" : `${t.thresholdUsdc.toFixed(2)} USDC flag`} threshold`;

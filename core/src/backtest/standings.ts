@@ -35,9 +35,9 @@ export type AgentScore = {
   finalValueUsdc?: number;
   // §4.3: placed and valued, kept out of the population.
   baseline?: boolean;
-  // Rules §2.2: the participant unit this agent is one submission of. Two agents sharing it are the
-  // same unit, scored on the higher of the two. Carried, not used: the arithmetic below ranks
-  // agents, and collapsing a unit's two entries is the reader's step (the dashboard's), so it stays
+  // Rules §2.2: the participant unit this agent belongs to. The live week runs one agent per unit;
+  // two agents share one only when the practice period binds a second. Carried, not used: the
+  // arithmetic below ranks agents, and collapsing a unit's entries is the reader's step (the dashboard's), so it stays
   // visible in matrix.json for anyone re-deriving the ranking (ADR 0017 §4).
   participant?: string;
   // Facts a reader should see next to the number: a fee-cap violation, a process that exited early,

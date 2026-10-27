@@ -146,7 +146,7 @@ export type SimConfig = {
   maxAgentBlockGas: bigint;
   // Issue #208 / rules §8: value moved between two registered addresses of *different* participant
   // units is flagged in the post-run check only when it exceeds this share (bps) of the pair's
-  // smaller endowment; between two submissions of the same unit any amount is flagged. 0 flags
+  // smaller endowment; between two agents of the same unit any amount is flagged. 0 flags
   // every priced cross-unit movement. Detection is post-run over blocks.csv and the run window's
   // Transfer / lending logs (core/src/rosterTransfers.ts); nothing changes the score.
   rosterTransferFlagBps: number;
