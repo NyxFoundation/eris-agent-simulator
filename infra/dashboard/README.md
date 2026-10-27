@@ -122,7 +122,7 @@ every push, reviewed or not.
 
 ## Where the build runs
 
-By default (`ERIS_SYNC_BUILD=container`) a tick builds in a `node:24-bookworm-slim` container
+By default (`ERIS_SYNC_BUILD=container`) a tick builds in a `node:24.22.1-bookworm-slim` container
 (`ERIS_SYNC_BUILD_IMAGE` to change it; the same image `ascon-dashboard` serves from) that sees:
 
 - a clean `git archive` of the pinned commit — **tracked files only**, so no `.env.local`, no

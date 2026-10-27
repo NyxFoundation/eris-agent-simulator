@@ -9,7 +9,7 @@
 # It needs the docker CLI because run-agent.sh execs `docker run`, and the socket to reach the
 # daemon. The repo is bind-mounted at its HOST path (not /app): run-agent.sh passes paths straight
 # to `docker run -v`, and those are resolved by the daemon on the host, not inside this container.
-FROM node:24-bookworm-slim
+FROM node:24.22.1-bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl gnupg git \
  && install -m 0755 -d /etc/apt/keyrings \

@@ -14,10 +14,7 @@ cd "$REPO"
 build_base() {
   node --import tsx scripts/checkAgentOverlay.ts
   echo "refreshing runtime base $BASE (Docker reuses unchanged layers)"
-  # --pull: node:24-bookworm-slim is a floating tag, and without it Docker keeps building on whatever
-  # copy the host cached first, so a Node security release never reaches the image that runs
-  # participant code. The team build below must not pull: its FROM is this local tag.
-  docker build --pull -f infra/docker-agent/Dockerfile.base -t "$BASE" .
+  docker build -f infra/docker-agent/Dockerfile.base -t "$BASE" .
   docker image inspect "$BASE" --format 'runtime base: {{.Id}} (built {{.Created}})'
 }
 

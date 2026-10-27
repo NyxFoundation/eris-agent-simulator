@@ -6,7 +6,12 @@
 # build CONTEXT -- COPY layers are additive, so excluding them from the final filesystem alone would
 # still leave them in an earlier layer, extractable via `docker save`).
 FROM python:3.11.16-slim-bookworm AS python
-FROM node:24-bookworm-slim
+# Pinned to the patch release, like the python stage above. The floating `node:24-bookworm-slim` was
+# never re-pulled, so a host built on whatever copy it cached first and the 24.22.1 security release
+# (2026-10-20) never reached this image; re-pulling it on every build would instead let two builds of
+# one week differ. A Node bump is a change to every `node:24.x.y-bookworm-slim` under infra/
+# (`git grep -n "node:24\." -- infra`).
+FROM node:24.22.1-bookworm-slim
 COPY --from=python /usr/local /usr/local
 # Shared libraries needed by CPython's standard library on the same Debian release.
 RUN apt-get update && apt-get install -y --no-install-recommends \

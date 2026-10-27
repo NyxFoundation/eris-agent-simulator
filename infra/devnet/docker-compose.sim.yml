@@ -27,7 +27,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.sim
-      pull: true           # re-resolve node:24-bookworm-slim on every --build (Node security releases)
     container_name: ascon-sim
     restart: "no"          # a competition run ending is an event, not something to paper over
     networks: [chain]
