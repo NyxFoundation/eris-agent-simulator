@@ -53,8 +53,8 @@ const VENUE_READ_RETRY_MS = 100;
 ///
 /// One venue's failed read used to take the whole observation with it, so a strategy that never
 /// trades Aave stopped deciding whenever Aave's read reverted (practice devnet, 2026-10-24 onwards:
-/// `getUserReserveData(USDC, self)` reverting with an arithmetic underflow, 5-30 blocks an hour; the
-/// cause on the devnet's anvil is not established). A failed read is retried once; if it fails again,
+/// `getUserReserveData(USDC, self)` reverting with an arithmetic underflow, 5-30 blocks an hour: anvil's
+/// mid-mine read race, pinnedClient.ts). A failed read is retried once; if it fails again,
 /// the venue's last good section is served, marked `stale` with the block it was read at and the
 /// error. With no good read yet there is nothing honest to serve, and the failure still takes the
 /// block.
