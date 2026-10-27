@@ -281,7 +281,7 @@ stop() {
 }
 
 if [ "${ERIS_AGENT_BINDMOUNT:-0}" = "1" ]; then
-  DEFAULT_BIND_IMAGE=node:24-bookworm-slim
+  DEFAULT_BIND_IMAGE=node:24.22.1-bookworm-slim
   if [ -f "${ERIS_AGENT_DIR:-}/strategy.py" ]; then
     DEFAULT_BIND_IMAGE="${ERIS_BASE_IMAGE:-eris-agent-base:local}"
   fi

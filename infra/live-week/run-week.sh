@@ -145,11 +145,11 @@ docker run -d --name "$GATEWAY_CT" --network "$CHAIN_NET" "${LOGOPTS[@]}" \
   -v "$REPO/infra/rpc-gateway:/app:ro" -v "$REPO/runs/rpc-gateway-$MODE:/var/log/ascon" \
   -e PORT=8546 -e UPSTREAM="http://$DOCKER0:$ANVIL_PORT" -e ENV_NAME=live -e RPC_MAX_PRIORITY_FEE_WEI=0 \
   -e LOG_FILE=/var/log/ascon/rpc-gateway-live.log \
-  node:24-bookworm-slim node /app/gateway.mjs >/dev/null
+  node:24.22.1-bookworm-slim node /app/gateway.mjs >/dev/null
 ok "gateway $GATEWAY_CT -> http://$DOCKER0:$ANVIL_PORT (host 127.0.0.1:$GATEWAY_HOST_PORT)"
 docker run -d --name "$PROXY_CT" --network "$CHAIN_NET" "${LOGOPTS[@]}" -p "127.0.0.1:$PROXY_PORT:8790" \
   -v "$REPO:/app" -v "$SECRETS:/secrets:ro" -w /app -e ERIS_INFERENCE_SECRET "${STATS_ENV[@]}" \
-  node:24-bookworm-slim npx tsx core/src/cli/inferenceProxy.ts \
+  node:24.22.1-bookworm-slim npx tsx core/src/cli/inferenceProxy.ts \
   --models /secrets/models.yaml --keys /secrets/inference-keys.yaml \
   --listen 0.0.0.0:8790 --record "/app/runs/inference-$MODE" >/dev/null
 for _ in $(seq 1 30); do curl -sf "http://127.0.0.1:$PROXY_PORT/healthz" >/dev/null && break; sleep 2; done

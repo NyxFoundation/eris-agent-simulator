@@ -270,7 +270,7 @@ services:
 
   rpc-gateway-live:
     logging: *logging
-    image: node:24-bookworm-slim
+    image: node:24.22.1-bookworm-slim
     container_name: ascon-rpc-gateway-live
     restart: unless-stopped
     networks: [ascon-chain]
@@ -308,7 +308,7 @@ services:
 
   rpc-gateway-test:
     logging: *logging
-    image: node:24-bookworm-slim
+    image: node:24.22.1-bookworm-slim
     container_name: ascon-rpc-gateway-test
     restart: unless-stopped
     network_mode: host
@@ -327,7 +327,7 @@ services:
 
   dashboard:
     logging: *logging
-    image: node:24-bookworm-slim
+    image: node:24.22.1-bookworm-slim
     container_name: ascon-dashboard
     restart: unless-stopped
     working_dir: /eris

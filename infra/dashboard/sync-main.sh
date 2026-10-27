@@ -218,7 +218,7 @@ build_on_host() {
 # README.md "Explorer links" -- the one untracked input the build has). No network. The host user's
 # uid, so what comes out is owned like everything else in the checkout.
 build_in_container() {
-  local head="$1" image="${ERIS_SYNC_BUILD_IMAGE:-node:24-bookworm-slim}" nm
+  local head="$1" image="${ERIS_SYNC_BUILD_IMAGE:-node:24.22.1-bookworm-slim}" nm
   local -a mounts cmd
   command -v docker >/dev/null 2>&1 ||
     die "docker is not on PATH, and ERIS_SYNC_BUILD is not 'host'. Install docker, or opt into the in-place build with ERIS_SYNC_BUILD=host (it runs the build with this user's files in reach)."
