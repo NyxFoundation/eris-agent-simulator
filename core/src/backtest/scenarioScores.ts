@@ -137,8 +137,8 @@ export function scoresFromSummary(
       flags.push(
         `${agent.unloggedTxCount} on-chain tx(s) absent from the agent's submitted log`,
       );
-    // One line per flagged movement (issue #208). Both ends where both chose it: two submissions of
-    // one unit paying each other, or a transfer over the threshold, which takes a real position to
+    // One line per flagged movement (issue #208). Both ends where both chose it: two agents of one
+    // unit paying each other, or a transfer over the threshold, which takes a real position to
     // make. The sender alone where the far end could not have refused -- an ERC-20 transfer needs no
     // consent, and the scorer prices neither an LST share in a wallet nor a launch token, so one wei
     // of either would otherwise let anyone write a §8 line into anyone's record.
@@ -193,8 +193,9 @@ export function scoresFromSummary(
       netPnlUsdc: agent.netPnlUsdc,
       alphaUsdc: agent.alphaUsdc,
       baseline: agent.baseline ?? false,
-      // Rules §2.2: kept beside the score so a unit's two submissions can be collapsed to the higher
-      // one by whoever reads the matrix (the standings rank agents; the unit is the reader's step).
+      // Rules §2.2: kept beside the score so a unit with more than one agent (the practice period;
+      // the live week runs one per unit) can be collapsed to its better one by whoever reads the
+      // matrix (the standings rank agents; the unit is the reader's step).
       ...(agent.participant !== undefined
         ? { participant: agent.participant }
         : {}),

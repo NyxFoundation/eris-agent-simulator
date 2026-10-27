@@ -431,7 +431,8 @@ of them.**
   moved. With no registry in the official regimes other than `launch`, the hunting side scans the chain
   itself. The environment's own contracts, by contrast, are measured at startup to confirm that
   writes only their owner may make are closed to everyone else. Moving
-  assets between your own two submissions is self-dealing and prohibited (rules §8)
+  assets on purpose between addresses of your own unit, or with another team, is self-dealing and
+  prohibited (rules §8)
 - **Liquidate and redeem other people's positions.** Aave's `liquidationCall` through `rawTx`
   (`liquidator`), Liquity's `liquityLiquidate` and Stability Pool underwriting (`sp-underwriter`),
   eUSD redemption (`liquityRedeem`; `redemption-arb`)

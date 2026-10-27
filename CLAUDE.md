@@ -392,7 +392,8 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - **ロスターは登録リストであって起動リストではない**。`external: true` + `address`（参加者が鍵を持つ。**運営が
   作った鍵は運営が持っている鍵**なのでこちらを推奨）/ `wallet`（運営が発行して渡す）。`command`/`args`/`dir`/`env`
   は**黙殺せず拒否**する（黙って落とすと「運営が動かしている」ように読めるロスターになる）。
-  `participant`（任意）は規約 §2.2 の**参加単位**で、同じ値の 2 体はその単位の 2 提出（高い方が最終スコア）。
+  `participant`（任意）は規約 §2.2 の**参加単位**。**本戦は 1 参加単位 1 体**（規約 §2.2。2026-09-26 に「2 提出のうち高い方」を廃止）で、
+  同じ値の 2 体が並ぶのは練習期間に運営が 2 体目を紐付けた場合だけ（dashboard の練習順位は単位の最良で畳む）。
   `agents_registered` / manifest / summary.json / matrix.json の agent レコードに**そのまま載る**だけで、
   採点の算術は agent 単位のまま（単位への畳み込みは読む側 = dashboard の仕事）
 - **再起動は期間を再開する**（`core/src/realtime/periodResume.ts`）。coordinator は毎パスの終わりに

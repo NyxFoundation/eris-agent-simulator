@@ -18,7 +18,8 @@
 #     start of) and is scored from the next day's segment; its transactions are recorded from the
 #     block it was registered
 #
-# `participant` is the rules §2.2 unit: two entries sharing it are one unit's two submissions.
+# `participant` is the rules §2.2 unit: two entries sharing it are two agents of one unit (practice
+# period only -- the live week runs one agent per unit).
 
 - id: alice
   address: "0x1111111111111111111111111111111111111111"
