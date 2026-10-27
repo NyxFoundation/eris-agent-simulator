@@ -840,8 +840,12 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
       // is how the agent's client learns it is incomplete. Cut by ending the socket, not destroying
       // it: a destroy drops what was written and not yet sent, and the record says the agent got it.
       if (error === undefined) res.end();
-      else if (res.socket && !res.socket.destroyed) res.socket.end();
-      else res.destroy();
+      else if (res.socket && !res.socket.destroyed) {
+        // HTTP auto-corking can hold chunks above the socket; socket.end() only flushes the
+        // socket's own buffer. Flush the response first without sending a successful terminator.
+        res.uncork();
+        res.socket.end();
+      } else res.destroy();
     }
     record({
       ts: new Date(started).toISOString(),

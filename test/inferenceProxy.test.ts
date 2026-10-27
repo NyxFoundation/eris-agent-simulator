@@ -6,7 +6,9 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AddressInfo } from "node:net";
+import { IncomingMessage, ServerResponse } from "node:http";
+import { Duplex } from "node:stream";
+import type { AddressInfo, Socket } from "node:net";
 import {
   agentToken,
   createInferenceProxy,
@@ -500,6 +502,56 @@ test("an agent that reads slowly is not buffered for: the proxy stops pulling fr
       assert.equal(received, TOTAL * CHUNK, "and all of it arrives once the agent reads");
     },
   );
+});
+
+test("a stream past maxStreamBytes flushes HTTP-buffered chunks before closing the socket", { timeout: 2_000 }, async () => {
+  // Exercise the real HTTP response buffering without a listening socket. All upstream chunks
+  // are ready together, so the limit is reached before Node's next-tick automatic uncork.
+  const chunk = `data: ${"x".repeat(52)}\n\n`;
+  const wire: Buffer[] = [];
+  const errors: Error[] = [];
+  const socket = new Duplex({
+    read() {},
+    write(data, _encoding, callback) {
+      wire.push(Buffer.from(data));
+      callback();
+    },
+  });
+  socket.on("error", (error) => errors.push(error));
+  const req = new IncomingMessage(socket as Socket);
+  req.method = "POST";
+  req.httpVersionMajor = 1;
+  req.httpVersionMinor = 1;
+  req.complete = true;
+  req.url = "/v1/chat/completions";
+  const res = new ServerResponse(req);
+  res.assignSocket(socket as Socket);
+  const server = createInferenceProxy({
+    config: { ...unlimited, maxStreamBytes: 100 },
+    env: {},
+    fetchImpl: (async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < 3; i++) controller.enqueue(new TextEncoder().encode(chunk));
+        controller.close();
+      },
+    }), { headers: { "content-type": "text/event-stream" } })) as typeof fetch,
+  });
+  const finished = new Promise<void>((resolve) => socket.on("finish", resolve));
+  try {
+    server.emit("request", req, res);
+    req.push(Buffer.from(JSON.stringify({ model: "gpt-x", stream: true, messages: [] })));
+    req.push(null);
+    await finished;
+    // Let the automatic uncork run too: ending the socket first causes write-after-end here.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const body = Buffer.concat(wire).toString().split("\r\n\r\n")[1];
+    assert.equal(body, `3c\r\n${chunk}\r\n`, "send the accepted chunk, without a successful HTTP terminator");
+    assert.deepEqual(errors, []);
+  } finally {
+    res.destroy();
+    socket.destroy();
+    server.close();
+  }
 });
 
 test("a stream past maxStreamBytes is cut, and recorded and replayed with the same cut", { timeout: 10_000 }, async () => {
