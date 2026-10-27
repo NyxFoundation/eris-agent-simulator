@@ -22,9 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The Node the live week runs: the agent / sim / gateway images (`node:24.22.1-bookworm-slim`
+      # under infra/) and the box's host (infra/live-week/README.md). Bump them together.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24.22.1
           cache: npm
 
       - run: npm ci
