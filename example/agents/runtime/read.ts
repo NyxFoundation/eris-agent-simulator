@@ -45,19 +45,19 @@ export type LastGoodSections = Map<
   { block: number; section: object }
 >;
 
-// How long a failed venue read waits before its one retry. anvil's mid-mine race (pinnedClient.ts)
-// lasts as long as the mine (median 5.5 ms on the practice devnet's miner); in the measurement every
-// read it broke came back right on a retry 100 ms later (15 of 15).
+// How long a failed venue read waits before its one retry. Long enough for a block being mined to
+// be mined (median 5.5 ms on the practice devnet's miner), short against the 2-second block.
 const VENUE_READ_RETRY_MS = 100;
 
 /// The adapter, with an observe() that never costs the block once the venue has been read once.
 ///
 /// One venue's failed read used to take the whole observation with it, so a strategy that never
 /// trades Aave stopped deciding whenever Aave's read reverted (practice devnet, 2026-10-24 onwards:
-/// Aave's interest math underflows when anvil's mid-mine race pairs a reserve updated in the new
-/// block with the previous block's timestamp). A failed read is retried once; if it fails again, the
-/// venue's last good section is served, marked `stale` with the block it was read at and the error.
-/// With no good read yet there is nothing honest to serve, and the failure still takes the block.
+/// `getUserReserveData(USDC, self)` reverting with an arithmetic underflow, 5-30 blocks an hour; the
+/// cause on the devnet's anvil is not established). A failed read is retried once; if it fails again,
+/// the venue's last good section is served, marked `stale` with the block it was read at and the
+/// error. With no good read yet there is nothing honest to serve, and the failure still takes the
+/// block.
 export function servingLastGood(
   adapter: ProtocolAdapter,
   bn: number,

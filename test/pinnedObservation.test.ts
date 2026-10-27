@@ -1,10 +1,9 @@
 // One block's observation is read at that block, and one venue's failed read does not cost the block.
 //
-// Practice devnet, 2026-10-24 onwards: anvil can answer a read of the head block mid-mine with the new
-// block's state under the previous block's header, and Aave's interest math then underflows on any
-// reserve the new block touched. The revert took the whole observation with it, so decide was skipped
-// even for strategies that never trade Aave. The read is pinned to the block and retried once (by then
-// a historical read); failing that, the venue's last good section is served, marked stale.
+// Practice devnet, 2026-10-24 onwards: Aave's getUserReserveData(USDC, self) intermittently reverted
+// with an arithmetic underflow, and the revert took the whole observation with it, so decide was
+// skipped even for strategies that never trade Aave. The read is pinned to the block and retried
+// once; failing that, the venue's last good section is served, marked stale.
 process.env.ERIS_LOCAL_DEPLOY = "1";
 
 import test from "node:test";
