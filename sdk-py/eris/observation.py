@@ -109,6 +109,15 @@ class Pool(BaseModel):
     liquidity: str | None = None
 
 
+class StaleMark(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+        populate_by_name=True,
+    )
+    block: str
+    error: str
+
+
 class LpPositionObservation(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -169,6 +178,7 @@ class AmmObservation(BaseModel):
         extra='forbid',
         populate_by_name=True,
     )
+    stale: StaleMark | None = None
     price_usdc_per_weth: float = Field(..., alias='priceUsdcPerWeth')
     reserves: Reserves | None = None
     markets: dict[str, Markets] | None = None
@@ -184,6 +194,7 @@ class AaveObservation(BaseModel):
         extra='forbid',
         populate_by_name=True,
     )
+    stale: StaleMark | None = None
     health_factor: str = Field(..., alias='healthFactor')
     total_collateral_base: str = Field(..., alias='totalCollateralBase')
     total_debt_base: str = Field(..., alias='totalDebtBase')
@@ -298,6 +309,7 @@ class UniswapObservation(BaseModel):
         extra='forbid',
         populate_by_name=True,
     )
+    stale: StaleMark | None = None
     pool: Pool
     positions: list[LpPositionObservation]
     markets: dict[str, UniswapMarketObservation] | None = None
@@ -323,6 +335,7 @@ class LstObservation(BaseModel):
         extra='forbid',
         populate_by_name=True,
     )
+    stale: StaleMark | None = None
     redemption_rate_weth: float = Field(..., alias='redemptionRateWeth')
     market_price_weth: float = Field(..., alias='marketPriceWeth')
     market_sell_price_weth: float | None = Field(None, alias='marketSellPriceWeth')
@@ -359,6 +372,7 @@ class LiquityObservation(BaseModel):
         extra='forbid',
         populate_by_name=True,
     )
+    stale: StaleMark | None = None
     price_usd: float = Field(..., alias='priceUsd')
     tcr: float
     recovery_mode: bool = Field(..., alias='recoveryMode')
@@ -401,6 +415,7 @@ class LendingObservation(BaseModel):
         extra='forbid',
         populate_by_name=True,
     )
+    stale: StaleMark | None = None
     singleton: str
     markets: list[LendingPositionObservation]
     dropped: float
@@ -487,6 +502,7 @@ class GmxObservation(BaseModel):
         extra='forbid',
         populate_by_name=True,
     )
+    stale: StaleMark | None = None
     markets: dict[str, GmxMarketObservation] | None = None
     market_price_usd: float = Field(..., alias='marketPriceUsd')
     position: GmxPositionObservation | None = None
