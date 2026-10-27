@@ -139,6 +139,13 @@ Things to watch when reading:
   are rejected by validation)
 - The shape of `protocols.<venue>` differs per venue. **It's safest not to read it directly, but to normalize it with a
   shared helper** (Step 4). Reading `obs.pool` directly has repeatedly caused a TypeError → noop for every round
+- **A venue section can be a block old, and then it says so.** Every read of one observation is taken at that
+  observation's `blockNumber`. If a venue's read fails, the reference runtime retries it once; if the retry also
+  fails, it still calls your strategy and serves that venue's last good section with `stale: { block, error }` set
+  (`block` is the block it was read at). Before
+  this, one venue's failed read skipped the whole block: a strategy that never touches Aave stopped deciding whenever
+  Aave's read reverted. If you act on a venue, check `protocols.<venue>.stale` first. A venue that has never been
+  read successfully still skips the block, because there is no earlier section to serve
 - **`protocols.uniswap.pool.liquidity` is in-range depth, and it moves during a run.** The `crash` regime withdraws a
   large fraction of it while the price is gapping (issue #52), so a size that was fine in `calm` can cost far more
   slippage exactly when the opportunity looks biggest. Sizing against depth read at block 0 is the mistake this field

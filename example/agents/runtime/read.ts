@@ -27,6 +27,7 @@ import type {
   ProtocolId,
 } from "@eris/sdk/types.js";
 import { blocksRemainingUnderBlockBudget } from "./blockBudget.js";
+import { pinnedClient } from "./pinnedClient.js";
 import {
   describeSelfHostedBudget,
   selfHostedBlocksRemaining,
@@ -38,6 +39,64 @@ export type ChainSnapshot = {
   stateById: Map<ProtocolId, unknown>;
   fairPrice: number;
 };
+
+export type LastGoodSections = Map<
+  ProtocolId,
+  { block: number; section: object }
+>;
+
+// How long a failed venue read waits before its one retry. Long enough for a block being mined to
+// be mined (median 5.5 ms on the practice devnet's miner), short against the 2-second block.
+const VENUE_READ_RETRY_MS = 100;
+
+/// The adapter, with an observe() that never costs the block once the venue has been read once.
+///
+/// One venue's failed read used to take the whole observation with it, so a strategy that never
+/// trades Aave stopped deciding whenever Aave's read reverted (practice devnet, 2026-10-24 onwards:
+/// `getUserReserveData(USDC, self)` reverting with an arithmetic underflow, 5-30 blocks an hour: anvil's
+/// mid-mine read race, pinnedClient.ts). A failed read is retried once; if it fails again,
+/// the venue's last good section is served, marked `stale` with the block it was read at and the
+/// error. With no good read yet there is nothing honest to serve, and the failure still takes the
+/// block.
+export function servingLastGood(
+  adapter: ProtocolAdapter,
+  bn: number,
+  lastGood: LastGoodSections,
+  warn: (line: string) => void = (line) => process.stderr.write(line),
+  retryDelayMs = VENUE_READ_RETRY_MS,
+): ProtocolAdapter {
+  const observe: ProtocolAdapter["observe"] = async (...args) => {
+    let section: unknown;
+    try {
+      section = await adapter.observe(...args).catch(async () => {
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        return adapter.observe(...args);
+      });
+    } catch (error) {
+      const last = lastGood.get(adapter.id);
+      if (!last) throw error;
+      const message = (
+        error instanceof Error ? error.message : String(error)
+      ).split("\n")[0];
+      warn(
+        `[read] block ${bn}: ${adapter.id} read failed twice, serving block ${last.block}'s section: ${message}\n`,
+      );
+      return {
+        ...structuredClone(last.section),
+        stale: { block: String(last.block), error: message },
+      };
+    }
+    // Copied both ways: the observation goes to the strategy, which may mutate what it is given.
+    if (section && typeof section === "object")
+      lastGood.set(adapter.id, {
+        block: bn,
+        section: structuredClone(section),
+      });
+    else lastGood.delete(adapter.id);
+    return section;
+  };
+  return Object.assign(Object.create(adapter) as ProtocolAdapter, { observe });
+}
 
 export class Reader {
   private readonly ctx: SimContext;
@@ -51,6 +110,9 @@ export class Reader {
   private readonly runId: string;
   private readonly extraBaseSymbols: string[];
   private readonly history: AgentObservation["history"] = [];
+  // Each venue's last good observe() section and the block it was read at, served (marked stale)
+  // when a later block's read of that venue fails.
+  private readonly lastGood: LastGoodSections = new Map();
   // The first block this agent saw: the fallback origin for how much of the run is left. The
   // environment cannot pass the run's start block in env (agent processes are spawned before
   // interval mining begins, so it does not exist yet); it declares it in the run directory once it
@@ -135,7 +197,9 @@ export class Reader {
 
   // Reconstruct the observation from this block's chain snapshot.
   async snapshot(bn: number): Promise<ChainSnapshot> {
-    const { publicClient } = this.ctx;
+    // Every read of this block's observation is read at this block, not at `latest` (pinnedClient.ts),
+    // so a read that straddles the next block, or is retried after it, still answers for this one.
+    const publicClient = pinnedClient(this.ctx.publicClient, bn);
     // Parallelize independent reads (2-second block hot path; only keep the fairPrice -> readState dependency)
     const [fairPrice, balances] = await Promise.all([
       readFairPrice(publicClient, this.priceFeed),
@@ -157,12 +221,13 @@ export class Reader {
       });
     }
     this.ctx.fairPrices = fairPrices;
+    const ctx: SimContext = { ...this.ctx, publicClient };
     // Issue #40: the registry read is several round trips (the entry list, every entry's current
     // codehash, the oracle owners, the block's transfers) and the block is two seconds long, so it
     // is issued alongside the venue reads rather than after them.
     const registryPromise = this.registryWatcher?.observe(publicClient, bn);
     const states = await Promise.all(
-      this.adapters.map((adapter) => adapter.readState(this.ctx, fairPrice)),
+      this.adapters.map((adapter) => adapter.readState(ctx, fairPrice)),
     );
     const stateById = new Map<ProtocolId, unknown>(
       this.adapters.map((adapter, i) => [adapter.id, states[i]]),
@@ -178,8 +243,10 @@ export class Reader {
       this.history.splice(0, this.history.length - 20);
     const registry = await registryPromise;
     const observation = await observationFor(
-      this.ctx,
-      this.adapters,
+      ctx,
+      this.adapters.map((adapter) =>
+        servingLastGood(adapter, bn, this.lastGood),
+      ),
       stateById,
       this.runId,
       bn,

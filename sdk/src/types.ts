@@ -490,7 +490,15 @@ export type UniswapMarketObservation = {
   liquidity?: string;
 };
 
+// A venue section served from an earlier block because this block's read of the venue failed. The
+// section is then the last good read, taken at `block`, not this block's state (the same rule as
+// `RegistryObservation.error`). The reference runtime serves it rather than dropping the block, so
+// one venue's failed read does not stop the decisions of a strategy that never trades there.
+export type StaleMark = { block: string; error: string };
+
 export type UniswapObservation = {
+  // Present only when this block's read of the venue failed (StaleMark).
+  stale?: StaleMark;
   pool: {
     pair: "WETH/USDC";
     fee: number;
@@ -520,6 +528,8 @@ export type TwoSidedQuoteFields = {
 };
 
 export type AmmObservation = TwoSidedQuoteFields & {
+  // Present only when this block's read of the venue failed (StaleMark).
+  stale?: StaleMark;
   priceUsdcPerWeth: number;
   reserves?: { weth: string; usdc: string };
   // ADR 0013: non-WETH markets (priceUsdcPerWeth is that base/USD).
@@ -573,11 +583,15 @@ export type GmxMarketObservation = {
 };
 
 export type GmxObservation = GmxMarketObservation & {
+  // Present only when this block's read of the venue failed (StaleMark).
+  stale?: StaleMark;
   // ADR 0013: non-WETH index markets (BTC/USD etc.).
   markets?: Record<string, GmxMarketObservation>;
 };
 
 export type AaveObservation = {
+  // Present only when this block's read of the venue failed (StaleMark).
+  stale?: StaleMark;
   healthFactor: string;
   totalCollateralBase: string;
   totalDebtBase: string;
@@ -604,6 +618,8 @@ export type LstWithdrawalObservation = {
 // discountBps is how far the second sits below the first -- positive means the market is cheap, so
 // buying and queueing a redemption earns the discount in exchange for waiting.
 export type LstObservation = {
+  // Present only when this block's read of the venue failed (StaleMark).
+  stale?: StaleMark;
   // WETH per 1e18 LST, from the vault (`stEthPerToken`).
   redemptionRateWeth: number;
   // Executable mid at probe size = sqrt(sell x buy), which cancels the pool's symmetric fee.
@@ -701,6 +717,8 @@ export type LiquityTroveObservation = {
 //     effectively only rise: the first large redemption prices the ones after it)
 //   - the market price of eUSD against the $1 the protocol will always redeem it for
 export type LiquityObservation = {
+  // Present only when this block's read of the venue failed (StaleMark).
+  stale?: StaleMark;
   // The collateral price Liquity itself marks against, from the environment's PriceFeed via the
   // oracle adapter. Equal to the run's fair price, one block stale like every other oracle here.
   priceUsd: number;
@@ -893,6 +911,8 @@ export type LendingPositionObservation = {
 };
 
 export type LendingObservation = {
+  // Present only when this block's read of the venue failed (StaleMark).
+  stale?: StaleMark;
   singleton: string;
   markets: LendingPositionObservation[];
   // Markets that exist and are not in `markets`. `createMarket` is permissionless, so the count is

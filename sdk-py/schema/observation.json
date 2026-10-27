@@ -320,6 +320,9 @@
     "UniswapObservation": {
       "type": "object",
       "properties": {
+        "stale": {
+          "$ref": "#/definitions/StaleMark"
+        },
         "pool": {
           "type": "object",
           "properties": {
@@ -368,6 +371,22 @@
       "required": [
         "pool",
         "positions"
+      ],
+      "additionalProperties": false
+    },
+    "StaleMark": {
+      "type": "object",
+      "properties": {
+        "block": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "block",
+        "error"
       ],
       "additionalProperties": false
     },
@@ -461,6 +480,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "stale": {
+          "$ref": "#/definitions/StaleMark"
+        },
         "priceUsdcPerWeth": {
           "type": "number"
         },
@@ -538,6 +560,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "stale": {
+          "$ref": "#/definitions/StaleMark"
+        },
         "markets": {
           "type": "object",
           "additionalProperties": {
@@ -639,6 +664,9 @@
     "AaveObservation": {
       "type": "object",
       "properties": {
+        "stale": {
+          "$ref": "#/definitions/StaleMark"
+        },
         "healthFactor": {
           "type": "string"
         },
@@ -683,6 +711,9 @@
     "LstObservation": {
       "type": "object",
       "properties": {
+        "stale": {
+          "$ref": "#/definitions/StaleMark"
+        },
         "redemptionRateWeth": {
           "type": "number"
         },
@@ -818,6 +849,9 @@
     "LiquityObservation": {
       "type": "object",
       "properties": {
+        "stale": {
+          "$ref": "#/definitions/StaleMark"
+        },
         "priceUsd": {
           "type": "number"
         },
@@ -1035,6 +1069,9 @@
     "LendingObservation": {
       "type": "object",
       "properties": {
+        "stale": {
+          "$ref": "#/definitions/StaleMark"
+        },
         "singleton": {
           "type": "string"
         },
