@@ -1308,7 +1308,7 @@ coordinator は起動する agent ごとに `runs/<id>/agent-view/<agentId>/` �
 `run-start.json` を置く。**agent 用 config は allowlist**（`AGENT_CONFIG_FIELDS` = run 長・blockTime・venue・fee・LST 時計・
 gas 予算など、ランタイムが読むフィールドを coordinator の解決済み値で）で、**seed・stress・flow・vuln・market・funding・
 ロスターを含まない**。`ERIS_CONFIG` はこのファイルを指し、coordinator 自身の config（backtest の
-`.effective-<regime>-<seed>.yaml`）は渡さない。名前に seed を持つ env（`ERIS_PRACTICE_SEED` 等）も子へ渡さない。
+`.effective-<regime>-<seed>-<内容のハッシュ>.yaml`）は渡さない。名前に seed を持つ env（`ERIS_PRACTICE_SEED` 等）も子へ渡さない。
 agent 側の `ctx.rng` は address 由来（run の seed ではない）。`SimConfig` にフィールドを足したら
 `test/agentView.test.ts` がどちら側かを決めさせる。
 - **docker の image モードで mount するのは view ディレクトリ（読取専用、`/eris/run` = `ERIS_RUN_DIR`）と自分のログ
