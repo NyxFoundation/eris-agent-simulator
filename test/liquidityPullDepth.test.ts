@@ -26,7 +26,10 @@ import { privateKeyToAccount } from "viem/accounts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const STATE = resolve(ROOT, "backtest/state/venues-state.json");
-const PORT = 8578; // its own port, away from sim (8545) and backtest (8547)
+// Its own port, away from sim (8545), backtest (8547) and every other test's anvil. It shared 8578
+// with lstVault.integration.test.ts: under `npm test`'s concurrency the readiness probe found that
+// test's fresh anvil, and the depth assertions then failed against a chain with no dump loaded.
+const PORT = 8579;
 const RPC = `http://127.0.0.1:${PORT}`;
 // anvil default account 0 = the deployer that owns the seeded liquidity (ADR 0016 §4)
 const OWNER_PK =

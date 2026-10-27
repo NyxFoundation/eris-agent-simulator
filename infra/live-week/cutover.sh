@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The 10/31-night cutover from the practice devnet to the live week, as steps that can be run one at
+# The 11/30-night cutover from the practice devnet to the live week, as steps that can be run one at
 # a time or all in order. Every step prints what it did, stops at the first failure, and is safe to
 # run again: a step that already happened says so and checks it instead of redoing it differently.
 #
@@ -14,7 +14,7 @@
 #   submissions   accept-submission.sh over --zips <dir>/<unit>.zip -> <secrets>/accepted.tsv
 #   field         <secrets>/field.yaml = accepted units (AUTO wallets) + noop baseline; its fingerprint
 #   images        rebuild base + every field image; read each image's baked overlay; images.tsv
-#   plan          competition plan (k 60, 11/1 00:00 to 11/8 00:00 JST) -> <secrets>/plan.yaml; commitments
+#   plan          competition plan (k 60, 12/1 00:00 to 12/8 00:00 JST) -> <secrets>/plan.yaml; commitments
 #   start         run-week.sh live in tmux session "live-week"
 #
 # Options (each step reads only the ones it needs; nothing is guessed):
@@ -35,8 +35,8 @@ LW_NAME=cutover
 
 STEPS=(preflight freeze dump overlay submissions field images plan start)
 K="${ERIS_LIVE_K:-60}"
-STARTS_AT="${ERIS_LIVE_STARTS_AT:-2026-11-01T00:00:00+09:00}"
-ENDS_AT="${ERIS_LIVE_ENDS_AT:-2026-11-08T00:00:00+09:00}"
+STARTS_AT="${ERIS_LIVE_STARTS_AT:-2026-12-01T00:00:00+09:00}"
+ENDS_AT="${ERIS_LIVE_ENDS_AT:-2026-12-08T00:00:00+09:00}"
 MIN_FREE_GB="${ERIS_LIVE_MIN_FREE_GB:-50}"
 STATE_ROOT="${ERIS_LIVE_STATE_ROOT:-$HOME/state-root-live}"
 
@@ -84,6 +84,7 @@ step_preflight() {
   docker info >/dev/null 2>&1 || die "cannot talk to docker as $USER (in the docker group? log in again)"
   ok "tools: docker + buildx, node $(node -v), git, python3, zip/unzip, tmux, curl, ip, ss"
   check_anvil_version
+  check_node_version
 
   # -- docker networks: one per agent (ERIS_AGENT_ISOLATE=1); docker's built-in pools stop at ~27
   [ -n "$(docker0_addr)" ] || die "docker0 has no IPv4 address (anvil listens there: --anvil-host)"
@@ -131,7 +132,7 @@ step_preflight() {
   done
   if [ -n "$missing" ]; then warn "not yet in $SECRETS:$missing (needed by later steps)"; else ok "operator inputs present in $SECRETS"; fi
 
-  # Last, so that a run before 10/31 24:00 (practice still up) checks everything else first.
+  # Last, so that a run before 11/30 24:00 (practice still up) checks everything else first.
   preflight_practice_and_ports
 }
 
@@ -226,6 +227,7 @@ step_dump() {
   ok "venues-state.json sha256 $got (recorded in $SECRETS/dump.sha256)"
   ok "manifest deployments fingerprint $(manifest_fp)"
   check_anvil_version
+  check_node_version
 }
 
 # ---------------------------------------------------------------- 4. overlay

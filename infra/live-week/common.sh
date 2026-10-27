@@ -16,6 +16,11 @@ OVERLAY="$REPO/sdk/src/constants.local.ts"
 # The production dump was made with anvil 1.7.1, and versions have behaved differently (issue #135).
 # Set ERIS_LIVE_ANVIL_VERSION= (empty) to skip the check.
 ANVIL_VERSION="${ERIS_LIVE_ANVIL_VERSION-1.7.1}"
+# The week's coordinator and scorer run on the host's Node (npm run backtest), the agents, gateway and
+# inference proxy on node:24.22.1-bookworm-slim, and CI tests 24.22.1. A host left on another major
+# would run the scorer on a Node nothing tested (issue #330 was a 22 -> 24 difference), and nothing
+# else here looks. Set ERIS_LIVE_NODE_VERSION= (empty) to skip the check.
+NODE_VERSION="${ERIS_LIVE_NODE_VERSION-24.22.1}"
 
 CHAIN_NET=ascon-chain
 GATEWAY_CT=ascon-rpc-gateway-live
@@ -98,4 +103,14 @@ check_anvil_version() {
   v=$(anvil --version 2>/dev/null | head -1)
   echo "$v" | grep -qF "$ANVIL_VERSION" || die "anvil is '$v', the dump was made with $ANVIL_VERSION (foundryup -i v$ANVIL_VERSION)"
   ok "anvil $ANVIL_VERSION"
+}
+
+# The major must match; a different patch only warns (apt can move the host's within 24.x).
+check_node_version() {
+  [ -z "$NODE_VERSION" ] && { warn "node version not checked (ERIS_LIVE_NODE_VERSION is empty)"; return; }
+  local v
+  v=$(node -p 'process.versions.node' 2>/dev/null) || die "node not on PATH"
+  [ "${v%%.*}" = "${NODE_VERSION%%.*}" ] ||
+    die "node is $v, the week runs on $NODE_VERSION (curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION%%.*}.x | sudo -E bash - && sudo apt-get install -y nodejs)"
+  if [ "$v" = "$NODE_VERSION" ]; then ok "node $v"; else warn "node is $v, the images and CI are $NODE_VERSION"; fi
 }

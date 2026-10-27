@@ -1,9 +1,9 @@
-# infra/live-week — the 10/31-night cutover and the live week
+# infra/live-week — the 11/30-night cutover and the live week
 
-The live week (11/1 00:00 – 11/8 00:00 JST, k = 60 epochs, one every 168 minutes) runs on the same
-box as the practice devnet. The practice period ends 10/31 24:00 JST, and the switch has to be done
-in a few hours by one person. This directory turns the operator runbook (ascon-ops#49) into two
-commands:
+The live week (12/1 00:00 – 12/8 00:00 JST, k = 60 epochs, one every 168 minutes; the dates the
+rules took on 2026-10-26, §1) runs on the same box as the practice devnet. The practice period ends
+11/30 24:00 JST, and the switch has to be done in a few hours by one person. This directory turns
+the operator runbook (ascon-ops#49) into two commands:
 
 | file | what |
 |---|---|
@@ -37,7 +37,7 @@ the runner refuses a `--resume` whose plan, field, scenario key or state root di
 | `field.yaml`, `roster-fingerprint` | `cutover.sh field` | the night |
 | `images.tsv`, `build-logs/` | `cutover.sh images` | the night |
 | `plan.yaml`, `commitments.txt` | `cutover.sh plan` | the night |
-| `state-root`, `matrix-dir` | `run-week.sh` on its first start | 11/1 |
+| `state-root`, `matrix-dir` | `run-week.sh` on its first start | 12/1 |
 
 Back the directory up (password manager + one place off the box) as soon as the night is done: the
 plan, keys and the matrix pointer are what a restart on another machine would need.
@@ -55,7 +55,7 @@ plan, keys and the matrix pointer are what a restart on another machine would ne
 - A state root on its own filesystem with a host quota if you can (CHECKLIST §5); point
   `ERIS_LIVE_STATE_ROOT` at it (default `~/state-root-live`), and keep it the same for the whole week.
 - `bash infra/live-week/cutover.sh preflight` any time: it checks everything else first and fails at
-  the end while the practice period is still running, which is expected before 10/31 24:00.
+  the end while the practice period is still running, which is expected before 11/30 24:00.
 
 The compose-level isolation cutover in `infra/docker-agent/ISOLATION.md` ("anvil as a bridge
 container") is **not needed** for the live week: the backtest starts its own anvil on docker0's address
@@ -70,12 +70,12 @@ host setup (toolchain + 3 submissions + 8 reference images on 8 vCPU: 30–40 mi
 
 | when (JST) | step | command | expect |
 |---|---|---|---|
-| 10/31 evening | 1 preflight (all but the practice checks) | `cutover.sh preflight` | fails only at "practice coordinator is running" |
-| 10/31 evening | 2 freeze | `cutover.sh freeze` | prints the commit hash — publish it **with Appendix A** at the start of the live period (rules §4.4.3, §7.1) |
-| 10/31 evening | 3 dump | `cutover.sh dump --dump-sha256 <hex from the runbook>` | seconds |
-| 10/31 evening | 4 overlay | `cutover.sh overlay` | seconds; the only tracked file allowed to differ from the frozen commit |
-| 10/31 evening | 5 submissions (what has arrived so far) | `cutover.sh submissions --zips <dir>` | per ZIP: scan → extract → check:strategy → image. Re-running skips what was already accepted |
-| 10/31 24:00 | submission deadline; stop the practice period (its own end steps: last segment's summary, standings, `.env.practice`) | `systemctl --user stop ascon-devnet.service && systemctl --user disable ascon-devnet.service`; `(cd infra/monitoring && docker compose stop anvil rpc-gateway-live rpc-gateway-test)` in the practice checkout | |
+| 11/30 evening | 1 preflight (all but the practice checks) | `cutover.sh preflight` | fails only at "practice coordinator is running" |
+| 11/30 evening | 2 freeze | `cutover.sh freeze` | prints the commit hash — publish it **with Appendix A** at the start of the live period (rules §4.4.3, §7.1) |
+| 11/30 evening | 3 dump | `cutover.sh dump --dump-sha256 <hex from the runbook>` | seconds |
+| 11/30 evening | 4 overlay | `cutover.sh overlay` | seconds; the only tracked file allowed to differ from the frozen commit |
+| 11/30 evening | 5 submissions (what has arrived so far) | `cutover.sh submissions --zips <dir>` | per ZIP: scan → extract → check:strategy → image. Re-running skips what was already accepted |
+| 11/30 24:00 | submission deadline; stop the practice period (its own end steps: last segment's summary, standings, `.env.practice`) | `systemctl --user stop ascon-devnet.service && systemctl --user disable ascon-devnet.service`; `(cd infra/monitoring && docker compose stop anvil rpc-gateway-live rpc-gateway-test)` in the practice checkout | |
 | 24:00 + | 1 preflight (complete) | `cutover.sh preflight` | all ok |
 | | 5 submissions (the final ZIPs) | `cutover.sh submissions --zips <dir>` | a rejected ZIP stops the step: decide, then fix and re-run, or `--allow-rejected` |
 | | 6 field | `cutover.sh field` | prints the rosterFingerprint (matrix.json will carry it) |

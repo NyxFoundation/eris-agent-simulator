@@ -90,6 +90,7 @@ if recorded frozen-commit; then check_frozen; fi
 if recorded dump.sha256; then check_dump; fi
 check_overlay
 check_anvil_version
+check_node_version
 FP=$(node --import tsx scripts/liveWeek.ts fingerprint "$FIELD")
 if recorded roster-fingerprint; then
   [ "$FP" = "$(cat "$SECRETS/roster-fingerprint")" ] || die "field.yaml is $FP, cutover recorded $(cat "$SECRETS/roster-fingerprint")"

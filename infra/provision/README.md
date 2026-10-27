@@ -16,7 +16,7 @@ clicking through a portal during an incident.**
 
 | file | role | vendor-specific? |
 |---|---|---|
-| `bootstrap.sh` | docker, foundry (stable), node 22, checkout, the host paths compose mounts, `.env`, the coordinator's systemd **user** unit (+ linger), cleanup cron | no |
+| `bootstrap.sh` | docker, foundry (stable), node 24, checkout, the host paths compose mounts, `.env`, the coordinator's systemd **user** unit (+ linger), cleanup cron | no |
 | `cloud-init.yaml` | first boot: user, SSH hardening, then calls `bootstrap.sh` | no |
 | `terraform/` | orders the machine and passes `cloud-init.yaml` as user-data | **yes** (Cherry Servers) |
 

@@ -1,5 +1,10 @@
 # Faucet bot (Discord)
 
+> **Not deployed for this competition** (decided in the operators' tracker, ascon-ops #8): the practice
+> period registers participants with the operator's `register.sh` only, and the participant notes say so
+> (`docs/updates/2026-10-05.md`, corrected 10/18; `docs/guide/practice-devnet.md`). The box has no
+> `ascon-faucet` unit. What follows is how the bot works if it is ever deployed.
+
 Registers a participant's agent on the practice devnet and funds it, from Discord:
 
 ```
