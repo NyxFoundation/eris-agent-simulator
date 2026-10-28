@@ -439,6 +439,156 @@ export function configDiff(
     .map((k) => `${k}: ${show(saved[k])} -> ${show(now[k])}`);
 }
 
+// ---- extending a period ----
+//
+// The one change to the world a resume accepts besides MUTABLE_CONFIG_KEYS: the period runs longer.
+// The rules moved the practice period's end from 10/31 to 11/30 while one was running, and a new
+// period would revert every participant's chain (infra/devnet/README.md). So `run.endsAt` may move
+// later, and the episodes for the added days are appended to `stress.events` -- with
+// `stress.windowBaseBlocks` holding the length the period was first converted to, which keeps every
+// window already placed on its block (EventSchedule places `windowFrac` against that base and bounds
+// the windows by the run). What is refused: an earlier end, an episode edited or removed, or a base
+// that would move the windows already placed. The coordinator then builds the schedule both ways
+// and checks the saved part resolves exactly as before (extendedScheduleProblems).
+
+/** The world keys an extension may change. */
+export const EXTENSION_KEYS = [
+  "runEndsAt",
+  "stressEvents",
+  "stressWindowBaseBlocks",
+] as const;
+
+export type PeriodExtensionCheck =
+  | { kind: "same" }
+  | {
+      kind: "extend";
+      endsAtBefore: string;
+      endsAtAfter: string;
+      /** How many entries of stress.events the saved period had; the rest are appended. */
+      savedEvents: number;
+      appendedEvents: number;
+      /** What windowFrac was a fraction of before this start (the saved base, or the saved run). */
+      windowBaseBefore: number;
+      windowBase: number;
+    }
+  | { kind: "refused"; diff: string[] };
+
+/**
+ * Compare a period's saved world with the config's. "same" when nothing differs, "extend" when the
+ * only differences are an extension (above), "refused" with what is wrong otherwise.
+ * `savedRunBlocks` is the checkpoint's run length: what the saved fractions were placed against when
+ * the saved world names no base of its own.
+ */
+export function checkPeriodExtension(
+  saved: Record<string, unknown>,
+  now: Record<string, unknown>,
+  savedRunBlocks: number,
+): PeriodExtensionCheck {
+  const ext = new Set<string>(EXTENSION_KEYS);
+  const split = (w: Record<string, unknown>) =>
+    Object.fromEntries(Object.entries(w).filter(([k]) => !ext.has(k)));
+  const pick = (w: Record<string, unknown>) =>
+    Object.fromEntries(Object.entries(w).filter(([k]) => ext.has(k)));
+  const other = configDiff(split(saved), split(now));
+  const changed = configDiff(pick(saved), pick(now));
+  if (other.length === 0 && changed.length === 0) return { kind: "same" };
+  if (changed.length === 0) return { kind: "refused", diff: other };
+
+  const problems = [...other];
+  const before = saved.runEndsAt;
+  const after = now.runEndsAt;
+  if (typeof before !== "string" || typeof after !== "string")
+    problems.push(
+      `runEndsAt: ${JSON.stringify(before)} -> ${JSON.stringify(after)}: only a period stated as a date (run.endsAt) can be extended`,
+    );
+  else if (!(Date.parse(after) > Date.parse(before)))
+    problems.push(
+      after === before
+        ? "stress.events / stress.windowBaseBlocks differ but run.endsAt did not move: episodes are only appended to an extension"
+        : `runEndsAt: ${before} -> ${after}: a period can be extended, not shortened`,
+    );
+
+  const savedEvents = Array.isArray(saved.stressEvents) ? saved.stressEvents : [];
+  const nowEvents = Array.isArray(now.stressEvents) ? now.stressEvents : [];
+  const firstChanged = savedEvents.findIndex(
+    (e, i) => JSON.stringify(e) !== JSON.stringify(nowEvents[i]),
+  );
+  if (firstChanged >= 0)
+    problems.push(
+      `stress.events[${firstChanged}] ${removedOrChanged(nowEvents[firstChanged])}: the period's ${savedEvents.length} ` +
+        "episodes have to stay as they are, with the new days' episodes appended after them",
+    );
+
+  const windowBaseBefore =
+    typeof saved.stressWindowBaseBlocks === "number"
+      ? saved.stressWindowBaseBlocks
+      : savedRunBlocks;
+  const windowBase = now.stressWindowBaseBlocks;
+  if (windowBase !== windowBaseBefore)
+    problems.push(
+      `stressWindowBaseBlocks: ${JSON.stringify(windowBase)}: has to be ${windowBaseBefore}, the length the period's ` +
+        "windowFrac were placed against (anything else moves the windows already placed)",
+    );
+
+  if (problems.length > 0) return { kind: "refused", diff: problems };
+  return {
+    kind: "extend",
+    endsAtBefore: before as string,
+    endsAtAfter: after as string,
+    savedEvents: savedEvents.length,
+    appendedEvents: nowEvents.length - savedEvents.length,
+    windowBaseBefore,
+    windowBase: windowBase as number,
+  };
+}
+
+function removedOrChanged(e: unknown): string {
+  return e === undefined ? "was removed" : "was changed";
+}
+
+/** A resolved window, as far as the extension check reads it. */
+type ScheduledWindow = { type: string; startBlock: number };
+
+/**
+ * What is wrong with an extended schedule, given the saved part resolved as it was before
+ * (`before`: the saved entries, the saved run length and base) and the whole list resolved as it is
+ * now (`after`). The saved windows must come out identical -- same blocks, same draws -- and every
+ * appended one must start after `nextOpenOffset` (a run-relative block the coordinator has not
+ * processed yet, with room for the catch-up): an episode in the past would be a price move on
+ * blocks already mined.
+ */
+export function extendedScheduleProblems(
+  before: readonly ScheduledWindow[],
+  after: readonly ScheduledWindow[],
+  nextOpenOffset: number,
+): string[] {
+  const problems: string[] = [];
+  const show = (v: unknown) =>
+    JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x));
+  if (after.length < before.length)
+    problems.push(
+      `the extended schedule has ${after.length} windows, fewer than the ${before.length} the period had`,
+    );
+  for (let i = 0; i < Math.min(before.length, after.length); i++)
+    if (show(before[i]) !== show(after[i])) {
+      problems.push(
+        `window ${i} (${before[i].type} at run block ${before[i].startBlock}) resolves differently once extended ` +
+          `(${after[i].type} at run block ${after[i].startBlock})`,
+      );
+      break;
+    }
+  for (let i = before.length; i < after.length; i++)
+    if (after[i].startBlock < nextOpenOffset) {
+      problems.push(
+        `appended window ${i} (${after[i].type}) starts at run block ${after[i].startBlock}, which the period has ` +
+          `already passed or is about to (the first block it may start at is ${nextOpenOffset}): regenerate the ` +
+          "appended episodes for the period as it is now",
+      );
+      break;
+    }
+  return problems;
+}
+
 /** A roster entry as it bears on the world: who, which key or address, what runs it. */
 export function rosterIdentity(spec: AgentSpec): Record<string, unknown> {
   return plain({

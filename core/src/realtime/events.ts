@@ -355,16 +355,42 @@ export function stressEnvelope(ev: ResolvedStressEvent, blockIndex: number): num
 
 // Pure-function deterministic schedule (config + seed + runBlocks → at(blockIndex)).
 // Unit-tested. Never touches the chain or I/O.
+//
+// `windowBaseBlocks` is what `windowFrac` is a fraction of; by default the run itself. A practice
+// period that is extended (periodResume.ts periodExtension) keeps it at the length the period was
+// first converted to, so the windows already placed stay on their blocks while the run grows, and
+// the episodes appended for the new days carry fractions above 1. Bounds -- a window has to end
+// inside the run -- are always the run's.
 export class EventSchedule {
   readonly events: ResolvedStressEvent[];
 
-  constructor(configs: StressEventConfig[], seed: number, runBlocks: number) {
+  constructor(
+    configs: StressEventConfig[],
+    seed: number,
+    runBlocks: number,
+    windowBaseBlocks: number = runBlocks,
+  ) {
     if (configs.length > 0 && runBlocks <= 0) {
       // The window is determined by a fraction of run length, so a fixed-length run (ERIS_RUN_BLOCKS>0) is required.
       throw new Error(
         "ERIS_STRESS_EVENTS requires a fixed-length run: set ERIS_RUN_BLOCKS > 0 (ADR 0009)",
       );
     }
+    if (!(windowBaseBlocks > 0) || windowBaseBlocks > runBlocks)
+      throw new Error(
+        `stress.windowBaseBlocks (${windowBaseBlocks}) must be positive and no longer than the run (${runBlocks} blocks)`,
+      );
+    configs.forEach((c, i) => {
+      // windowFrac is parsed without the run's length; this is where a start past the run is caught
+      // (above 1 with the run as the base, or past runBlocks / windowBaseBlocks with a shorter one).
+      if (c.windowFrac[1] * windowBaseBlocks > runBlocks + 1e-6)
+        throw new Error(
+          `stress event[${i}].windowFrac ${JSON.stringify(c.windowFrac)} starts past the run: ` +
+            (windowBaseBlocks === runBlocks
+              ? "it is a fraction of the run and must be within [0, 1]"
+              : `it is a fraction of ${windowBaseBlocks} blocks (stress.windowBaseBlocks) and the run is ${runBlocks}`),
+        );
+    });
     // Which entry each follower pairs with, resolved before any draw: a follower draws once per
     // window its anchor can open, so the anchor's count range has to be known first.
     const anchorOf = configs.map((c, i) => resolveAnchor(configs, i));
@@ -418,7 +444,10 @@ export class EventSchedule {
         const maxStart = Math.max(0, runBlocks - w.span);
         const startFrac = lerp(c.windowFrac[0], c.windowFrac[1], w.startU);
         return [
-          Math.max(0, Math.min(Math.round(startFrac * runBlocks), maxStart)),
+          Math.max(
+            0,
+            Math.min(Math.round(startFrac * windowBaseBlocks), maxStart),
+          ),
         ];
       }
       const followers = configs
@@ -435,6 +464,7 @@ export class EventSchedule {
         ),
         windows.map((w) => w.startU),
         runBlocks,
+        windowBaseBlocks,
       );
     });
 
@@ -972,12 +1002,13 @@ function placeWindows(
   reach: number[],
   startUs: number[],
   runBlocks: number,
+  windowBaseBlocks: number,
 ): number[] {
   const gap = c.minGapBlocks ?? 0;
   const most = (c.count as [number, number])[1];
   const longest = Math.max(maxSpan(c), ...followers.map(maxSpan));
-  const lo = c.windowFrac[0] * runBlocks;
-  const hi = c.windowFrac[1] * runBlocks;
+  const lo = c.windowFrac[0] * windowBaseBlocks;
+  const hi = c.windowFrac[1] * windowBaseBlocks;
   if ((most - 1) * (longest + gap) > hi - lo) {
     throw new Error(
       `stress event[${index}]: ${most} windows of up to ${longest} blocks (+${gap} gap) do not fit ` +
@@ -1110,8 +1141,11 @@ export function withOuOverride<T extends { kappa: number; drift: number }>(
 
 // Parse and validate ERIS_STRESS_EVENTS (a JSON array). Empty/unset yields [].
 // Strictly checks the "give ranges, not values" spec, and misconfiguration fails fast before the run starts.
+// `windowFracBeyondRun`: the config states stress.windowBaseBlocks, so a fraction above 1 can still
+// start inside the run; EventSchedule checks it once the run's length is known.
 export function parseStressEvents(
   json: string | undefined,
+  opts: { windowFracBeyondRun?: boolean } = {},
 ): StressEventConfig[] {
   if (json === undefined || json.trim() === "") return [];
   let parsed: unknown;
@@ -1125,10 +1159,14 @@ export function parseStressEvents(
   if (!Array.isArray(parsed)) {
     throw new Error("ERIS_STRESS_EVENTS must be a JSON array");
   }
-  return parsed.map((raw, i) => parseOne(raw, i));
+  return parsed.map((raw, i) => parseOne(raw, i, opts.windowFracBeyondRun === true));
 }
 
-function parseOne(raw: unknown, i: number): StressEventConfig {
+function parseOne(
+  raw: unknown,
+  i: number,
+  windowFracBeyondRun: boolean,
+): StressEventConfig {
   const label = `ERIS_STRESS_EVENTS[${i}]`;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`${label} must be an object`);
@@ -1393,9 +1431,11 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
             ? { max: 1, exclusiveMax: true }
             : {}),
         });
+  // A fraction of the run, so at most 1 -- unless stress.windowBaseBlocks names a base shorter than
+  // the run, and then EventSchedule checks the start against the run once its length is known.
   const windowFrac = parseRange(o.windowFrac, `${label}.windowFrac`, {
     min: 0,
-    max: 1,
+    ...(windowFracBeyondRun ? {} : { max: 1 }),
   });
   // A point event lands on one block, so the trapezoid fields do not apply and are optional there.
   const isPoint = isPointEvent(o.type);
