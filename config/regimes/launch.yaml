@@ -57,7 +57,7 @@ run:
 
 market:
   volatility: 0.004 # calm's: the regime is the pools, not the price
-  kappa: 0.02
+  kappa: 0 # a martingale within the epoch, as in every official regime (ADR 0029; calm.yaml says why)
 
 funding:
   # The same ETH/BTC/USDC basket as every other regime (issue #54).

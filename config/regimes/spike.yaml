@@ -45,6 +45,16 @@ run:
   # docker: `--agent-sandbox process` (no caps, and it says so in events.jsonl as agent_sandbox).
   agentSandbox: docker
 
+market:
+  # The fair price is a martingale within the epoch (ADR 0029). Mean reversion toward the opening
+  # fair (the sdk default kappa 0.02, toward the same $3,000 / $60,000 every epoch) made "trade toward
+  # the opening level" worth ~470 bps of notional per epoch net of GMX fees in every regime, bounded
+  # only by the leverage on offer (scripts/measurePredictability.ts). The per-block noise is the
+  # default, so the venues dislocate as before; what grows is where an epoch ends (sd ~1.2% -> ~4.4%),
+  # and the part of that every agent holds alike cancels in the field mean (rules §4.4).
+  volatility: 0.004
+  kappa: 0
+
 funding:
   # An ETH/BTC/USDC basket rather than USDC only. The score is excess over the do-nothing
   # baseline, which holds the same funding, so the basket's beta cancels out of the metric by
