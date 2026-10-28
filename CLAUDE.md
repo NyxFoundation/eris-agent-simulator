@@ -588,7 +588,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     #144 で一度中央値にしたが、自分しか LP のいないプールを窓の 3 ブロックだけずらして境界前に戻すと、同じ流動性が
     ずらした側の分割で評価され、預けた額の数十 % が架空の価値になった（fair からずれたプールの持分は fair で評価すると
     必ず大きい）。境界ブロックの分割なら同じブロックの swap は財布と LP で相殺される
-  - **エポック順序は抽選 seed から導出**（`npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k 60`。`core/src/competition/schedule.ts` = SHA-256 カウンタ + 棄却法 + Fisher-Yates、レジームはエポックごとに独立・一様（issue #186）。`--starts-at <ISO> --every-minutes <N>`（または `--ends-at <ISO>` で窓に均等配置）で各エポックに `startsAt` を付けると matrix.json の `schedule` 経由で dashboard が「次のエポック開始予定」を出し、`backtest --follow-schedule` がその時刻を待って各エポックを始める。コミットメントには入らない）。`npm run competition -- commit <file>` が正規化 JSON の sha256 を出す（非公開 seed は 9/23 前、抽選 seed は 10/31 に公表。原本は結果発表後）。形は `config/competition/*.example.yaml`
+  - **エポック順序は抽選 seed から導出**（`npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k 60`。`core/src/competition/schedule.ts` = SHA-256 カウンタ + 棄却法 + Fisher-Yates、レジームはエポックごとに独立・一様（issue #186）。`--starts-at <ISO> --every-minutes <N>`（または `--ends-at <ISO>` で窓に均等配置）で各エポックに `startsAt` を付けると matrix.json の `schedule` 経由で dashboard が「次のエポック開始予定」を出し、`backtest --follow-schedule` がその時刻を待って各エポックを始める。コミットメントには入らない）。`npm run competition -- commit <file>` が正規化 JSON の sha256 を出す（非公開 seed は 9/23 前、抽選 seed は 11/30 に公表。原本は結果発表後）。形は `config/competition/*.example.yaml`
   - **ライブ週の編成は [ADR 0026](docs/adr/0026-live-week-schedule.md)（Proposed）**: k = 60（レジームはエポックごとに i.i.d. 一様に引く = issue #186。平均 5 回 ± 2.1、どれかが 0 回になる確率 6.4%）・1 エポック 360 ブロック・ガス用 ETH 3（ベンチマークも同額。公式レジームの `funding.ethWei` は別変更）・168 時間に 168 分おきで均等配置し `--follow-schedule` の 1 プロセスで走らせる。**60 エポックはブロック時間で 12 時間 = 週の 7%**。週を埋めるなら「360 ブロックのままエポックを増やす（非公開 seed の追加 commit が要る）」が推奨で、エポックを伸ばすのは全 12 レジームの再較正になる（ADR の §5）
   - **公式レジーム（12 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）/ `spike`（crash の鏡像 = 上方向のギャップ + 同じ窓の引き抜き。バスケットを持っているだけの側が報われる唯一のレジーム。issue #105）/ `depeg-persist`（`depeg` の `persist: true` 版。ディスカウントが最終採点ブロックまで戻らず、買い戻しは teardown。「戻ると信じて持つ」が構造で勝てない唯一のレジーム。issue #106）/ `cdp-incident`（Liquity victim = ICR 1.20 の Trove 2 本 + 12〜16% 暴落 + 同じ窓の `eusdDepeg` と引き抜き。清算・償還・借り手防御の 3 skill。issue #107。victim は `core/src/liquityVictims.ts`、`stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei`、`stress_liquity_*` イベント）/ `launch`（run 途中に 2〜3 の新トークンが環境の Uniswap V3 factory 経由で USDC の薄いプールに上場し、トークンごとに需要の波が来るか dud かをシードが決める。鐘の時点の保有は 0 = ADR 0022 公理 2。issue #29。下の「新規トークンの上場」節）。**Liquity の 14 日 bootstrap 期間**: deployer は deploy 時に warp するが、state dump を新しい anvil に `--load-state` すると時計が実時間に戻って期間内に逆戻りし、**全 backtest run で `liquityRedeem` が revert していた**（実測: redemption-arb が 8 ブロック連続で redeem を決めて全部 `Redemptions are not allowed during bootstrap phase`）。`setupLiquity` が期間内なら `evm_increaseTime` で飛ばす（`liquity_bootstrap_warped`）。**抽選はエポックごとにレジームを独立・一様に引く**（`schedule.ts`、issue #186。以前は各レジーム k/R 回をシャッフルしていたが、それだと状態を引き継ぐ agent が既出レジームを数えて残りを推測できた）。非公開セットは**各レジーム k 本以上**の seed が要る（全エポックが同じレジームを引きうる）。**乱数ストリームはレジーム名でも分かれる**（`run.regime` → `setScenarioRegime`、flow bot へは `ERIS_SCENARIO_REGIME`。issue #186。以前は同じ seed の calm と crash が同じ価格ショック・フローを引いていた。backtest が自動で書く。agent には渡さない）
   - **`cex-drift` / `informed-flow` は窓イベント**（`cexDrift` / `flowTrend`）で表現する（issue #56）。run 全体設定だった頃の `cex-drift` は**宣言長 360 ブロックで壊れていた** — 実測でプール乖離が平均 1,055bps（10%）に居座り fair が +34.6% 暴走、venue-arb が +8,458 を無条件に得ていた。60 ブロックでは 55bps に見えるので発覚が遅れた。窓化後は 461bps・+1,191（calm 基準は 39bps・−289）。`informed-flow` は窓化しても 45.0 → 42.7bps でほぼ中立（この regime はもともと calm と識別しにくい）
@@ -618,16 +618,16 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     snapshot（ティッカー・テープ・ブロックプレビュー）は削除。**順位が存在しない 2 ケースはそう言う**: live run（`summary.json` は完走時に
     書かれるので結果がまだ無い）と seed プロバイダ（フィクスチャ）。どちらも scenario ビューに着地する
   - **ヘッダ + Overview（`/`）が参加者の入口**（issue #183）。**ヘッダ**（`components/SiteHeader.tsx`、全ページ・sticky）:
-    ASCON ロゴ / ナビ 5 本 / **参加登録**（Google Form 直結、？ に「先に Discord #ascon」、**10/25 00:00 JST 以降は出さない**）/
-    その右に **提出**（エージェント提出フォーム直結、**提出期間 9/23〜10/31 だけ**。430px 以下はロゴのワードマークを省く）/
+    ASCON ロゴ / ナビ 5 本 / **参加登録**（Google Form 直結、？ に「先に Discord #ascon」、**11/24 00:00 JST 以降は出さない**）/
+    その右に **提出**（エージェント提出フォーム直結、**提出期間 9/23〜11/30 だけ**。430px 以下はロゴのワードマークを省く）/
     日英トグル。860px 以下はナビをメニューに畳む（参加登録とトグルはバーに残る）。ページ内の sticky バーは
     `top: var(--header-h)`。**Overview** は上から
     日程（ブラウザの時計で「開催中」と次の締切までの JST 暦日数。ascon.dev は静的なので「今ここ」はここにしか出せない）/
     **提出の手順**（参加登録 → API キー → 作る → 手元で確かめる →（任意）練習環境 → ZIP → 提出 → 凍結。期間のある段に
     「受付中 · あと N 日」等。参加者の進み具合は分からないので「あなたの段」は指さない。提出フォームは受付期間中だけ直接リンク
-    （`SUBMISSION_FORM_URL`）、API キーのフォームは載せず Discord 案内。10/31 以降は 1 行に畳む）/ 評価・賞金・提出と制約の 3 カード（要点を常時表示、全文は ？、
+    （`SUBMISSION_FORM_URL`）、API キーのフォームは載せず Discord 案内。11/30 の後は 1 行に畳む）/ 評価・賞金・提出と制約の 3 カード（要点を常時表示、全文は ？、
     ascon.dev の規約の節へリンク）/ 上位 5 名（順位・エージェント・平均得点・採点数 + 何の数字か・何日分・更新時刻の 1 行。
-    `standings: false` では出さない。完走済みでも結果発表日（12/7）前は「最終」と名乗らない — 参加者の手元の
+    `standings: false` では出さない。完走済みでも結果発表日（12/22）前は「最終」と名乗らない — 参加者の手元の
     backtest も同じ形だから）/ リンク集。**規約の値は `dashboard/src/data/competitionInfo.ts` 1 ファイル**
     （各値に ascon-web `content/legal/rules.md` の節番号）で、規約改定時はここだけ直す（文言は `messages.ts` の `overview.*`）
   - **サイドバーは無い**（全モード・全ページ全幅 + 1 行のフッタ）。**競技セレクト**（`components/CompetitionPicker.tsx`）は

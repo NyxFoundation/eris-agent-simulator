@@ -174,8 +174,8 @@ function RegisterButton({ compact }: { compact: boolean }) {
 }
 
 /**
- * "Submit", right of "Register": the agent submission form, while it takes submissions (9/23–10/31
- * JST). Outlined rather than filled, so the two read as two different forms. After 10/24 it is the
+ * "Submit", right of "Register": the agent submission form, while it takes submissions (9/23–11/30
+ * JST). Outlined rather than filled, so the two read as two different forms. After 11/23 it is the
  * only one left on the bar.
  */
 function SubmitButton({ compact }: { compact: boolean }) {

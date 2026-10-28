@@ -201,8 +201,8 @@ export function withTimetable(
  * The timetable that spreads k epochs evenly over a window (ADR 0026): k equal slots of
  * (endsAt − startsAt) / k, each epoch starting at the head of its slot. So the last one starts one
  * slot before `endsAt` and has the same slot as every other epoch to finish in -- the live week
- * (168 h) at k = 60 is an epoch every 168 minutes; from 00:00 JST on 11/1 the last one starts at
- * 21:12 JST on 11/7.
+ * (168 h) at k = 60 is an epoch every 168 minutes; from 00:00 JST on 12/1 the last one starts at
+ * 21:12 JST on 12/7.
  */
 export function spreadOver(window: TimetableWindow, k: number): Timetable {
   const start = Date.parse(window.startsAt);

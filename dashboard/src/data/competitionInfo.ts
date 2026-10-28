@@ -14,7 +14,7 @@ import type { Locale } from "../i18n/locale.js";
 
 // ---- schedule (rules §1) ----
 
-/** A span of JST days, both ends inclusive ("2026-09-01" .. "2026-10-24"). */
+/** A span of JST days, both ends inclusive ("2026-09-01" .. "2026-11-23"). */
 export interface SchedulePhase {
   key:
     | "registration"
@@ -27,23 +27,25 @@ export interface SchedulePhase {
   last: string;
 }
 
+// The schedule as the rules were amended on 2026-10-26 (Participation Terms Art. 34(1)): registration
+// to 11/23, submission and the practice environment to 11/30, the live week 12/1–12/7.
 export const SCHEDULE: SchedulePhase[] = [
-  // §1: 参加登録期間 2026年9月1日 〜 10月24日
-  { key: "registration", first: "2026-09-01", last: "2026-10-24" },
-  // §1: エージェント提出期間 2026年9月23日 〜 10月31日 (the practice environment, §2.7, runs in it)
-  { key: "submission", first: "2026-09-23", last: "2026-10-31" },
-  // §1: ライブ競技期間 2026年11月1日 〜 11月7日 (reserve day 11/8, see LIVE_RESERVE_DAY)
-  { key: "live", first: "2026-11-01", last: "2026-11-07" },
-  // §1: 審査期間 2026年11月9日 〜 11月30日
-  { key: "review", first: "2026-11-09", last: "2026-11-30" },
-  // §1: レポートトラック 応募締切 2026年11月21日
-  { key: "reportDeadline", first: "2026-11-21", last: "2026-11-21" },
-  // §1: 結果発表 2026年12月7日
-  { key: "results", first: "2026-12-07", last: "2026-12-07" },
+  // §1: 参加登録期間 2026年9月1日 〜 11月23日
+  { key: "registration", first: "2026-09-01", last: "2026-11-23" },
+  // §1: エージェント提出期間 2026年9月23日 〜 11月30日 (the practice environment, §2.7, runs in it)
+  { key: "submission", first: "2026-09-23", last: "2026-11-30" },
+  // §1: ライブ競技期間 2026年12月1日 〜 12月7日 (reserve day 12/8, see LIVE_RESERVE_DAY)
+  { key: "live", first: "2026-12-01", last: "2026-12-07" },
+  // §1: 審査期間 2026年12月9日 〜 12月21日
+  { key: "review", first: "2026-12-09", last: "2026-12-21" },
+  // §1: レポートトラック 応募締切 2026年12月14日
+  { key: "reportDeadline", first: "2026-12-14", last: "2026-12-14" },
+  // §1: 結果発表 2026年12月22日
+  { key: "results", first: "2026-12-22", last: "2026-12-22" },
 ];
 
-/** §1: 予備日 2026年11月8日 (an epoch re-run under §4.4.2). */
-export const LIVE_RESERVE_DAY = "2026-11-08";
+/** §1: 予備日 2026年12月8日 (an epoch re-run under §4.4.2). */
+export const LIVE_RESERVE_DAY = "2026-12-08";
 
 /**
  * The moments the page counts down to, in order. A deadline is the end of its day; a start is the
@@ -61,11 +63,11 @@ export interface Milestone {
 }
 
 export const MILESTONES: Milestone[] = [
-  { key: "registrationCloses", day: "2026-10-24", at: "end" },
-  { key: "submissionCloses", day: "2026-10-31", at: "end" },
-  { key: "liveStarts", day: "2026-11-01", at: "start" },
-  { key: "reportDue", day: "2026-11-21", at: "end" },
-  { key: "results", day: "2026-12-07", at: "start" },
+  { key: "registrationCloses", day: "2026-11-23", at: "end" },
+  { key: "submissionCloses", day: "2026-11-30", at: "end" },
+  { key: "liveStarts", day: "2026-12-01", at: "start" },
+  { key: "reportDue", day: "2026-12-14", at: "end" },
+  { key: "results", day: "2026-12-22", at: "start" },
 ];
 
 const DAY_MS = 86_400_000;
@@ -109,8 +111,8 @@ export function nextMilestone(
 }
 
 /**
- * Whether the registration form still takes entries. §1 closes registration at the end of 10/24
- * JST, so the header stops offering the form at 10/25 00:00 JST.
+ * Whether the registration form still takes entries. §1 closes registration at the end of 11/23
+ * JST, so the header stops offering the form at 11/24 00:00 JST.
  */
 export function registrationOpen(nowMs: number): boolean {
   const registration = SCHEDULE.find((p) => p.key === "registration");
@@ -276,7 +278,7 @@ export const SITE_URL = "https://ascon.dev";
 /** ascon-web `src/links.ts` REGISTRATION_FORM_URL. */
 export const REGISTRATION_FORM_URL = "https://forms.gle/PWhktsUMmic2FbYm8";
 /**
- * The agent submission form (rules §2.1–§2.2; ascon-web `ops/submission-form/`). Open 9/23–10/31;
+ * The agent submission form (rules §2.1–§2.2; ascon-web `ops/submission-form/`). Open 9/23–11/30;
  * it takes a ZIP upload, so it asks the sender to sign in with a Google account.
  */
 export const SUBMISSION_FORM_URL = "https://forms.gle/97bxYQvh43GVAS4z9";
@@ -429,7 +431,7 @@ export function stepStatus(step: SubmissionStep, nowMs: number): StepStatus | nu
   return null;
 }
 
-/** Within the submission period (rules §1: 9/23–10/31 JST), when the submission form takes ZIPs. */
+/** Within the submission period (rules §1: 9/23–11/30 JST), when the submission form takes ZIPs. */
 export function submissionOpen(nowMs: number): boolean {
   const submission = SCHEDULE.find((p) => p.key === "submission");
   return submission !== undefined && phaseStatus(submission, nowMs) === "now";

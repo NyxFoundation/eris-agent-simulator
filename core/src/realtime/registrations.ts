@@ -1,7 +1,7 @@
 // External registrations the coordinator picks up while the run is going (ADR 0021 §2, rules §2.7).
 //
 // The roster is read once, at startup. On the trial devnet that is the wrong cadence: the chain runs
-// from 9/23 to 10/31 and participants register throughout, and the only way to add one used to be
+// from 9/23 to 11/30 and participants register throughout, and the only way to add one used to be
 // a restart -- which opens a new competition directory and splits the standings in two. So a second
 // list exists (`run.registrationsFile`), re-read during the mining loop. An entry has the same shape
 // as an `external: true` + `address` roster entry, because it is the same registration; only the

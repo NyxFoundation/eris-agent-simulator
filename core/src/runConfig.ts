@@ -168,7 +168,7 @@ function warnRetiredConfigEnv(): void {
 const CLI_ALIAS: Record<string, string> = {
   seed: "SEED",
   blocks: "ERIS_RUN_BLOCKS",
-  // The run's end as a date (issue #136), e.g. --ends-at 2026-10-31T23:59:59+09:00.
+  // The run's end as a date (issue #136), e.g. --ends-at 2026-11-30T23:59:59+09:00.
   "ends-at": "ERIS_RUN_ENDS_AT",
   seconds: "ERIS_RUN_SECONDS",
   protocols: "ENABLED_PROTOCOLS",

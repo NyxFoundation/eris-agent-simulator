@@ -13,8 +13,8 @@
 //       how many accepts the unit has on today's JST day; exits 3 when the limit is reached
 //   final  [--deadline <ISO time>] [--format table|yaml|both]
 //       the last ACCEPT per unit (the §2.2 evaluated submission) as a table and as the field.yaml
-//       `agents:` block. --deadline drops anything recorded at or after it (10/31 24:00 JST is
-//       2026-10-31T15:00:00Z)
+//       `agents:` block. --deadline drops anything recorded at or after it (the 11/30 24:00 JST
+//       deadline is 2026-11-30T15:00:00Z)
 //
 // The ledger path is --ledger, or ERIS_SUBMISSION_LEDGER (what accept-submission.sh passes on).
 // "Day" is the JST calendar day, because that is the day the rules and the participants count in.

@@ -165,7 +165,7 @@ period is and where each day ends, what the limits are, and which addresses are 
   "status": { "scored": false, "label": "practice", "note": "…not the official scoring…" },
   "chain":  { "rpcUrl": "…", "chainId": 42069, "blockTimeSec": 2 },
   "round":  { "intervalBlocks": 900, "epochBlocks": 900, "approxSeconds": 1800 },
-  "period": { "endsAt": "2026-10-31T14:59:59.000Z", "blocks": 1488969, "startBlock": 1234,
+  "period": { "endsAt": "2026-11-30T14:59:59.000Z", "blocks": 1488969, "startBlock": 1234,
               "startedAt": "2026-09-28T01:00:00.000Z", "seconds": 3628800, "dayHours": 24 },
   "protocols": ["uniswap", "balancer", "curve", "gmx", "aave", "lst", "liquity"],
   "actions": { "uniswap": ["swap", "mintLiquidity", …], … },
@@ -594,8 +594,9 @@ progress, because an environment that is silent for ten minutes reads as one tha
 ### Length
 
 A period ends on a **date**: `run.endsAt` (ISO 8601, with a time zone). `config/practice.yaml`
-states `2026-10-31T23:59:59+09:00`, the end of the trial in rules §2.7; the live week starts the next
-day. The coordinator converts the date into the blocks that remain at `blockTimeSec` when it starts
+states `2026-11-30T23:59:59+09:00`, the end of the trial in rules §2.7 as amended on 2026-10-26 (it
+was 10/31; the running period was extended rather than restarted, `infra/devnet/README.md`
+"Extending a period"); the live week starts the next day. The coordinator converts the date into the blocks that remain at `blockTimeSec` when it starts
 and records both in `run_started_realtime` (`runEndsAt`, `runBlocks`). A new period started later
 therefore ends on the same day with fewer blocks (issue #136), and a restart within a period keeps the
 block count its first start came to. Stated as a block count instead, the period used to end 42 days

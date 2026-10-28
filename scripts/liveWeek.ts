@@ -1,5 +1,5 @@
 /**
- * Pure helpers behind infra/live-week/cutover.sh and run-week.sh (the 10/31-night cutover to the
+ * Pure helpers behind infra/live-week/cutover.sh and run-week.sh (the 11/30-night cutover to the
  * live week). The shell scripts own the order of operations; what can be got wrong by a typo or an
  * off-by-one lives here, where it is tested (test/liveWeekCutover.test.ts).
  *
