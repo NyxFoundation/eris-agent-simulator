@@ -353,7 +353,7 @@ test("secret-material names WARN once regardless of contents; env templates are 
     "id_rsa", "id_ed25519", "cert.p12", "cert.pfx"];
   const files: Record<string, string | Buffer> = { [`${AGENT}/agent.ts`]: AGENT_TS };
   for (const name of names) files[`${AGENT}/${name}`] = Buffer.from([0xff, 0]);
-  for (const name of [".env.example", ".env.sample", ".env.template", "env", "key.txt"])
+  for (const name of [".env.example", ".env.sample", ".env.template", ".env.local.example", "env", "key.txt"])
     files[`${AGENT}/${name}`] = "placeholder\n";
   const report = scan(fixtureDir(t, files));
   assert.equal(report.accept, true);
@@ -364,12 +364,37 @@ test("secret-material names WARN once regardless of contents; env templates are 
 test("binary contents are not text-scanned even when they contain a token", (t) => {
   const dir = fixtureDir(t, {
     [`${AGENT}/agent.ts`]: AGENT_TS,
-    [`${AGENT}/invalid.dat`]: Buffer.concat([Buffer.from(SECRET + " ".repeat(65536)), Buffer.from([0xff])]),
     [`${AGENT}/nul.dat`]: `${SECRET}${" ".repeat(65536)}\0`,
   });
   const report = scan(dir);
   assert.equal(report.accept, true);
   assert.deepEqual(secretWarns(report), []);
+});
+
+test("a key in text that is not UTF-8 (a Shift_JIS note) still WARNs", (t) => {
+  // "テスト" in Shift_JIS, on either side of the key: 0x83 is not a valid UTF-8 lead byte.
+  const sjis = Buffer.from([0x83, 0x65, 0x83, 0x58, 0x83, 0x67]);
+  const report = scan(fixtureDir(t, {
+    [`${AGENT}/agent.ts`]: AGENT_TS,
+    [`${AGENT}/before.md`]: Buffer.concat([sjis, Buffer.from(`\n${SECRET}\n`)]),
+    [`${AGENT}/after.md`]: Buffer.concat([Buffer.from(`${SECRET}\n`), sjis]),
+  }));
+  assert.deepEqual(secretWarns(report).map((f) => f.path).sort(), [`${AGENT}/after.md`, `${AGENT}/before.md`]);
+});
+
+test("in text, a 0x + 64-hex string counts as a key only after a key-like name on its line", (t) => {
+  const hex = "0x" + "ab".repeat(32);
+  const report = scan(fixtureDir(t, {
+    [`${AGENT}/agent.ts`]: AGENT_TS,
+    [`${AGENT}/prompt.md`]: `Watch for tx ${hex} and topic ${hex}.\n`,
+    [`${AGENT}/run.jsonl`]: `{"kind":"mempool","hash":"${hex}"}\n`,
+    [`${AGENT}/notes.yaml`]: `slot: ${hex}\nsecret: ${hex}\n`,
+    [`${AGENT}/keys.txt`]: `AGENT_PRIVATE_KEY=${hex}\n`,
+    [`${AGENT}/split.txt`]: " ".repeat(65536 - 20) + `private key ${hex}\n`,
+    [`${AGENT}/far.txt`]: `private key${" ".repeat(80)}${hex}\n`,
+  }));
+  assert.deepEqual(secretWarns(report).map((f) => f.path).sort(),
+    [`${AGENT}/keys.txt`, `${AGENT}/notes.yaml`, `${AGENT}/split.txt`]);
 });
 
 test("a secret split across text read boundaries still WARNs once", (t) => {

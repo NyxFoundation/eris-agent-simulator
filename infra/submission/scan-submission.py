@@ -72,19 +72,38 @@ CODE_RULES = [
 SECRET_RE = re.compile(r"(0x[a-fA-F0-9]{64})|(xox[baprs]-[A-Za-z0-9-]{10,})|(sk-[A-Za-z0-9]{20,})|(AKIA[0-9A-Z]{16})")
 MINER_RE = re.compile(r"stratum\+tcp|xmrig|coinhive|cryptonight|ethminer|nicehash", re.I)
 
+# Text outside code: a 0x + 64-hex string there is as often a tx hash, a storage slot or an event topic
+# (prompt.md notes, yaml, an agent's .jsonl log) as a private key, so it counts only after a key-like
+# name earlier on the same line (`PRIVATE_KEY=0x...`, `secret: 0x...`). The other patterns have no
+# innocent reading and count anywhere.
+TEXT_SECRET_RE = re.compile(r"(xox[baprs]-[A-Za-z0-9-]{10,})|(sk-[A-Za-z0-9]{20,})|(AKIA[0-9A-Z]{16})")
+HEX_KEY_RE = re.compile(r"0x[a-fA-F0-9]{64}")
+KEY_NAME_RE = re.compile(r"(?i:priv(ate)?[_\- ]?key|secret|mnemonic|api[_\- ]?key|\bpk\b)|_KEY\b")
+KEY_NAME_LOOKBACK = 64
+
+def text_has_secret(text):
+    if TEXT_SECRET_RE.search(text): return True
+    for m in HEX_KEY_RE.finditer(text):
+        before = text[max(0, m.start() - KEY_NAME_LOOKBACK):m.start()].rsplit("\n", 1)[-1]
+        if KEY_NAME_RE.search(before): return True
+    return False
+
 def scan_secrets(path, fp):
-    # Validate the whole file as UTF-8 text, without loading a huge file into memory. Keep enough
-    # overlap for every SECRET_RE alternative, including a token split across reads.
-    found = False; tail = ""
+    # Read in chunks so a huge file is not loaded whole. A NUL byte means binary, which is not scanned.
+    # Bytes that are not UTF-8 are replaced rather than ending the scan: a note saved as Shift_JIS
+    # still holds its key in ASCII. The overlap keeps a token split across reads, with the name before it.
+    tail = ""
     try:
-        with open(fp, encoding="utf-8") as f:
+        with open(fp, "rb") as f:
+            found = False
             while True:
                 chunk = f.read(65536)
                 if not chunk: break
-                if "\0" in chunk: return
-                if SECRET_RE.search(tail + chunk): found = True
-                tail = chunk[-128:]
-    except (UnicodeError, OSError): return
+                if b"\0" in chunk: return
+                text = tail + chunk.decode("utf-8", errors="replace")
+                if not found and text_has_secret(text): found = True
+                tail = text[-256:]
+    except OSError: return
     if found: add("WARN", path, "looks like a hardcoded secret/key/token")
 
 def scan_code(path, text):
@@ -252,7 +271,7 @@ def walk_dir(root):
             except OSError: continue
             total += sz
             low = fn.lower()
-            if ((low == ".env" or low.startswith(".env.")) and low not in (".env.example", ".env.sample", ".env.template")
+            if ((low == ".env" or low.startswith(".env.") and not low.endswith((".example", ".sample", ".template")))
                     or low.endswith((".pem", ".key", ".p12", ".pfx")) or low in ("id_rsa", "id_ed25519")):
                 add("WARN", rel, "secret-material file name (.env / key file); check it is meant to ship")
             if check_vendored(rel, fp): continue
