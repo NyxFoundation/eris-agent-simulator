@@ -1,7 +1,7 @@
 // Pure pieces of the faucet bot: no Discord, no network, no files. Everything that decides whether a
 // request is accepted lives here so it can be tested without a token.
 
-// The same rules as ~/.claude/skills/devnet-register/scripts/register.sh. The values are spliced into
+// The same rules as infra/devnet/register.sh. The values are spliced into
 // a YAML file, so nothing outside these sets may get through.
 export const AGENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
