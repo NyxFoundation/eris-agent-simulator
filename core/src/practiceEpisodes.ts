@@ -131,6 +131,89 @@ export function dailyEpisodePlan(hours: number, segmentHours = 24): DayPlan[] {
   return plan;
 }
 
+/** Where a running period is, read off its checkpoint (core/src/realtime/periodResume.ts). */
+export type PeriodPosition = {
+  runStartBlock: number;
+  /** The run block the saved episodes' windowFrac are fractions of (stress.windowBaseBlocks). */
+  windowBaseBlocks: number;
+  /** Where the saved episodes end: the period's current end block, absolute. */
+  endBlock: number;
+  /** A block the chain was at, and when -- the projection's anchor. */
+  atBlock: number;
+  atMs: number;
+  /** The day grid's origin: day k is [startedAt + k x segmentHours, + segmentHours). */
+  startedAtMs: number;
+  blockTimeSec: number;
+};
+
+/**
+ * The episodes for the days an extension adds (periodResume.ts periodExtension): one of every kind
+ * in each day-grid slice from where the saved episodes end to `endsAtMs`, EDGE_MARGIN_HOURS clear of
+ * both ends of the slice (a slice cut short at either end the same way, and none under
+ * MIN_SLICE_HOURS). Times become blocks at the cadence from the anchor -- not from the period's
+ * start, which the chain has fallen behind by every hour it was stopped -- and blocks become
+ * fractions of `windowBaseBlocks`, so the values run past 1.
+ */
+export function extensionEpisodePlan(
+  pos: PeriodPosition,
+  endsAtMs: number,
+  segmentHours = 24,
+): DayPlan[] {
+  const hourMs = 3_600_000;
+  const blockAt = (ms: number) =>
+    pos.atBlock + (ms - pos.atMs) / 1000 / pos.blockTimeSec;
+  const msAt = (block: number) =>
+    pos.atMs + (block - pos.atBlock) * pos.blockTimeSec * 1000;
+  const fromMs = Math.max(msAt(pos.endBlock), pos.atMs);
+  if (!(endsAtMs > fromMs)) return [];
+  const frac = (ms: number) =>
+    round6((blockAt(ms) - pos.runStartBlock) / pos.windowBaseBlocks);
+  const sliceMs = segmentHours * hourMs;
+  const plan: DayPlan[] = [];
+  const first = Math.floor((fromMs - pos.startedAtMs) / sliceMs);
+  for (let day = first; pos.startedAtMs + day * sliceMs < endsAtMs; day++) {
+    const from = Math.max(fromMs, pos.startedAtMs + day * sliceMs);
+    const to = Math.min(endsAtMs, pos.startedAtMs + (day + 1) * sliceMs);
+    if ((to - from) / hourMs < MIN_SLICE_HOURS) continue;
+    const lo = frac(from + EDGE_MARGIN_HOURS * hourMs);
+    const hi = frac(to - EDGE_MARGIN_HOURS * hourMs);
+    plan.push({
+      day,
+      fromHours: round6((from - pos.startedAtMs) / hourMs),
+      toHours: round6((to - pos.startedAtMs) / hourMs),
+      events: dayTemplates(day).map((e) => withWindow(e, lo, hi)),
+    });
+  }
+  return plan;
+}
+
+/**
+ * Append event lines to the list under `stress:` / `events:`, after its last entry, and set
+ * `stress.windowBaseBlocks`. Every line already there stays as it was: the saved episodes have to
+ * be unchanged for the period to resume extended.
+ */
+export function appendStressEvents(
+  text: string,
+  eventLines: string[],
+  windowBaseBlocks: number,
+): string {
+  const lines = text.split("\n");
+  const stress = lines.findIndex((l) => l === "stress:");
+  if (stress < 0) throw new Error("no top-level `stress:` in the config");
+  const events = lines.findIndex((l, i) => i > stress && l === "  events:");
+  if (events < 0) throw new Error("no `  events:` under `stress:`");
+  let end = events + 1;
+  while (end < lines.length && lines[end].startsWith("    ")) end++;
+  const out = [...lines.slice(0, end), ...eventLines, ...lines.slice(end)];
+  const base = `  windowBaseBlocks: ${windowBaseBlocks}`;
+  const existing = out.findIndex(
+    (l, i) => i > stress && /^ {2}windowBaseBlocks:/.test(l),
+  );
+  if (existing >= 0) out[existing] = base;
+  else out.splice(stress + 1, 0, base);
+  return out.join("\n");
+}
+
 function round6(x: number): number {
   return Math.round(x * 1e6) / 1e6;
 }

@@ -20,6 +20,11 @@ export type RealtimeConfig = SimConfig & {
   // Market stress events (ADR 0009). A deterministic overlay applied on top of the OU base price.
   // A JSON array (range spec) in ERIS_STRESS_EVENTS supplies spike/crash. Empty (default) matches a normal run.
   stressEvents: StressEventConfig[];
+  // What `windowFrac` is a fraction of, when not the run itself (stress.windowBaseBlocks). Set only
+  // when a practice period is extended (periodResume.ts periodExtension): it holds the length the
+  // period was first converted to, so the windows already placed keep their blocks. Absent = the run,
+  // and absent rather than 0 so that a config without it describes the same world as before.
+  stressWindowBaseBlocks?: number;
   // Vulnerability injection events (ADR 0014). Deploys and funds N new pools (mix of honest/rigged)
   // during the run, derived from SEED. A JSON array (range spec) in ERIS_VULN_EVENTS. Empty (default) matches a normal run.
   vulnEvents: VulnEventConfig[];

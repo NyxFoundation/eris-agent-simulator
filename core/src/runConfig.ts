@@ -56,9 +56,21 @@ export function loadRunConfig(
   overrides: Record<string, string | number | boolean> = {},
 ): RunConfigResult {
   const { config, doc, configPath, source } = loadYamlConfig(path, overrides);
+  const windowBase = source.ERIS_STRESS_WINDOW_BASE_BLOCKS?.trim() ?? "";
+  const stressWindowBaseBlocks = windowBase === "" ? undefined : Number(windowBase);
+  if (
+    stressWindowBaseBlocks !== undefined &&
+    !(Number.isInteger(stressWindowBaseBlocks) && stressWindowBaseBlocks > 0)
+  )
+    throw new Error(
+      `stress.windowBaseBlocks must be a positive integer (blocks), got ${JSON.stringify(windowBase)}`,
+    );
   const realtimeConfig: RealtimeConfig = {
     ...config,
-    stressEvents: parseStressEvents(source.ERIS_STRESS_EVENTS),
+    stressEvents: parseStressEvents(source.ERIS_STRESS_EVENTS, {
+      windowFracBeyondRun: stressWindowBaseBlocks !== undefined,
+    }),
+    ...(stressWindowBaseBlocks !== undefined ? { stressWindowBaseBlocks } : {}),
     vulnEvents: parseVulnEvents(source.ERIS_VULN_EVENTS),
   };
   // Roster: use inline `agents:` if present, otherwise read the AGENTS_CONFIG file.

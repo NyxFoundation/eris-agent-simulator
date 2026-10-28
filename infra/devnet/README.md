@@ -117,7 +117,8 @@ participant holds changes: their manifest, nonces and approvals are all still go
 | no checkpoint is on the chain (it was reset or redeployed) | refuses, naming the blocks it looked for |
 | no open period, and no new one asked for | refuses |
 | `runs/NEW_PERIOD` exists, or `--new-period` was passed | marks every open period superseded, reverts the chain to the setup snapshot and starts a new period; the file is removed once that period has written its first checkpoint |
-| the config describes a different world | refuses, listing what differs. Across a restart only the fee rule (`fees.*`, `run.economicGas`), `flow.topUpEveryBlocks`, `run.registrationsFile` and the agents' readiness wait, disk quotas and sandbox may change |
+| the config describes a different world | refuses, listing what differs. Across a restart only the fee rule (`fees.*`, `run.economicGas`), `flow.topUpEveryBlocks`, `run.registrationsFile` and the agents' readiness wait, disk quotas and sandbox may change — and the period may be **extended** (below) |
+| `run.endsAt` is later, the new days' episodes are appended, and `stress.windowBaseBlocks` holds the period's first length | extends the period (`period_resumed` carries `extended`): the end block moves, every episode already placed stays on its block, the appended ones are checked to start in the future |
 
 So the restart policy is what it was — `Restart=on-failure`, `RestartSec=30`,
 `StartLimitIntervalSec=1h` / `StartLimitBurst=3` (a persistent fault stops the unit and waits for a
@@ -176,6 +177,34 @@ new period:
    when only the new period is in `ERIS_DASHBOARD_COMPETITIONS`. The coordinator never touches this
    file (it rewrites `matrix.json` from memory at every roll). The practice period ranks every day on
    its own return from its own opening value, so days from two chains stand side by side.
+
+### Extending a period
+
+The end of a period is in its world, so a later `run.endsAt` used to mean a new period — and a new
+period reverts every participant's chain. An extension instead keeps the chain, the balances, the
+standings and every episode already placed (the rules moved the practice end from 10/31 to 11/30
+while a period was running):
+
+1. Copy the running period's checkpoint off the box: `runs/<period>/resume/state.json`.
+2. In a checkout, set the new `run.endsAt` in `config/practice.yaml` and append the new days:
+   `npm run gen:practice-episodes -- --extend <state.json>`. It leaves every episode line as it was,
+   appends one of each kind per day of the day grid from where the period's episodes end to the new
+   date, and writes `stress.windowBaseBlocks` (the length the period was first converted to, which
+   `windowFrac` is a fraction of from now on, so the appended values run past 1). The new days are
+   placed from the checkpoint's block and time, not from the period's start: the chain is behind the
+   wall clock by every hour it was stopped.
+3. Merge, move the box's pin to it, restart. The coordinator compares the saved world with the
+   config (`checkPeriodExtension`), converts the new date the way the first start did — the blocks
+   the period has had, plus what is left from now at the cadence — then builds the schedule both
+   ways and refuses unless the saved windows resolve to the same blocks and every appended one starts
+   at least 300 blocks past the head (`extendedScheduleProblems`). A refusal names the window. If the
+   chain stalled between steps 1 and 3, the last day's windows can fall past the new end: generate
+   again from a fresh checkpoint.
+4. Tell participants to fetch `manifest.json` again and restart their agents when convenient. Their
+   chain, nonces and approvals are unchanged and they keep trading, but the manifest they hold names
+   the old end, so `blocksRemaining` reaches 0 at the old end block.
+
+An earlier end, an episode edited or removed, or a base that would move a placed window is refused.
 
 Adding a participant mid-period still does not need a restart — that is what
 `run.registrationsFile` is for ([practice devnet](../../docs/guide/practice-devnet.md)), and entries

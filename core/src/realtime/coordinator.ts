@@ -15,7 +15,9 @@ import { parseCliFlags, resolveRunInputs } from "../runConfig.js";
 import {
   CheckpointWriter,
   CHECKPOINT_SCHEMA,
+  checkPeriodExtension,
   chooseCheckpoint,
+  extendedScheduleProblems,
   clearNewPeriodRequest,
   closePeriod,
   configDiff,
@@ -606,6 +608,9 @@ type SubmittedMeta = TxOwner & {
 // minute at the practice cadence -- is nothing against the loop, and a participant who registers
 // waits a minute rather than a restart.
 const REGISTRATIONS_POLL_BLOCKS = 30;
+// An extended period's appended episodes start at least this far past the chain head at the restart
+// (periodResume.ts extendedScheduleProblems): 300 blocks is ten minutes at the practice cadence.
+const EXTENSION_HEAD_MARGIN_BLOCKS = 300;
 
 // The realtime-mode orchestrator (reduced to "environment daemon + scorer" in ADR 0006).
 //
@@ -875,6 +880,7 @@ export async function runRealtimeSimulation(
     checkpoint: PeriodCheckpoint;
     rewound: boolean;
     head: number;
+    extension: Record<string, unknown> | null;
   } | null = null;
   let newPeriodByMarker = false;
   if (periodMode) {
@@ -933,19 +939,76 @@ export async function runRealtimeSimulation(
         throw new Error(
           `${choice.reason}. If the chain was reset on purpose, start a new period with --new-period`,
         );
-      const diff = configDiff(choice.checkpoint.world, worldNow);
-      if (diff.length > 0)
+      const cpChosen = choice.checkpoint;
+      const check = checkPeriodExtension(cpChosen.world, worldNow, cpChosen.runBlocks);
+      if (check.kind === "refused")
         throw new Error(
           `the config does not describe the world period ${period.competitionId} was started in:\n  ` +
-            `${diff.join("\n  ")}\n` +
-            `Across a restart only ${MUTABLE_CONFIG_KEYS.join(", ")} may change. Put the rest back, or ` +
-            "start a new period with --new-period",
+            `${check.diff.join("\n  ")}\n` +
+            `Across a restart only ${MUTABLE_CONFIG_KEYS.join(", ")} may change, and the period may be ` +
+            "extended (a later run.endsAt, episodes appended, stress.windowBaseBlocks; infra/devnet/README.md). " +
+            "Put the rest back, or start a new period with --new-period",
         );
-      resume = { period, checkpoint: choice.checkpoint, rewound: choice.rewound, head };
       // The period's length is the one its first start converted run.endsAt into (the date is in the
       // world; the block count it came to at that start is the checkpoint's). Converted again now, the
       // windows placed as fractions of it would all move.
-      config.runBlocks = choice.checkpoint.runBlocks;
+      let extension: Record<string, unknown> | null = null;
+      if (check.kind === "extend") {
+        // Extended: the blocks the period has had, plus the new date converted the way the first start
+        // converted the old one -- the loader's runBlocks is what is left from now at the cadence. Not
+        // the old count plus the added days: the chain is behind the wall clock by every hour it was
+        // stopped, so that would end the period days after its date.
+        const extendedBlocks = head - cpChosen.runStartBlock + 1 + config.runBlocks;
+        if (extendedBlocks <= cpChosen.runBlocks)
+          throw new Error(
+            `run.endsAt ${check.endsAtAfter} would end period ${period.competitionId} at run block ${extendedBlocks}, ` +
+              `not after its current end (${cpChosen.runBlocks}, from ${check.endsAtBefore}): the chain is behind ` +
+              "the wall clock, so the new date has to be later than the current end lands",
+          );
+        const savedConfigs = config.stressEvents.slice(0, check.savedEvents);
+        const before = new EventSchedule(
+          savedConfigs,
+          config.seed,
+          cpChosen.runBlocks,
+          check.windowBaseBefore,
+        );
+        const after = new EventSchedule(
+          config.stressEvents,
+          config.seed,
+          extendedBlocks,
+          check.windowBase,
+        );
+        // Room for the first pass's catch-up and the episodes' own ramp: nothing appended may start
+        // within a few minutes of the head.
+        const nextOpenOffset = head - cpChosen.runStartBlock + 1 + EXTENSION_HEAD_MARGIN_BLOCKS;
+        const problems = extendedScheduleProblems(before.events, after.events, nextOpenOffset);
+        if (problems.length > 0)
+          throw new Error(
+            `period ${period.competitionId} cannot be extended to ${check.endsAtAfter}:\n  ${problems.join("\n  ")}`,
+          );
+        extension = {
+          endsAtBefore: check.endsAtBefore,
+          endsAtAfter: check.endsAtAfter,
+          runBlocksBefore: cpChosen.runBlocks,
+          runBlocks: extendedBlocks,
+          endBlockBefore: cpChosen.runStartBlock + cpChosen.runBlocks,
+          endBlock: cpChosen.runStartBlock + extendedBlocks,
+          windowBaseBlocks: check.windowBase,
+          savedEvents: check.savedEvents,
+          appendedEvents: check.appendedEvents,
+          appendedWindows: after.events.length - before.events.length,
+          ...(after.events.length > before.events.length
+            ? {
+                firstAppendedBlock:
+                  cpChosen.runStartBlock + after.events[before.events.length].startBlock,
+              }
+            : {}),
+        };
+        config.runBlocks = extendedBlocks;
+      } else {
+        config.runBlocks = cpChosen.runBlocks;
+      }
+      resume = { period, checkpoint: cpChosen, rewound: choice.rewound, head, extension };
     }
   }
   const cp = resume?.checkpoint;
@@ -1002,6 +1065,7 @@ export async function runRealtimeSimulation(
       start: resume.checkpoint.starts + 1,
       checkpointWrittenAt: resume.checkpoint.writtenAt,
       configChanges: changed,
+      ...(resume.extension ? { extended: resume.extension } : {}),
       ...(cutReport &&
       (cutReport.truncated.length > 0 ||
         cutReport.movedSegments.length > 0 ||
@@ -1043,7 +1107,11 @@ export async function runRealtimeSimulation(
     console.error(
       `[period] resuming ${runId} after block ${resume.checkpoint.lastProcessedBlock} ` +
         `(chain head ${resume.head}${resume.rewound ? ", the chain went back: artifacts cut to the checkpoint" : ""})` +
-        (changed.length > 0 ? `; config changes: ${changed.join("; ")}` : ""),
+        (changed.length > 0 ? `; config changes: ${changed.join("; ")}` : "") +
+        (resume.extension
+          ? `; extended to ${resume.extension.endsAtAfter}: ends at block ${resume.extension.endBlock} ` +
+            `(was ${resume.extension.endBlockBefore}), ${resume.extension.appendedWindows} episode window(s) appended`
+          : ""),
     );
   } else {
     logger.event({
@@ -1336,6 +1404,7 @@ export async function runRealtimeSimulation(
     config.stressEvents,
     config.seed,
     config.runBlocks,
+    config.stressWindowBaseBlocks ?? config.runBlocks,
   );
   const stressAudit = new StressAudit(schedule.events, event => logger.event(event));
   if (cp) stressAudit.restore(cp.stressAudit);

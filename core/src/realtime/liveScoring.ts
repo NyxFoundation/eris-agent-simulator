@@ -362,7 +362,12 @@ export class LiveScorer {
     }
     this.lastAttempted = snapshot.lastAttempted;
     this.failures = snapshot.failures;
-    this.endBlock = snapshot.endBlock;
+    // The later of the two: a period extended at this start (periodResume.ts periodExtension) was
+    // constructed with its new end, and the snapshot holds the old one. Otherwise they are the same.
+    this.endBlock =
+      snapshot.endBlock === null || this.endBlock === null
+        ? snapshot.endBlock
+        : Math.max(snapshot.endBlock, this.endBlock);
     this.firstBoundaryBlockNumber = snapshot.firstBoundaryBlock;
     this.firstBoundaryByAgent.clear();
     for (const [id, v0] of Object.entries(snapshot.firstBoundaryByAgent))
