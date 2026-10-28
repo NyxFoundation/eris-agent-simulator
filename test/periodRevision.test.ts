@@ -8,6 +8,7 @@ import { parse } from "yaml";
 import {
   checkPeriodExtension,
   revisedScheduleProblems,
+  firstRevisedWindow,
 } from "../core/src/realtime/periodResume.js";
 import { EventSchedule, parseStressEvents } from "../core/src/realtime/events.js";
 import {
@@ -103,17 +104,41 @@ test("a salted stream redraws the played windows, and the check says so", () => 
   assert.match(revisedScheduleProblems(before.events, after.events, 2 * DAY).join(), /saltWithEventList: false/);
 });
 
-test("revisedScheduleProblems: an added played window, and played windows out of order", () => {
+test("revisedScheduleProblems: played windows are compared by index, wherever they sit in the list", () => {
   const w = (type: string, startBlock: number) => ({ type, startBlock });
+  // A day lists its episodes in a fixed order and each opens at its own block: a head mid-day finds a
+  // later entry played and an earlier one not. Unchanged, that is fine (the practice box, 2026-10-28:
+  // the prefix rule this replaced refused it).
+  assert.deepEqual(
+    revisedScheduleProblems([w("crash", 80), w("whale", 20), w("depeg", 200)], [w("crash", 80), w("whale", 20), w("spike", 300)], 50),
+    [],
+  );
+  // A played window that changed, wherever it sits.
+  assert.match(
+    revisedScheduleProblems([w("crash", 80), w("whale", 20)], [w("crash", 80), w("whale", 21)], 50).join(),
+    /window 1 \(whale at run block 20\) resolves differently/,
+  );
+  // One that the revision adds before the head, or takes away.
   assert.match(
     revisedScheduleProblems([w("crash", 10)], [w("crash", 10), w("spike", 20)], 50).join(),
-    /1 windows start before run block 50 in the period, 2 once revised/,
+    /adds window 1/,
   );
-  assert.match(
-    revisedScheduleProblems([w("crash", 10), w("spike", 80), w("whale", 20)], [w("crash", 10)], 50).join(),
-    /prefix/,
-  );
+  assert.match(revisedScheduleProblems([w("crash", 10), w("whale", 20)], [w("crash", 10)], 50).join(), /window 1 .* is gone/);
+  // An unplayed window may change or vanish.
   assert.deepEqual(revisedScheduleProblems([w("crash", 10), w("spike", 80)], [w("crash", 10), w("whale", 60)], 50), []);
+  assert.deepEqual(revisedScheduleProblems([w("crash", 10), w("spike", 80)], [w("crash", 10)], 50), []);
+  assert.equal(firstRevisedWindow([w("crash", 10), w("spike", 80)], [w("crash", 10), w("whale", 60)]), 1);
+  assert.equal(firstRevisedWindow([w("crash", 10)], [w("crash", 10)]), -1);
+});
+
+test("a head in the middle of a day, with the revision from a later day, is accepted", () => {
+  const revised = oldPlan.flatMap((d) => (d.day >= 3 ? d.events.map((e) => reviseEpisode(e as never)) : d.events));
+  for (const seed of [1, 7, 99, 123456789, 42, 2026]) {
+    const before = new EventSchedule(parseStressEvents(JSON.stringify(oldEvents)), seed, RUN_BLOCKS);
+    const after = new EventSchedule(parseStressEvents(JSON.stringify(revised)), seed, RUN_BLOCKS, RUN_BLOCKS, SEED_ONLY);
+    for (const head of [DAY + DAY / 3, DAY + DAY / 2, 2 * DAY - 3_000])
+      assert.deepEqual(revisedScheduleProblems(before.events, after.events, head), [], `seed ${seed}, head ${head}`);
+  }
 });
 
 test("the generator rewrites day N onward and leaves every earlier line byte for byte", () => {

@@ -653,9 +653,15 @@ export function extendedScheduleProblems(
  * What is wrong with a revised schedule. `before` is the period's schedule as it was, `after` the
  * revised one, both on the same run and base. Every window that starts before `nextOpenOffset` (a
  * run-relative block the coordinator has not processed yet, with room for the catch-up) is played or
- * about to be: those have to come first in both lists and resolve identically -- the same blocks and
- * draws, and so the same indices, which is what the stress audit and the depeg / pull baselines in
- * the checkpoint are keyed by. What starts after it may be anything.
+ * about to be, in either schedule: it has to resolve identically at the same index -- the same blocks
+ * and draws -- because the stress audit and the depeg / pull baselines in the checkpoint are keyed by
+ * that index. What starts after it may be anything.
+ *
+ * Played windows need not come first in the list. A practice day lists its ten episodes in a fixed
+ * order and each opens at its own drawn block, so a head in the middle of a day finds later entries
+ * already played and earlier ones not (measured on the practice box, 2026-10-28: a whale at index 177
+ * had opened while entries before it had not). This used to require a prefix and refused every
+ * revision made mid-day.
  */
 export function revisedScheduleProblems(
   before: readonly ScheduledWindow[],
@@ -664,36 +670,45 @@ export function revisedScheduleProblems(
 ): string[] {
   const show = (v: unknown) =>
     JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x));
-  const played = (ws: readonly ScheduledWindow[]) => {
-    const n = ws.findIndex((w) => w.startBlock >= nextOpenOffset);
-    const k = n < 0 ? ws.length : n;
-    const late = ws.slice(k).findIndex((w) => w.startBlock < nextOpenOffset);
-    return { k, late: late < 0 ? -1 : k + late };
-  };
-  const b = played(before);
-  const a = played(after);
-  const problems: string[] = [];
-  for (const [name, ws, p] of [["the period's", before, b], ["the revised", after, a]] as const)
-    if (p.late >= 0)
-      problems.push(
-        `${name} schedule has window ${p.late} (${ws[p.late].type} at run block ${ws[p.late].startBlock}) before ` +
-          `block ${nextOpenOffset} but after a later one: the played windows have to be a prefix of the list ` +
-          "(revise whole days from the end of the list)",
-      );
-  if (problems.length > 0) return problems;
-  if (a.k !== b.k)
-    return [
-      `${b.k} windows start before run block ${nextOpenOffset} in the period, ${a.k} once revised: an episode ` +
-        "the period has played or is about to play was added, removed or moved -- revise only days that start later",
-    ];
-  for (let i = 0; i < b.k; i++)
-    if (show(before[i]) !== show(after[i]))
+  const played = (w: ScheduledWindow | undefined) => w !== undefined && w.startBlock < nextOpenOffset;
+  const n = Math.max(before.length, after.length);
+  for (let i = 0; i < n; i++) {
+    const b = before[i];
+    const a = after[i];
+    if (!played(b) && !played(a)) continue;
+    if (b === undefined)
       return [
-        `window ${i} (${before[i].type} at run block ${before[i].startBlock}) resolves differently once revised ` +
-          `(${after[i].type} at run block ${after[i].startBlock}): the period has played it or is about to. ` +
+        `the revised schedule adds window ${i} (${a.type} at run block ${a.startBlock}), before block ` +
+          `${nextOpenOffset}: the period has already passed it or is about to -- revise only days that start later`,
+      ];
+    if (a === undefined)
+      return [
+        `window ${i} (${b.type} at run block ${b.startBlock}) is gone once revised: the period has played it ` +
+          "or is about to. Keep its line as it was",
+      ];
+    if (show(b) !== show(a))
+      return [
+        `window ${i} (${b.type} at run block ${b.startBlock}) resolves differently once revised ` +
+          `(${a.type} at run block ${a.startBlock}): the period has played it or is about to. ` +
           "Keep its line as it was, and stress.saltWithEventList: false (a salted stream redraws every window)",
       ];
+  }
   return [];
+}
+
+/**
+ * The first window a revision changes, by index, or -1 when it changes none. What the coordinator
+ * records as where the revised schedule starts to differ (period_resumed.revised).
+ */
+export function firstRevisedWindow(
+  before: readonly ScheduledWindow[],
+  after: readonly ScheduledWindow[],
+): number {
+  const show = (v: unknown) =>
+    JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x));
+  const n = Math.max(before.length, after.length);
+  for (let i = 0; i < n; i++) if (show(before[i]) !== show(after[i])) return i;
+  return -1;
 }
 
 /** A roster entry as it bears on the world: who, which key or address, what runs it. */

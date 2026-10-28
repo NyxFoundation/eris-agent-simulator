@@ -19,6 +19,7 @@ import {
   chooseCheckpoint,
   extendedScheduleProblems,
   revisedScheduleProblems,
+  firstRevisedWindow,
   clearNewPeriodRequest,
   closePeriod,
   configDiff,
@@ -1042,13 +1043,14 @@ export async function runRealtimeSimulation(
             `period ${period.competitionId} cannot be revised:\n  ${problems.join("\n  ")}`,
           );
         const kept = before.events.filter((w) => w.startBlock < nextOpenOffset).length;
+        const first = firstRevisedWindow(before.events, after.events);
         revision = {
           changed: check.changed,
           windowsKept: kept,
           windowsBefore: before.events.length,
           windowsAfter: after.events.length,
-          ...(after.events.length > kept
-            ? { firstRevisedBlock: cpChosen.runStartBlock + after.events[kept].startBlock }
+          ...(first >= 0 && after.events[first] !== undefined
+            ? { firstRevisedWindow: first, firstRevisedBlock: cpChosen.runStartBlock + after.events[first].startBlock }
             : {}),
         };
       }
