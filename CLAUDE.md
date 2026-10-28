@@ -804,6 +804,8 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 
 ### 市場ストレスイベント（spike/crash + Aave 清算。ADR 0009。既定 off）
 
+**公式 12 レジームの base は martingale**（`market.kappa: 0` を 12 本に明示。ADR 0029）。OU は開始時の fair（毎エポック同じ $3,000 / $60,000、ブロック 0 で読める）へ回帰していたので、「開始水準へ向かって建てる」が手数料後も全レジームで名目の ~470bps / エポック（`scripts/measurePredictability.ts`。20 倍の GMX なら配布額の数十 %）。κ を下げるだけでは消えない（乖離が育つ）。ショックは既定のままなので venue の乖離はほぼ不変、エポック終端の fair の sd は ~1.15% → ~4.4%。sdk 既定の κ = 0.02 は公式外（練習期間・venue 単体 regime・example）のために残し、`test/officialMartingale.test.ts` が 12 本 × base で 0 を検査する。cex-drift の `kappaMultRange` / `repriceAnchorProb` は κ = 0 で効かないので外した（全窓が水準を残す）。
+
 OU の base price はそのまま進め、その上に **SEED 由来でランダム化した決定論オーバーレイ**（`core/src/realtime/events.ts` `EventSchedule`）を重ねて effective price を導出する。effective が PriceFeed・Aave WETH オラクル・GMX・採点へ一貫伝播し、窓外では β≈0 を保つ（ADR 0007 を毀損しない）。清算を成立させる **seed 由来 victim 群**（採点対象外）を建てる。`config/local.yaml` の `stress:` セクションで指定:
 
 - `stress.events` — イベント配列（**値でなくレンジ**を与え過学習を抑制）。YAML 配列で書ける（例: `- { type: crash, magnitudeRange: [0.12, 0.16], windowFrac: [0.3, 0.7], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }`）。`spike`/`crash` の台形（ramp→hold→decay）。要 `run.blocks>0`

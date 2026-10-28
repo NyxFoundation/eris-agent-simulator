@@ -131,6 +131,10 @@ made staking a guaranteed loss. Emits `lst_slash` (or `lst_slash_skipped`).
 
 ### `cexDrift` — the reference price walks away and does not come back
 
+The official regimes run with `market.kappa: 0` (ADR 0029): the walk has no mean reversion, so the
+drift alone is the episode and every level it reaches stays. `kappaMultRange` and `repriceAnchor` below
+reshape a reversion and are for configs with `kappa > 0` (the practice period, the venue regimes).
+
 A `process` event: it changes **the price walk itself**, adding a drift and multiplying mean
 reversion by `kappaMultRange` while the window is open. A drift the OU pulls straight back out is not
 a drift, so weakening kappa is part of the event, not a tuning extra. `side` picks the direction

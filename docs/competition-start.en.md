@@ -296,7 +296,7 @@ table are the current YAML ranges; where the published values differ, the rules 
 Words the table uses:
 
 - **Window**: the stretch during which an event is on, written as block counts for ramp (building up) → hold (held at full strength) → decay (fading back)
-- **Mean-reverting walk**: a price that moves randomly each block but is pulled back harder the further it strays from its level. A **drift** is a lean in one direction; a **gap** is a sudden move that skips the prices in between
+- **Random walk**: a price that moves randomly each block with nothing pulling it back to where it started (the official regimes; ADR 0029). A **drift** is a lean in one direction; a **gap** is a sudden move that skips the prices in between
 - **Mid**: the midpoint of what a pool pays to buy and to sell right now; read it as the pool's price
 - **Par**: the price something is supposed to have — $1 for a stablecoin
 - **β**: the part of your PnL that simply follows the whole market up or down. It reflects what you hold and how much, not how well you trade
@@ -305,8 +305,8 @@ Words the table uses:
 
 | # | Regime | What the environment does | Reference agents written for it (§8) |
 |---|---|---|---|
-| 0 | Calm `calm` | No events. The reference price is a mean-reverting walk, the order flow neutral | `venue-arb` / `multi-arb` / `stat-arb`. The baseline for arbitrage: a strategy that loses here loses everywhere |
-| 1 | CEX drift `cex-drift` | While a window is open the reference price carries a drift (0.1–0.2% per block) and mean reversion weakens. Three windows; one of them does not give the level back when it closes. Pool prices keep diverging from the reference | The cross-venue arbitrageurs get work. A directional `levered-long` swings hard on β |
+| 0 | Calm `calm` | No events. The reference price is a random walk (nothing pulls it back to its opening level), the order flow neutral | `venue-arb` / `multi-arb` / `stat-arb`. The baseline for arbitrage: a strategy that loses here loses everywhere |
+| 1 | CEX drift `cex-drift` | While a window is open the reference price carries a drift (0.1–0.2% per block). Two to four windows; the level the drift reached stays when a window closes. Pool prices keep diverging from the reference | The cross-venue arbitrageurs get work. A directional `levered-long` swings hard on β |
 | 2 | Informed flow `informed-flow` | The environment's order flow leans one way while a window is open (2–3× size, correlation 1.0, 12-block persistence; two windows). Hard to tell from calm | `stat-arb` / `multi-arb` |
 | 3 | Whale `whale` | A single 25–60 WETH order knocks a pool's mid. Four of them, two pinned to Balancer / Curve. The reference price does not move | `venue-arb` / `multi-arb` / `max-profit-arb`. Whoever takes the dislocation first wins it, so bidding priority fee matters |
 | 4 | Lending incident `lending-incident` | The reference price falls 12–16%, in the same window every AMM loses 40–60% of its depth, and two victim accounts opened at HF 1.10 become liquidatable on Aave | `liquidator` (the one liquidating) / `levered-long` (managing not to be the one liquidated) |
