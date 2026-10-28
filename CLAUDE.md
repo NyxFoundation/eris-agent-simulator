@@ -804,7 +804,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 
 ### 市場ストレスイベント（spike/crash + Aave 清算。ADR 0009。既定 off）
 
-**公式 12 レジームの base は martingale**（`market.kappa: 0` を 12 本に明示。ADR 0029）。OU は開始時の fair（毎エポック同じ $3,000 / $60,000、ブロック 0 で読める）へ回帰していたので、「開始水準へ向かって建てる」が手数料後も全レジームで名目の ~470bps / エポック（`scripts/measurePredictability.ts`。20 倍の GMX なら配布額の数十 %）。κ を下げるだけでは消えない（乖離が育つ）。ショックは既定のままなので venue の乖離はほぼ不変、エポック終端の fair の sd は ~1.15% → ~4.4%。sdk 既定の κ = 0.02 は公式外（練習期間・venue 単体 regime・example）のために残し、`test/officialMartingale.test.ts` が 12 本 × base で 0 を検査する。cex-drift の `kappaMultRange` / `repriceAnchorProb` は κ = 0 で効かないので外した（全窓が水準を残す）。
+**公式 12 レジームの base は martingale**（`market.kappa: 0` を 12 本に明示。ADR 0029）。OU は開始時の fair（毎エポック同じ $3,000 / $60,000、ブロック 0 で読める）へ回帰していたので、「開始水準へ向かって建てる」が手数料後も全レジームで名目の ~470bps / エポック（`scripts/measurePredictability.ts`。20 倍の GMX なら配布額の数十 %）。κ を下げるだけでは消えない（乖離が育つ）。ショックは既定のままなので venue の乖離はほぼ不変、エポック終端の fair の sd は ~1.15% → ~4.4%。sdk 既定の κ = 0.02 は公式外（練習期間・venue 単体 regime・example）のために残し、`test/officialMartingale.test.ts` が 12 本 × base で 0 を検査する。**cex-drift はドリフトをやめて `volBurst`**（ADR 0029 Amendment 4。新しい process イベント: 窓の間だけブロックの揺れを run 自身の値から `magnitudeRange` = ピークの volatility（`market.volatility` と同じ単位）へ台形で上げ下げし、ドリフトと回帰は触らない = 向きが無い。公式は 0.008〜0.012 = 2〜3 倍）。ドリフト（0.1〜0.2% / ブロック × 30〜54 ブロック）はノイズに対して ~10 ブロックで見分けられ、追随が名目の +540〜700bps / エポックだった（calm では同じ規則が −13〜−47）。変更後は −49（手数料）。プールがどれだけ遅れるか（calm 40bps・informed 帯 30bps に対して）はチェーンで未測定で、2〜3 倍は出発点。`cexDrift` 型は公式外のために残り、`test/officialMartingale.test.ts` が公式での使用を拒む。**価格ギャップも戻らない**（ADR 0029 Amendment 1）: crash / spike / lending-incident / cdp-incident は `recoverFrac: [0, 0]`（旧 [0.4, 1.0] は「止まったら逆張り」が名目の +1,100〜2,200bps / エポック、下限が 0 より上なので利幅を縮めただけだった。decay は直線なので幅を 0 跨ぎにしても追随で取れる）・`rampBlocks: [2, 3]`（約定が観測の 2 ブロック後なので 4 だと最後の 1/4 を追随で取れた）・crash `flipProb: 0.5`・spike は 1 本 24〜32% 反転なし（下固定の lending + cdp と釣り合わせ、12 本一様のギャップ期待 ≈ 0 = 「base を持たない」が得にならない）・4 本とも `windowFrac: [0.3, 0.7]`。測定は `npx tsx scripts/measurePredictability.ts`。**練習期間も同じ形**（ADR 0029 Amendment 3）: 1 か月続くチェーンに公式の揺れで κ = 0 を入れると 1 日 sd ~48% になるので、`market: { volatility: 0.00037, kappa: 0 }`（ブロック sd は公式の 1/11、練習 1 日 ≈ 公式 1 エポックの散らばり）、ギャップは戻らない・上下半々・2〜4%、cex-drift の窓は公式と同じ絶対値の volBurst（`core/src/practiceEpisodes.ts`）。合計で 1 日 ~6.9%、残り 32 日で ~39%。**期間は止めずに途中から切り替える**: `periodResume.ts` の revise（`market.*` と未再生のエピソードは変えてよい、head + 300 ブロックより前に始まる窓は同一でなければ拒否 = `revisedScheduleProblems`）と `npm run gen:practice-episodes -- --revise-from-day N`（day N より前の行はバイト単位で不変）。そのために **`stress.saltWithEventList: false`**（変化キーのあるリストは digest を salt に混ぜるので、未来の行を変えると過去の窓まで引き直される。公式レジームは設定しない）。練習期間は day 23 から書き換え済み（`infra/devnet/README.md`「Revising a period」）。
 
 OU の base price はそのまま進め、その上に **SEED 由来でランダム化した決定論オーバーレイ**（`core/src/realtime/events.ts` `EventSchedule`）を重ねて effective price を導出する。effective が PriceFeed・Aave WETH オラクル・GMX・採点へ一貫伝播し、窓外では β≈0 を保つ（ADR 0007 を毀損しない）。清算を成立させる **seed 由来 victim 群**（採点対象外）を建てる。`config/local.yaml` の `stress:` セクションで指定:
 
@@ -830,7 +830,7 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
 - **窓の数・形・向き・戻り方も seed が引く**（2026-09-27）。以前は magnitude と開始位置しか引いておらず、本数・バンド・台形の長さ・crash の向き・必ず全部戻ることは YAML に書いてあった。
   `count: [min, max]`（0 可。重ならず、開始は `windowFrac` 内で一様。follower は anchor の本数を窓ごとに対で継ぐ）/ `minGapBlocks` /
   `rampBlocks` 等の `[min, max]` / `flipProb`（crash・spike。解決済みは `type: spike, flippedFrom: crash`。victim のあるレジームでは使わない）/
-  `recoverFrac`（crash・spike。戻らない分は run 終了まで残る = 「急変に逆張りして窓で手仕舞う」の構造的正解を消す。**練習期間では使わない**。残差が複利になる）/
+  `recoverFrac`（crash・spike。戻らない分は run 終了まで残る。公式 4 本は `[0, 0]` = 全く戻らない（ADR 0029 Amendment 1。0 より上の下限は逆張りの利幅を縮めるだけ）。**練習期間では使わない**。残差が複利になる）/
   `venue: random`（whale）/ `repriceAnchorProb`（cexDrift）。公式 10 本に適用済み（calm・vuln は無変更。lending-incident / cdp-incident は暴落 1 本・下落固定で、形と回復だけ）。
   **これらを 1 つでも使うスケジュールはイベント列（FNV-1a）も stream の salt に混ぜる**（イベント列を混ぜないと crash#s と spike#s、depeg と depeg-persist、
   lending-incident と cdp-incident が同じ draw を引き、同じブロックに開いて反転も連動していた）。使わない config は seed だけの stream。
@@ -1328,9 +1328,11 @@ agent 側の `ctx.rng` は address 由来（run の seed ではない）。`SimC
   **vuln factory・その owner（`vuln-pools` 財布、全 run で同額のガス）・`disclosures/`・`ERIS_VULN_*` は全 run**（プールは窓で
   `createPool(initCode)` 1 本で deploy = ADR 0014 Amendment 2。以前は setup で全部 deploy し、作成 selector が正解を名指していた）。
   agent に渡す追加 env の形は `core/src/realtime/agentEnv.ts` が config から決め、coordinator は起動前に照合して違えば落ちる。
-  **victim の一覧（`ERIS_LIQUIDATION_VICTIMS` / `ERIS_LIQUITY_VICTIMS`）だけは既知の例外**: env を消しても victim は block 0 から
-  チェーン上に見える（Aave の HF 1.10 の借り手、`SortedTroves.getLast()` の ICR 1.20）ので、塞ぐには全レジームに victim を
-  置く（デコイ）必要があり、レジームの意味が変わるので別に決める。もう 1 つの既知の穴は vuln プールのソースが公開 repo に
+  **victim は全 12 本で同じ cohort を建てる**（Aave 2 体 HF 1.10 + Liquity 2 本 ICR 1.20。ADR 0029 Amendment 2）。env を消しても
+  victim は block 0 からチェーン上に見える（Aave の HF 1.10 の借り手、`SortedTroves.getLast()` の ICR 1.20）ので、lending-incident /
+  cdp-incident だけにいた頃は「下に 12〜16% 落ちる」が block 0 で分かった。他のレジームではデコイで、割れるのは crash の下向きギャップ
+  （~52%）か κ = 0 の乱歩（Aave ~3% / Liquity ~5%）。coordinator の「victim がいるのに crash が無い」警告は、反転しない crash を
+  持つ regime だけで出す。`test/regimeStartInvariance.test.ts` が env と cohort の同一性を検査する。残っている既知の穴は vuln プールのソースが公開 repo に
   あること（bytecode の骨格で照合できる）
 - **setup ブロックの tx と環境財布の残高もレジームで変えない**（同じテスト）。agent はゲートウェイ越しに
   `runStartBlock` より前のブロック・ログ・残高を読めるので、config と env を揃えても setup がレジームを名指していた:
@@ -1339,7 +1341,7 @@ agent 側の `ctx.rng` は address 由来（run の seed ではない）。`SimC
   （600 WETH + 2.4M USDC。公式の最大の引きを賄う額で、超える引き = 練習期間だけ増やす）、**launch は固定 3 スロット**、
   **deployer の standing approval は `core/src/realtime/standingApprovals.ts` が全 run で同じ集合を送り**、depeg と
   引き抜きの setup は送らずに検査だけする（`requireStandingApprovals`）。公式レジームの最大の引きが固定額に収まることも
-  テストが持つ。flow 財布の配布額・本数も 12 本で同一であることを検査する。**victim の Trove / Aave 建玉は上の既知の例外のまま**
+  テストが持つ。flow 財布の配布額・本数も 12 本で同一であることを検査する。victim の Trove / Aave 建玉も 12 本で同一（上）
 - **bind-mount モードと `--agent-sandbox process` は隔離境界ではない**（repo / host のファイルが全部見える）
 自己改善型は `ERIS_IMPROVE_LOG_CALLS: "1"`（ロスターの env）で LLM との生の対話（system 全文・送信
 messages・生応答・エラー）を `agents/<agentId>.llm.jsonl` に残せる（opt-in。プロンプト調整の一次情報）。

@@ -114,15 +114,16 @@ flow:
   baseInformedMax: { WBTC: "10000000" } # 0.1 BTC: matches the 2 WETH Uniswap informed cap
 
 stress:
-  # The trapezoids and how much of the crash recovers are drawn as in crash.yaml; it stays one crash,
-  # always down, for the same reason as lending-incident (the victims are the regime).
+  # The ramp and the level shift are as in crash.yaml (nothing recovers, ADR 0029 Amendment 1); it
+  # stays one crash, always down, for the same reason as lending-incident (the victims are the regime).
+  # spike.yaml carries the upward gap that keeps the official mix's expected gap at ~0.
   events:
     - {
         type: crash,
-        recoverFrac: [0.4, 1.0],
+        recoverFrac: [0, 0],
         magnitudeRange: [0.12, 0.16],
         windowFrac: [0.3, 0.7],
-        rampBlocks: [2, 4],
+        rampBlocks: [2, 3],
         holdBlocks: [4, 8],
         decayBlocks: [6, 10],
       }
@@ -152,8 +153,20 @@ stress:
       }
   # Two Troves at ICR 1.20 with 5 WETH each (issue #107). A 12 % crash takes them to 1.056, under
   # MCR 1.10; the coordinator warns at setup if a drawn crash could not.
+  #
+  # Victims (ADR 0029 Amendment 2): the same two cohorts in all twelve official regimes. They are on
+  # chain from block 0 (Aave borrowers at HF 1.10, the lowest Troves at ICR 1.20) and their addresses
+  # are handed to every agent, so while only lending-incident and cdp-incident had them, an agent knew
+  # at block 0 that a 12-16% fall was coming and which way to stand. What reaches them is the regime's
+  # business: lending-incident and cdp-incident gap down onto them (~98% of epochs breach), crash does
+  # whenever one of its gaps goes down (~52%), and with no mean reversion (market.kappa) the walk alone
+  # breaches HF 1.10 in ~3% of the other regimes' epochs and ICR 1.20 in ~5% -- liquidation work like
+  # any other. test/regimeStartInvariance.test.ts holds the values equal across the twelve.
+  victimCount: 2
+  victimHf0: 1.10
   liquityVictimCount: 2
   liquityVictimIcr: 1.20
+
 # On in every official regime, not only `launch`: the agent's config carries this section and the
 # runtime is handed the registry's address, so a regime that left it off would be told apart from
 # `launch` at the first block (and a participant could probe it by deploying a token and watching

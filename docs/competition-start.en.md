@@ -207,9 +207,11 @@ You can deposit the four assets below. In actions ERLST is written `"LST"` (`aav
 In practice you can borrow WETH and USDC. WBTC borrowing is enabled, but Aave holds no WBTC at the
 start, so there is nothing to borrow until someone deposits some. ERLST is collateral only and
 cannot be borrowed. Borrowing by itself does not change your asset value: what you borrowed is in
-your wallet and the same amount of debt is subtracted. In the `lending-incident` regime the
-organisers open two borrowers at HF 1.10 and then crash the reference price, which creates
-liquidations to take. Liquidation is not a dedicated action: send Aave's `liquidationCall` through
+your wallet and the same amount of debt is subtracted. In every regime the organisers open
+two borrowers at HF 1.10 before the start (and two Liquity Troves at ICR 1.20). In the
+`lending-incident` regime they then crash the reference price, which creates liquidations to take;
+in any other regime a downward gap or move that breaches them does the same. That the victims exist
+says nothing about the regime. Liquidation is not a dedicated action: send Aave's `liquidationCall` through
 `rawTx` (`example/agents/lib/aave-liquidation.ts`). The victims' addresses arrive in the environment
 variable `ERIS_LIQUIDATION_VICTIMS`. The reference `liquidator` is in the `run(ctx)` form, so it
 cannot be submitted as it stands. The state is in `obs.protocols.aave`: `healthFactor` (scaled by
@@ -295,7 +297,7 @@ table are the current YAML ranges; where the published values differ, the rules 
 
 Words the table uses:
 
-- **Window**: the stretch during which an event is on, written as block counts for ramp (building up) → hold (held at full strength) → decay (fading back)
+- **Window**: the stretch during which an event is on, written as block counts for ramp (building up) → hold (held at full strength) → decay (fading back). A gap in the reference price (crash / spike / the incidents) does not come back: the level the ramp reaches holds to the end of the epoch
 - **Random walk**: a price that moves randomly each block with nothing pulling it back to where it started (the official regimes; ADR 0029). A **drift** is a lean in one direction; a **gap** is a sudden move that skips the prices in between
 - **Mid**: the midpoint of what a pool pays to buy and to sell right now; read it as the pool's price
 - **Par**: the price something is supposed to have — $1 for a stablecoin
@@ -306,16 +308,16 @@ Words the table uses:
 | # | Regime | What the environment does | Reference agents written for it (§8) |
 |---|---|---|---|
 | 0 | Calm `calm` | No events. The reference price is a random walk (nothing pulls it back to its opening level), the order flow neutral | `venue-arb` / `multi-arb` / `stat-arb`. The baseline for arbitrage: a strategy that loses here loses everywhere |
-| 1 | CEX drift `cex-drift` | While a window is open the reference price carries a drift (0.1–0.2% per block). Two to four windows; the level the drift reached stays when a window closes. Pool prices keep diverging from the reference | The cross-venue arbitrageurs get work. A directional `levered-long` swings hard on β |
+| 1 | CEX drift `cex-drift` | While a window is open the reference price moves two to three times as far per block (±0.8–1.2% per block, no direction). Two to four windows of 30–54 blocks; pools fall behind it on either side. Pool prices keep diverging from the reference | The cross-venue arbitrageurs get work. A directional `levered-long` swings hard on β |
 | 2 | Informed flow `informed-flow` | The environment's order flow leans one way while a window is open (2–3× size, correlation 1.0, 12-block persistence; two windows). Hard to tell from calm | `stat-arb` / `multi-arb` |
 | 3 | Whale `whale` | A single 25–60 WETH order knocks a pool's mid. Four of them, two pinned to Balancer / Curve. The reference price does not move | `venue-arb` / `multi-arb` / `max-profit-arb`. Whoever takes the dislocation first wins it, so bidding priority fee matters |
-| 4 | Lending incident `lending-incident` | The reference price falls 12–16%, in the same window every AMM loses 40–60% of its depth, and two victim accounts opened at HF 1.10 become liquidatable on Aave | `liquidator` (the one liquidating) / `levered-long` (managing not to be the one liquidated) |
+| 4 | Lending incident `lending-incident` | The reference price falls 12–16% and stays down (2–3 block ramp), in the same window every AMM loses 40–60% of its depth, and the two victim accounts every regime opens at HF 1.10 become liquidatable on Aave | `liquidator` (the one liquidating) / `levered-long` (managing not to be the one liquidated) |
 | 5 | Stablecoin depeg `depeg` | The environment sells DAI into the USDC/DAI pool (35–60% of its depth; ramp 12 / hold 36 / decay 45 blocks) and opens a discount. **No GMX (nor in `depeg-persist`)** | `peg-arb`. DAI has no redemption floor, so the question is whether you believe it comes back |
-| 6 | Crash `crash` | The reference price gaps 15–22% and liquidity is pulled 40–60% in the same window. No victims are opened | Everyone. Arbitrage shrinks in a thin book and leverage crosses its HF. `trove-manager` / `sp-underwriter` handle the same moment on the Liquity side |
+| 6 | Crash `crash` | The reference price gaps 15–22% and stays there (1–2 gaps, each up or down with even odds, 2–3 block ramp); liquidity is pulled 40–60% in the same window. A downward gap breaches the victims every regime opens | Everyone. Arbitrage shrinks in a thin book and leverage crosses its HF. `trove-manager` / `sp-underwriter` handle the same moment on the Liquity side |
 | 7 | New pools `vuln` | Mid-epoch, 4–6 pools appear, twice; 50–70% of them skim assets from any trade above a size (4–8% of the USDC endowment). The bait is a 3–6% discount | `discovery-arb-verify` (dry-runs before taking) / `discovery-arb` (the unverified control) |
-| 8 | Spike `spike` | The reference price gaps 15–22% **up** and liquidity is pulled 40–60% in the same window. Crash's mirror; no victims are opened | Everyone. The one regime where merely holding the basket is rewarded and a hedge or a short pays; the arbitrage runs the other way round from crash, so it needs USDC inventory |
+| 8 | Spike `spike` | The reference price gaps 24–32% **up** once and stays there (2–3 block ramp); liquidity is pulled 40–60% in the same window (upward, so the victims hold). Sized against the downward-only lending-incident / cdp-incident, so across the twelve regimes the expected gap is about 0 | Everyone. The one regime where merely holding the basket is rewarded and a hedge or a short pays; the arbitrage runs the other way round from crash, so it needs USDC inventory |
 | 9 | Persistent depeg `depeg-persist` | The environment sells DAI as in `depeg` (35–60% of depth; ramp 12 / hold 36) and then **does not buy it back**: the discount stands through the last scored block, the buy-back comes after scoring | `peg-arb`. In `depeg` waiting for par was right by construction; here whatever was bought on the belief that par returns is valued at the discount at the end. The one regime that separates judging the return from assuming it |
-| 10 | CDP incident `cdp-incident` | The environment opens two Troves at ICR 1.20, the reference price falls 12–16% (depth pulled 40–60% in the same window), and in the same window it sells eUSD into its pool. The Troves cross MCR 1.10 and eUSD trades below par | `sp-underwriter` (absorbs through the Stability Pool and liquidates), `redemption-arb` (buys cheap eUSD and redeems against the victims), `trove-manager` (keeps its own Trove out of the redemption path and above MCR) |
+| 10 | CDP incident `cdp-incident` | Against the two ICR 1.20 Troves every regime opens, the reference price falls 12–16% and stays down (depth pulled 40–60% in the same window), and in the same window it sells eUSD into its pool. The Troves cross MCR 1.10 and eUSD trades below par | `sp-underwriter` (absorbs through the Stability Pool and liquidates), `redemption-arb` (buys cheap eUSD and redeems against the victims), `trove-manager` (keeps its own Trove out of the redemption path and above MCR) |
 | 11 | New listings `launch` | Mid-epoch (0.2–0.5) the environment lists 2–3 new tokens at 1.00 USDC in USDC pools (20k–100k USDC a side); they appear in the list of new markets (the registry, `obs.registry`) as `uniswapV3Pool` + `erc20` a block later. Per token, independently, a demand wave follows (starting two blocks after the listing, 0.25–1× the pool's USDC bought over a 20-block ramp, held 30, 50–100% sold back over a 30-block decay) or, with 30–50% probability, does not (a dud). Nothing is announced; the ramp's first blocks are the only signal. **Listed tokens still held when the epoch ends are valued at zero** (rules §4.1) | `launch-confirm` (enters after several blocks in a row where buying outweighs selling, exits once selling outweighs buying) / `launch-sniper` (buys at first sight and sells after a fixed hold — the control) |
 
 Three notes.
@@ -966,7 +968,7 @@ it works" is the regime whose environment gives the strategy something to do (§
 | Arbitrage | `flash-arb` | An Aave flash loan for arbitrage beyond its own capital, in one transaction (`rawTx`). The receiver contract is deployed only under the example config (`run.flashArb: true`), so in the official regimes it reverts as it stands | Aave + AMMs | whale / crash (after pointing it at a receiver you deploy) | no |
 | Arbitrage | `basis-arb` | One AMM leg hedged on the GMX perp (spot against futures) | AMMs + GMX | cex-drift | yes |
 | LP | `lp-provider` | Holds a Uniswap V3 position for fees, pulls it when the gap gets large | Uniswap | calm | no |
-| Leverage | `levered-long` | Borrows on Aave against its own holdings to hold more WETH than it was given (leverage); keeps HF inside a chosen range and repays when it drops below | Aave | cex-drift (direction) / lending-incident, crash (defence) | no |
+| Leverage | `levered-long` | Borrows on Aave against its own holdings to hold more WETH than it was given (leverage); keeps HF inside a chosen range and repays when it drops below | Aave | cex-drift (large swings) / lending-incident, crash (defence) | no |
 | Leverage | `lst-carry` | Stakes the LST for yield or trades the redemption-rate / market-price gap. The Aave collateral loop is opt-in via `ERIS_LST_LEVERAGE_TARGET_HF` | LST + Aave | calm | yes |
 | Liquidation | `liquidator` | Aave `liquidationCall`; idle until victims appear. The example of the **`run(ctx)` form** (§3, not submittable) | Aave | lending-incident | no |
 | CDP | `redemption-arb` | Buys eUSD at a discount and redeems it against the riskiest Trove | Liquity + the eUSD pool | when eUSD trades below par; the dedicated verification regime is `config/regimes/liquity.yaml` | yes |

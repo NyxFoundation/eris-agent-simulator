@@ -145,6 +145,18 @@ stress:
         decayBlocks: 0, # persist: no decay -- the level holds to the last scoring block
         persist: true,
       }
+  # Victims (ADR 0029 Amendment 2): the same two cohorts in all twelve official regimes. They are on
+  # chain from block 0 (Aave borrowers at HF 1.10, the lowest Troves at ICR 1.20) and their addresses
+  # are handed to every agent, so while only lending-incident and cdp-incident had them, an agent knew
+  # at block 0 that a 12-16% fall was coming and which way to stand. What reaches them is the regime's
+  # business: lending-incident and cdp-incident gap down onto them (~98% of epochs breach), crash does
+  # whenever one of its gaps goes down (~52%), and with no mean reversion (market.kappa) the walk alone
+  # breaches HF 1.10 in ~3% of the other regimes' epochs and ICR 1.20 in ~5% -- liquidation work like
+  # any other. test/regimeStartInvariance.test.ts holds the values equal across the twelve.
+  victimCount: 2
+  victimHf0: 1.10
+  liquityVictimCount: 2
+  liquityVictimIcr: 1.20
 
 # On in every official regime, not only `launch`: the agent's config carries this section and the
 # runtime is handed the registry's address, so a regime that left it off would be told apart from

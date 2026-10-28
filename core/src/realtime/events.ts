@@ -62,6 +62,14 @@ export type StressEventType =
   // arbitrageur nothing to do, so calibrating the scoring metric on it measures one kind of skill
   // (docs/scoring-metric-measurements.md §10).
   | "cexDrift"
+  // The reference price moves faster for the window, in no particular direction (ADR 0029
+  // Amendment 4). `magnitudeRange` is the peak per-block volatility -- the same unit as
+  // `market.volatility` -- reached over the ramp and let go over the decay. What the cex-drift regime
+  // runs since a drift turned out to be readable: a direction held for 30-54 blocks at 0.1-0.2% a
+  // block shows itself in ~10 and pays whoever follows it for the rest (+540 to +700 bps of notional
+  // per epoch net of fees, scripts/measurePredictability.ts). A burst keeps what the regime is for --
+  // a reference the pools cannot keep up with -- without a side to stand on.
+  | "volBurst"
   | "flowTrend"
   // A new token and its market appear mid-run (issue #29). The environment lists 2-3 tokens through
   // its own Uniswap V3 factory at the window's start, so they surface through the #40 registry like
@@ -97,6 +105,7 @@ const EVENT_KIND: Record<
   eusdDepeg: "state",
   depeg: "state",
   cexDrift: "process",
+  volBurst: "process",
   flowTrend: "process",
   // The coordinator drives transactions from it every block of the window (list, buy, sell back),
   // the way depeg / liquidityPull do -- but nothing in the existing venues changes, so it is not a
@@ -314,12 +323,15 @@ export type OverlayState = {
   baseMults: Record<string, number>;
 };
 
-// What a cexDrift episode does to the price walk this block (identity outside every window).
+// What a cexDrift or volBurst episode does to the price walk this block (identity outside every window).
 export type OuOverride = {
   // Added to the OU's per-block drift. Signed: negative is a downward episode.
   driftAdd: number;
   // Multiplies mean reversion. 1 leaves it alone.
   kappaMult: number;
+  // volBurst: the volatility the walk moves toward (`peak`) and how far along the trapezoid it is
+  // (`envelope`, 0-1). Absent = the run's own volatility. Overlapping bursts take the larger.
+  vol?: { peak: number; envelope: number };
 };
 
 // What a flowTrend episode does to uninformed order flow this block (identity outside every window).
@@ -369,6 +381,7 @@ export class EventSchedule {
     seed: number,
     runBlocks: number,
     windowBaseBlocks: number = runBlocks,
+    opts: { saltWithEventList?: boolean } = {},
   ) {
     if (configs.length > 0 && runBlocks <= 0) {
       // The window is determined by a fraction of run length, so a fixed-length run (ERIS_RUN_BLOCKS>0) is required.
@@ -411,11 +424,17 @@ export class EventSchedule {
     // them keeps the stream of the seed alone, so its entries draw the same whatever else the list
     // holds (before ADR 0027 that was to keep the practice period's windows byte for byte; the key
     // moves every realization now).
+    //
+    // `saltWithEventList: false` (stress.saltWithEventList) keeps the seed-only stream with variation
+    // keys in the list. Draws are taken entry by entry in list order, so on that stream an entry draws
+    // the same as long as nothing before it changes -- which is what a practice period needs when it
+    // revises the episodes it has not played yet (periodResume.ts): with the list in the salt, every
+    // window already played would be redrawn. The practice period is one regime with its own secret
+    // seed, so the pairing the salt breaks up does not arise there.
+    const salted = opts.saltWithEventList ?? configs.some(usesVariation);
     const rng = Rng.fromSeed(
       seed,
-      configs.some(usesVariation)
-        ? (STRESS_SEED_SALT ^ configDigest(configs)) >>> 0
-        : STRESS_SEED_SALT,
+      salted ? (STRESS_SEED_SALT ^ configDigest(configs)) >>> 0 : STRESS_SEED_SALT,
     );
     // First pass: every draw, in list order. How many draws an entry makes is a function of the
     // config alone -- a count draws its maximum number of windows, not the number it landed on -- so
@@ -655,15 +674,24 @@ export class EventSchedule {
   ouOverrideAt(blockIndex: number, base = "WETH"): OuOverride {
     let driftAdd = 0;
     let kappaMult = 1;
+    let vol: OuOverride["vol"];
     for (const ev of this.events) {
-      if (ev.type !== "cexDrift" || ev.base !== base) continue;
+      if (ev.base !== base) continue;
+      if (ev.type === "volBurst") {
+        const e = stressEnvelope(ev, blockIndex);
+        if (e === 0) continue;
+        if (vol === undefined || ev.magnitude * e > vol.peak * vol.envelope)
+          vol = { peak: ev.magnitude, envelope: e };
+        continue;
+      }
+      if (ev.type !== "cexDrift") continue;
       const e = stressEnvelope(ev, blockIndex);
       if (e === 0) continue;
       driftAdd += (ev.side === "sell" ? -1 : 1) * ev.magnitude * e;
       // Interpolated from 1, so the pull weakens as the episode ramps in.
       if (ev.kappaMult !== undefined) kappaMult *= 1 + (ev.kappaMult - 1) * e;
     }
-    return { driftAdd, kappaMult };
+    return vol === undefined ? { driftAdd, kappaMult } : { driftAdd, kappaMult, vol };
   }
 
   // Where the price process should mean-revert to this block, as a multiple of the run's anchor.
@@ -1124,19 +1152,25 @@ function drawTokenLaunches(
   return launches;
 }
 
-// Apply a cexDrift episode to one base's OU parameters. Kept here next to the envelope rather than
-// in the coordinator so that "what an episode does to the walk" has one definition, and so a unit
-// test can pin it without a chain.
-export function withOuOverride<T extends { kappa: number; drift: number }>(
+// Apply a cexDrift or volBurst episode to one base's OU parameters. Kept here next to the envelope
+// rather than in the coordinator so that "what an episode does to the walk" has one definition, and
+// so a unit test can pin it without a chain. A burst moves the volatility from the run's own toward
+// its peak along the trapezoid; the shock stays symmetric, so the walk keeps no direction.
+export function withOuOverride<T extends { kappa: number; drift: number; volatility?: number }>(
   params: T,
   override: OuOverride,
 ): T {
-  if (override.driftAdd === 0 && override.kappaMult === 1) return params;
-  return {
+  if (override.driftAdd === 0 && override.kappaMult === 1 && override.vol === undefined)
+    return params;
+  const out = {
     ...params,
     kappa: params.kappa * override.kappaMult,
     drift: params.drift + override.driftAdd,
   };
+  if (override.vol !== undefined && typeof params.volatility === "number")
+    out.volatility =
+      params.volatility + (override.vol.peak - params.volatility) * override.vol.envelope;
+  return out;
 }
 
 // Parse and validate ERIS_STRESS_EVENTS (a JSON array). Empty/unset yields [].
@@ -1181,11 +1215,12 @@ function parseOne(
     o.type !== "eusdDepeg" &&
     o.type !== "depeg" &&
     o.type !== "cexDrift" &&
+    o.type !== "volBurst" &&
     o.type !== "flowTrend" &&
     o.type !== "tokenLaunch"
   ) {
     throw new Error(
-      `${label}.type must be "spike", "crash", "lstSlash", "whale", "liquidityPull", "eusdDepeg", "depeg", "cexDrift", "flowTrend" or "tokenLaunch"`,
+      `${label}.type must be "spike", "crash", "lstSlash", "whale", "liquidityPull", "eusdDepeg", "depeg", "cexDrift", "volBurst", "flowTrend" or "tokenLaunch"`,
     );
   }
   // tokenLaunch (issue #29) carries its own ranges and no magnitude: each token draws its own wave,
@@ -1260,6 +1295,7 @@ function parseOne(
       o.alignWith !== "eusdDepeg" &&
       o.alignWith !== "depeg" &&
       o.alignWith !== "cexDrift" &&
+      o.alignWith !== "volBurst" &&
       o.alignWith !== "flowTrend" &&
       o.alignWith !== "tokenLaunch"
     ) {

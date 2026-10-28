@@ -741,55 +741,81 @@ test("a cexDrift without repriceAnchor leaves the anchor alone", () => {
   assert.equal(schedule.anchorMultiplierAt(99), 1);
 });
 
-// Issue #105: the spike regime is crash's mirror -- the same trapezoid with the sign flipped and the
-// liquidity pull aligned to it. Read off the committed YAML so a drift in the file is a failing test.
-// Since the variation keys, "the same" is a distribution: 1-2 gaps, drawn trapezoids, a quarter of
-// them going down, and 40-100% of each one recovering.
-test("config/regimes/spike.yaml: upward gaps with the pull on the same windows", async () => {
+// Issue #105 made spike crash's mirror; ADR 0029 Amendment 1 made both a level shift that stays and
+// gave spike the job of balancing the official mix: one upward gap of 24-32%, never flipped, against
+// crash's 1-2 gaps that go either way with even odds. Read off the committed YAML so a drift in the
+// file is a failing test.
+async function regimeEvents(path: string) {
   const { readFileSync } = await import("node:fs");
   const { parse } = await import("yaml");
-  const doc = parse(readFileSync("config/regimes/spike.yaml", "utf8")) as {
+  const doc = parse(readFileSync(path, "utf8")) as {
     run: { blocks: number };
     stress: { events: unknown[] };
   };
-  const configs = parseStressEvents(JSON.stringify(doc.stress.events));
+  return { blocks: doc.run.blocks, configs: parseStressEvents(JSON.stringify(doc.stress.events)) };
+}
+
+test("config/regimes/spike.yaml: one upward gap that stays, with the pull on its window", async () => {
+  const { blocks, configs } = await regimeEvents("config/regimes/spike.yaml");
   assert.deepEqual(
     configs.map((c) => c.type),
     ["spike", "liquidityPull"],
   );
   assert.equal(configs[1].alignWith, "spike");
-  // The crash regime is the same file with the sign flipped.
-  const crash = parseStressEvents(
-    JSON.stringify((parse(readFileSync("config/regimes/crash.yaml", "utf8")) as { stress: { events: unknown[] } }).stress.events),
+  for (const seed of SEEDS) {
+    const s = new EventSchedule(configs, seed, blocks);
+    const shocks = s.events.filter((e) => e.type === "spike" || e.type === "crash");
+    const pulls = s.events.filter((e) => e.type === "liquidityPull");
+    assert.equal(shocks.length, 1);
+    assert.equal(pulls.length, 1);
+    const [g] = shocks;
+    assert.equal(g.type, "spike", "never flipped");
+    assert.equal(pulls[0].startBlock, g.startBlock, "the pull opens on the gap's block");
+    const frac = g.startBlock / blocks;
+    assert.ok(frac >= 0.3 && frac <= 0.7, `window frac ${frac} inside [0.3, 0.7]`);
+    assert.ok(g.magnitude >= 0.24 && g.magnitude <= 0.32);
+    assert.ok(g.rampBlocks >= 2 && g.rampBlocks <= 3);
+    // Nothing recovers: the full gap is there from the end of the ramp to the last block.
+    assert.ok(Math.abs(s.at(g.startBlock + g.rampBlocks - 1).wethMult - (1 + g.magnitude)) < 1e-9);
+    assert.ok(Math.abs(s.at(blocks - 1).wethMult - (1 + g.magnitude)) < 1e-9, `seed ${seed}`);
+  }
+});
+
+test("config/regimes/crash.yaml: 1-2 gaps that stay, each up or down with even odds", async () => {
+  const { blocks, configs } = await regimeEvents("config/regimes/crash.yaml");
+  assert.deepEqual(
+    configs.map((c) => c.type),
+    ["crash", "liquidityPull"],
   );
-  assert.deepEqual(crash.map((c) => ({ ...c, type: "x", alignWith: undefined })), configs.map((c) => ({ ...c, type: "x", alignWith: undefined })));
   let up = 0;
   let gaps = 0;
   const counts = new Set<number>();
   for (const seed of SEEDS) {
-    const s = new EventSchedule(configs, seed, doc.run.blocks);
+    const s = new EventSchedule(configs, seed, blocks);
     const shocks = s.events.filter((e) => e.type === "spike" || e.type === "crash");
     const pulls = s.events.filter((e) => e.type === "liquidityPull");
     counts.add(shocks.length);
     assert.equal(pulls.length, shocks.length);
-    let residual = 1;
+    let level = 1;
     for (const [k, g] of shocks.entries()) {
       gaps++;
-      if (g.type === "spike") up++;
-      else assert.equal(g.flippedFrom, "spike");
+      if (g.type === "spike") {
+        up++;
+        assert.equal(g.flippedFrom, "crash");
+      }
       assert.equal(pulls[k].startBlock, g.startBlock, "the pull opens on the gap's block");
-      const frac = g.startBlock / doc.run.blocks;
-      assert.ok(frac >= 0.25 && frac <= 0.7, `window frac ${frac} inside [0.25, 0.7]`);
+      const frac = g.startBlock / blocks;
+      assert.ok(frac >= 0.3 && frac <= 0.7, `window frac ${frac} inside [0.3, 0.7]`);
       assert.ok(g.magnitude >= 0.15 && g.magnitude <= 0.22);
-      assert.ok(g.recoverFrac! >= 0.4 && g.recoverFrac! <= 1);
+      assert.ok(g.rampBlocks >= 2 && g.rampBlocks <= 3);
       if (k > 0) assert.ok(g.startBlock >= pulls[k - 1].endBlock + 20, "the next gap waits out the last pull");
-      residual *= 1 + (g.type === "spike" ? 1 : -1) * g.magnitude * (1 - g.recoverFrac!);
+      level *= 1 + (g.type === "spike" ? 1 : -1) * g.magnitude;
     }
-    // What did not recover is still there on the last block.
-    assert.ok(Math.abs(s.at(doc.run.blocks - 1).wethMult - residual) < 1e-9, `seed ${seed}`);
+    // Every gap is still there on the last block.
+    assert.ok(Math.abs(s.at(blocks - 1).wethMult - level) < 1e-9, `seed ${seed}`);
   }
   assert.deepEqual([...counts].sort(), [1, 2]);
-  assert.ok(up / gaps > 0.65 && up / gaps < 0.85, `${up}/${gaps} went up`);
+  assert.ok(up / gaps > 0.35 && up / gaps < 0.65, `${up}/${gaps} went up`);
 });
 
 // Issue #106: depeg-persist is depeg.yaml with `persist: true` -- the dislocation ramps, holds, and
@@ -846,7 +872,10 @@ test("config/regimes/cdp-incident.yaml: crash, pull and eUSD depeg on one window
   assert.ok(doc.run.protocols.includes("liquity"));
   assert.equal(doc.stress.liquityVictimCount, 2);
   assert.equal(doc.stress.liquityVictimIcr, 1.2);
-  assert.equal(doc.stress.victimCount, undefined, "no Aave cohort: that is lending-incident's axis");
+  // Both cohorts are staged in every official regime (ADR 0029 Amendment 2), so the Aave one is here
+  // too: test/regimeStartInvariance.test.ts holds the twelve equal. What makes this regime is the
+  // crash and the depeg below, not who is standing there.
+  assert.equal(doc.stress.victimCount, 2);
   const configs = parseStressEvents(JSON.stringify(doc.stress.events));
   assert.deepEqual(configs.map((c) => c.type), ["crash", "liquidityPull", "eusdDepeg"]);
   assert.equal(configs[1].alignWith, "crash");
@@ -1102,4 +1131,27 @@ test("regimes that differ only in a type or a flag draw independently for the sa
   const cfg: StressEventConfig = { type: "crash", count: [1, 2], magnitudeRange: [0.1, 0.2], windowFrac: [0.2, 0.6], rampBlocks: [2, 4], holdBlocks: 4, decayBlocks: 6 };
   const reordered = { decayBlocks: 6, holdBlocks: 4, rampBlocks: [2, 4], windowFrac: [0.2, 0.6], magnitudeRange: [0.1, 0.2], count: [1, 2], type: "crash" } as StressEventConfig;
   assert.deepEqual(new EventSchedule([reordered], 7, 360).events, new EventSchedule([cfg], 7, 360).events);
+});
+
+// ADR 0029 Amendment 4: a volBurst raises the walk's volatility toward its peak along the trapezoid
+// and leaves its drift and reversion alone -- faster, with no side.
+test("volBurst: the volatility follows the trapezoid to its peak, and nothing else moves", () => {
+  const configs = parseStressEvents(
+    JSON.stringify([
+      { type: "volBurst", magnitudeRange: [0.01, 0.01], windowFrac: [0.5, 0.5], rampBlocks: 4, holdBlocks: 10, decayBlocks: 4 },
+    ]),
+  );
+  const s = new EventSchedule(configs, 7, 100);
+  const [ev] = s.events;
+  const params = { volatility: 0.004, kappa: 0, drift: 0 };
+  assert.deepEqual(s.ouOverrideAt(ev.startBlock - 1), { driftAdd: 0, kappaMult: 1 });
+  assert.equal(withOuOverride(params, s.ouOverrideAt(ev.startBlock - 1)), params);
+  const ramp = withOuOverride(params, s.ouOverrideAt(ev.startBlock));
+  assert.ok(Math.abs(ramp.volatility - (0.004 + 0.006 / 4)) < 1e-12);
+  const hold = withOuOverride(params, s.ouOverrideAt(ev.startBlock + 6));
+  assert.ok(Math.abs(hold.volatility - 0.01) < 1e-12);
+  assert.equal(hold.drift, 0);
+  assert.equal(hold.kappa, 0);
+  assert.equal(s.at(ev.startBlock + 6).wethMult, 1, "a burst is not an overlay");
+  assert.deepEqual(s.ouOverrideAt(ev.endBlock), { driftAdd: 0, kappaMult: 1 });
 });

@@ -33,7 +33,7 @@ They differ in *kind*, not just in parameters, and the kind decides how the run 
 | `overlay` | a multiplier layered on the fair price every block of the window | `spike` `crash` |
 | `point` | executed once, on the block it lands on | `lstSlash` `whale` |
 | `state` | a target the coordinator holds the venue at, reconciled every block | `liquidityPull` `eusdDepeg` `depeg` |
-| `process` | a parameter the generator itself reads while the window is open | `cexDrift` `flowTrend` `tokenLaunch` |
+| `process` | a parameter the generator itself reads while the window is open | `cexDrift` `volBurst` `flowTrend` `tokenLaunch` |
 
 `rampBlocks` / `holdBlocks` / `decayBlocks` describe a trapezoid and are required for every kind
 except `point`, which lands on a single block and takes them as optional.
@@ -129,7 +129,19 @@ That is why the magnitude is calibrated on the **yield** scale: against a 70-blo
 accrual, 10–30bps is a real event. The first attempt at 100–300bps was fifteen times the yield and
 made staking a guaranteed loss. Emits `lst_slash` (or `lst_slash_skipped`).
 
+### `volBurst` — the reference price moves faster, either way
+
+A `process` event (ADR 0029 Amendment 4): `magnitudeRange` is the peak per-block volatility, in the
+unit of `market.volatility` (the uniform shock's half-width). The walk's volatility moves from the
+run's own to the peak over the ramp, holds, and returns over the decay; drift and reversion are left
+alone, so the walk keeps no side. `config/regimes/cex-drift.yaml` runs it at 0.008-0.012 (2-3x the
+official 0.004). It replaced `cexDrift` there because a held direction could be read in ~10 blocks and
+followed for the rest of the window (+540 to +700 bps of notional per epoch net of fees,
+`scripts/measurePredictability.ts`). Emits `stress_event_applied` with `peakVolatility` / `envelope`.
+
 ### `cexDrift` — the reference price walks away and does not come back
+
+No official regime runs it any more (above).
 
 The official regimes run with `market.kappa: 0` (ADR 0029): the walk has no mean reversion, so the
 drift alone is the episode and every level it reaches stays. `kappaMultRange` and `repriceAnchor` below
@@ -235,7 +247,7 @@ USDC the wave paid, USDC it took back).
 | `minGapBlocks` | with `count` | The fewest blocks between one window's end (its followers' included) and the next one's start |
 | `rampBlocks` / `holdBlocks` / `decayBlocks: [min, max]` | trapezoids | Drawn per window instead of fixed, so the start of a shock no longer gives away the block it ends on |
 | `flipProb: p` | `crash` `spike` | The seed turns the shock the other way with probability `p`; the resolved event reads `type: spike, flippedFrom: crash`. The regime keeps its lean; its name no longer says which side to stand on. Leave it unset where victims are configured (an upward crash breaches nobody; the coordinator warns when no crash resolves) |
-| `recoverFrac: [min, max]` | `crash` `spike` | Share of the gap the decay closes; the rest stays to the end of the run. Without it every gap heals on a fixed clock and "fade any move, close it when the window does" is right by construction -- the hole `persist` closed for depeg. **Not for a continuous economy**: a residual there stays for weeks and compounds with the next one (the same reason `persist` and `repriceAnchor` stay out of `config/practice.yaml`) |
+| `recoverFrac: [min, max]` | `crash` `spike` | Share of the gap the decay closes; the rest stays to the end of the run. Without it every gap heals on a fixed clock and "fade any move, close it when the window does" is right by construction -- the hole `persist` closed for depeg. A range above 0 only shrinks that: the decay still runs one way on a straight line, so the official regimes use `[0, 0]` (ADR 0029 Amendment 1). **Not for a continuous economy**: a residual there stays for weeks and compounds with the next one (the same reason `persist` and `repriceAnchor` stay out of `config/practice.yaml`) |
 
 **Schedules draw from keyed streams (ADR 0027).** The scenario key decides the draws; the seed
 and a salt only name the stream. A schedule that uses any of `count`, a drawn trapezoid,
@@ -333,7 +345,7 @@ outside the official set.
 
 | regime | what it holds |
 |---|---|
-| `config/regimes/crash.yaml` | 1-2 price gaps (a quarter of them upward, 40-100% of each recovering) plus a `liquidityPull` on each gap's window via `alignWith` |
+| `config/regimes/crash.yaml` | 1-2 price gaps (each up or down with even odds, none recovering: `recoverFrac: [0, 0]`, ADR 0029 Amendment 1) plus a `liquidityPull` on each gap's window via `alignWith` |
 | `config/regimes/spike.yaml` | the same distribution leaning upward (`spike`), with the pull aligned to it — the tail that rewards holding the basket (issue #105) |
 | `config/regimes/lending-incident.yaml` | the same crash, plus victims, a liquidator slot, and thinned books |
 | `config/regimes/cdp-incident.yaml` | the CDP side of the same incident: Liquity victim Troves at ICR 1.20, the crash, and an `eusdDepeg` on the same window (issue #107) |

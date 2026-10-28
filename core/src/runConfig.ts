@@ -65,12 +65,16 @@ export function loadRunConfig(
     throw new Error(
       `stress.windowBaseBlocks must be a positive integer (blocks), got ${JSON.stringify(windowBase)}`,
     );
+  const salt = source.ERIS_STRESS_SALT_WITH_EVENT_LIST?.trim() ?? "";
+  if (salt !== "" && salt !== "1" && salt !== "0")
+    throw new Error(`stress.saltWithEventList must be true or false, got ${JSON.stringify(salt)}`);
   const realtimeConfig: RealtimeConfig = {
     ...config,
     stressEvents: parseStressEvents(source.ERIS_STRESS_EVENTS, {
       windowFracBeyondRun: stressWindowBaseBlocks !== undefined,
     }),
     ...(stressWindowBaseBlocks !== undefined ? { stressWindowBaseBlocks } : {}),
+    ...(salt !== "" ? { stressSaltWithEventList: salt === "1" } : {}),
     vulnEvents: parseVulnEvents(source.ERIS_VULN_EVENTS),
   };
   // Roster: use inline `agents:` if present, otherwise read the AGENTS_CONFIG file.

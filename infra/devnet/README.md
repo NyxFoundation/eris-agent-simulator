@@ -206,6 +206,31 @@ while a period was running):
 
 An earlier end, an episode edited or removed, or a base that would move a placed window is refused.
 
+### Revising a period
+
+How the world moves from here on can change too, with the chain kept: the walk's parameters
+(`market.*`) and the episodes the period has not played yet (ADR 0029 Amendment 3 did this to the
+period running in October: no reversion toward the opening price, gaps that stay). `run.endsAt` and
+`stress.windowBaseBlocks` stay as they are; extend and revise in separate restarts.
+
+1. In a checkout, change `market.*` in `config/practice.yaml` and rewrite the days to change:
+   `npm run gen:practice-episodes -- --revise-from-day N`. It rewrites crash / spike / cexDrift from
+   the `# day N` line on in today's shapes (core/src/practiceEpisodes.ts `reviseEpisode`) and leaves
+   every earlier line byte for byte. Pick a day that starts after the restart will happen, with margin:
+   the chain is behind the wall clock by every hour it was stopped, which only helps.
+2. `stress.saltWithEventList: false` has to be in the config. Revised lines carry variation keys
+   (`flipProb`, `recoverFrac`); with the list in the stream's salt, every window the period has
+   already played would be redrawn (core/src/realtime/events.ts `EventSchedule`).
+3. Merge, move the box's pin to it, restart. The coordinator compares the saved world with the
+   config (`checkPeriodExtension` returns `revise`), builds the schedule the way the period had it and
+   the way the config has it, and refuses unless every window starting before the head + 300 blocks
+   resolves identically and comes first in both (`revisedScheduleProblems`). A refusal names the
+   window; the answer is a later N. `period_resumed` carries `revised` (what changed, how many
+   windows were kept as played, the first block the revised schedule may move), and so does the line
+   the coordinator prints.
+4. Tell participants. The price moves differently from the restart on and the episodes from day N.
+   Nothing they hold changes, and the manifest is unchanged.
+
 Adding a participant mid-period still does not need a restart — that is what
 `run.registrationsFile` is for ([practice devnet](../../docs/guide/practice-devnet.md)), and entries
 added while the coordinator was down are picked up by its first poll after the resume.
