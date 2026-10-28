@@ -72,6 +72,21 @@ CODE_RULES = [
 SECRET_RE = re.compile(r"(0x[a-fA-F0-9]{64})|(xox[baprs]-[A-Za-z0-9-]{10,})|(sk-[A-Za-z0-9]{20,})|(AKIA[0-9A-Z]{16})")
 MINER_RE = re.compile(r"stratum\+tcp|xmrig|coinhive|cryptonight|ethminer|nicehash", re.I)
 
+def scan_secrets(path, fp):
+    # Validate the whole file as UTF-8 text, without loading a huge file into memory. Keep enough
+    # overlap for every SECRET_RE alternative, including a token split across reads.
+    found = False; tail = ""
+    try:
+        with open(fp, encoding="utf-8") as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk: break
+                if "\0" in chunk: return
+                if SECRET_RE.search(tail + chunk): found = True
+                tail = chunk[-128:]
+    except (UnicodeError, OSError): return
+    if found: add("WARN", path, "looks like a hardcoded secret/key/token")
+
 def scan_code(path, text):
     for sev, pat, msg in CODE_RULES:
         if re.search(pat, text):
@@ -237,6 +252,9 @@ def walk_dir(root):
             except OSError: continue
             total += sz
             low = fn.lower()
+            if ((low == ".env" or low.startswith(".env.")) and low not in (".env.example", ".env.sample", ".env.template")
+                    or low.endswith((".pem", ".key", ".p12", ".pfx")) or low in ("id_rsa", "id_ed25519")):
+                add("WARN", rel, "secret-material file name (.env / key file); check it is meant to ship")
             if check_vendored(rel, fp): continue
             if low.endswith(BINARY_EXT): add("BLOCK", rel, "binary/native artifact in submission")
             if sz > MAX_FILE_MB * 1024 * 1024: add("WARN", rel, f"large file ({sz//1024//1024} MB)")
@@ -264,6 +282,9 @@ def walk_dir(root):
                 scan_code(rel, open(fp, errors="ignore").read())
             elif "node_modules" in rel and low.endswith(CODE_EXT[:5]):
                 pass  # skip scanning vendored deps' bodies, but their presence is noted below
+            elif "node_modules" not in rel and not low.endswith(CODE_EXT + BINARY_EXT):
+                # Only extend coverage to text not handled by any existing dispatch path.
+                scan_secrets(rel, fp)
     if nfiles > MAX_FILES: add("BLOCK", "(archive)", f"too many files ({nfiles} > {MAX_FILES})")
     if total > MAX_UNZIP_MB * 1024 * 1024: add("BLOCK", "(archive)", f"unpacked too large ({total//1024//1024} MB > {MAX_UNZIP_MB})")
     if os.path.isdir(os.path.join(root, "node_modules")): add("WARN", "node_modules/", "vendored node_modules present (deps should be installed in a sandboxed build, not shipped)")
