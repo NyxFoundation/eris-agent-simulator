@@ -434,6 +434,8 @@ async function main(): Promise<void> {
         ? verdict
         : { ok: false, reason: `revised strategy v${runningVersion}: ${verdict.reason}` };
     },
+    // Owner-only contracts of this run, left out of obs.competition like the GMX keeper.
+    environmentContracts: [priceFeed, marketRegistry],
   });
   // The scorer's valuation context has no SimContext, and the improve loop's sandbox runs the same
   // adapters -- so the singleton is published module-side too, exactly as the coordinator does it.

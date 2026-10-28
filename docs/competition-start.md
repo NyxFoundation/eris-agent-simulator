@@ -290,7 +290,7 @@ ETH を担保に預けて、新しく発行されるドル建てのトークン 
 - **脆弱なコントラクトを意図的に置く、他人のコントラクトを攻める。** 他の参加者のエージェント・コントラクト・市場構造の弱点を突くのは競技の一部です（規約 §8。対象は運営が配置したプロトコルと他の参加単位に限ります = 規約 §3.1）。参照 `vault-keeper`（資金を引き出す関数 `rescue()` に呼び出し制限を付け忘れた `LeakyVault` を置いて USDC を入れる側）と `exploit-hunter`（他人の未知コントラクトのバイトコード = チェーン上のコンパイル済みコードから関数の識別子（selector）を復元し、1 tx で資金を抜く側）。実測は hunter +9,999.9 / vault-keeper −10,000.2 で、預けた 10,000 USDC が丸ごと移りました。`launch` 以外の公式レジームでは登録簿が無いので、見つける側はチェーンを自分で走査します。逆に環境のコントラクトは、所有者（owner）しか呼べない書き込みがきちんと塞がれているか、起動時に実測されます。ただし、自分の参加単位のアドレスどうしや、他チームと示し合わせて意図的に資産を移すのは自己取引として禁止です（規約 §8）
 - **他人のポジションを清算・償還する。** Aave の `liquidationCall` を `rawTx` で（`liquidator`）、Liquity の `liquityLiquidate` と Stability Pool の引受（`sp-underwriter`）、eUSD の償還（`liquityRedeem`。`redemption-arb`）
 - **レバレッジを掛ける。** GMX の perp（`gmxIncrease` / `gmxDecrease`。注文は環境の keeper が次ブロック以降に執行します）、Aave の借入、Liquity の Trove、ERLST を担保にした WETH 借入（`lst-carry`）
-- **ブロック内の位置を買う。** アクションの `maxPriorityFeePerGasWei` で入札します。直近ブロックで他者が払った最大値は `obs.competition.maxCompetitorPriorityFeeWei` に出ます
+- **ブロック内の位置を買う。** アクションの `maxPriorityFeePerGasWei` で入札します。直近ブロックで他者が払った最大値は `obs.competition.maxCompetitorPriorityFeeWei` に出ます（GMX の keeper の執行やオラクルの書き込みなど、入札とは別の理由で決めた固定の手数料を払う環境の tx は除いています。環境の普通の取引は含みます）
 - **途中で現れるプールを検査してから触る。** レジーム 7 では運営がエポックの途中にプールを置き、その一部は資産を差し引きます（規約 §3.2）。`obs.discoveredPools` にアドレス・code hash（コードの指紋。中身が同じなら同じ値）・残高と価格が出ます。`discovery-arb-verify` は dry-run で検証してから取り、`discovery-arb` は検証せずに取ります。実測は無検証 −5,306 / 検証側 +721 です
 - **走行中に戦略を書き換える。** §5 のとおり、LLM が取引経路の外でコードを改訂します
 
@@ -452,7 +452,7 @@ obs.limits                      // priority fee の既定値と上限、slippage
 
 **observation に入らないもの**: 未確定の注文、次のブロック、イベント窓の位置。全員が同じ遅延で同じものを見ます（`PriceFeed` への書き込みは次ブロック着弾なので、参照価格は常に 1 ブロック遅れます）。
 
-**直近ブロックで他者が払った最大 priority fee は observation に入ります**（`obs.competition.maxCompetitorPriorityFeeWei`）。これは確定済みブロックの履歴です。`ctx.publicClient` は読取専用で、追加のチェーン照会に使えます。`walletClient` は渡されません。送信はアクションを返すか `ctx.submit({ type: "rawTx", tx })` を使ってください。独自クライアントで同じ鍵から送ると、ランタイムの nonce と衝突し、`submitted` の記録からも抜けるため、ランタイムを迂回しないでください。許される行為は規約 §8 が定めます。
+**直近ブロックで他者が払った最大 priority fee は observation に入ります**（`obs.competition.maxCompetitorPriorityFeeWei`）。これは確定済みブロックの履歴です。環境の keeper・オラクル・登録簿への呼び出しは入札の相手ではないので、この値には入りません。`ctx.publicClient` は読取専用で、追加のチェーン照会に使えます。`walletClient` は渡されません。送信はアクションを返すか `ctx.submit({ type: "rawTx", tx })` を使ってください。独自クライアントで同じ鍵から送ると、ランタイムの nonce と衝突し、`submitted` の記録からも抜けるため、ランタイムを迂回しないでください。許される行為は規約 §8 が定めます。
 
 `decide()` は worker thread（ランタイム本体とは別の実行スレッド）で実行され、本体が **5 秒**で見切ります。同期の無限ループも終わらない await も `decide timeout:` と記録し、その判断の返り値と `ctx.submit` の送信予約を破棄します。次の判断では選択中の戦略を再ロードします。worker 内の変数は初期化されますが、観測・改訂ループ、nonce、ログ、版履歴と状態ディレクトリは継続します。**規約 §2.3 の「再起動しない」は異常終了した agent プロセスについての規定です。** 生存中のプロセス内で worker を交換しても、agent の再起動や戦略の自動 rollback は行いません。`run(ctx)` の自走型にはこの判断単位の上限は適用されません。
 

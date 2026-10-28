@@ -203,7 +203,12 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   書き込みを適用した後に終了ブロックを読み、セグメントは `bn-1` で切る（ライブと事後 sweep のずれ 0 を維持）。
   帰結: 「ブロック B の価値」は B+1 の取引が約定する価格で評価される。agent の観測は従来どおり 1 ブロック遅れ
 - **keeper（GMX の約定・清算）は 50 gwei 固定**（`ECONOMIC_KEEPER_FEE_WEI`）。順序のためではなく、上限なしの
-  ブロックで参加者に埋められて締め出されないため。keeper/admin は anvil で 200 万 ETH（`GAS_ONLY_WEI`）
+  ブロックで参加者に埋められて締め出されないため。keeper/admin は anvil で 200 万 ETH（`GAS_ONLY_WEI`）。
+  **参照ランタイムの `obs.competition`（競合の最大入札）はこの呼び出しを数えない**（`send.ts` の `environmentCallFilter`。
+  宛先で判定: GMX の OrderHandler / LiquidationHandler・PriceFeed・MarketRegistry・LST vault の operator 関数。
+  selector だけで判定すると、参加者が自作コントラクトの関数名を合わせて自分の入札を他人の signal から消せる）。
+  以前は keeper が全ブロックの ~57% で signal を 50 gwei にし、`adaptive-arb` / `max-profit-arb` が毎回上限
+  （見込み利益の 80%）まで入札して、必要な tip の約 2 倍を払っていた（2026-10-08 の calm 150 ブロック 2 本の実測）
 - **環境のイベント取引**（launch の波・depeg の売買・流動性の引き抜き・whale）は**普通の手数料**（`flatBid`: 対数正規、
   中央値 1.4 gwei、平均約 1.5 gwei。`core/src/realtime/envBid.ts`、鍵付きストリーム `env-bid:<種類>`、練習期間のチェックポイントに
   位置を保存）。先回りの価値に比例して入札する U×V 方式（PR #287）は、被害者が searcher の値段を払う形になり、自分の大きい gas で

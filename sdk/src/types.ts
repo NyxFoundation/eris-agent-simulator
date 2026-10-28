@@ -1050,8 +1050,12 @@ export type AgentObservation = {
   competition?: {
     // Highest priority fee from "others" observed in the most recent block (wei, decimal string).
     // Slightly exceeding it is the rough threshold to win ordering. 0 = there were no competitor bid txs.
+    // The environment's privileged calls are not in it (the GMX keeper's executions, oracle and
+    // registry writes, the LST vault's operator calls): they carry a fixed fee set outside the
+    // auction (example/agents/runtime/send.ts environmentCallFilter). Its ordinary trades are.
     maxCompetitorPriorityFeeWei: string;
-    // Highest priority fee across the whole most recent block (including yourself) (wei).
+    // Highest priority fee across the whole most recent block (including yourself) (wei), with the
+    // same calls left out.
     maxBlockPriorityFeeWei: string;
     // The txIndex of your most recent included tx (0=first is ideal. null=nothing included recently).
     lastTxIndex: number | null;
