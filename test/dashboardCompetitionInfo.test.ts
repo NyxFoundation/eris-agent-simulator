@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   LEADERBOARD_TOTAL_JPY,
+  LIVE_RESERVE_DAY,
   PRIZE_TOTAL_JPY,
   REPORT_TOTAL_JPY,
   SCHEDULE,
@@ -23,13 +24,15 @@ import {
 
 const jst = (iso: string) => Date.parse(`${iso}+09:00`);
 
-test("registration is offered through the end of 10/24 JST and not at 10/25 00:00", () => {
+test("registration is offered through the end of 11/23 JST and not at 11/24 00:00", () => {
   assert.equal(registrationOpen(jst("2026-09-29T12:00:00")), true);
-  assert.equal(registrationOpen(jst("2026-10-24T23:59:59")), true);
-  assert.equal(registrationOpen(jst("2026-10-25T00:00:00")), false);
+  // The old cutoff (10/24) no longer closes it: the rules moved it on 2026-10-26.
+  assert.equal(registrationOpen(jst("2026-10-28T12:00:00")), true);
+  assert.equal(registrationOpen(jst("2026-11-23T23:59:59")), true);
+  assert.equal(registrationOpen(jst("2026-11-24T00:00:00")), false);
   // The same instant in UTC, as a browser outside Japan holds it.
-  assert.equal(registrationOpen(Date.parse("2026-10-24T15:00:00Z")), false);
-  assert.equal(registrationOpen(Date.parse("2026-10-24T14:59:59Z")), true);
+  assert.equal(registrationOpen(Date.parse("2026-11-23T15:00:00Z")), false);
+  assert.equal(registrationOpen(Date.parse("2026-11-23T14:59:59Z")), true);
 });
 
 test("the schedule's current phases on 9/29: registration and submission overlap", () => {
@@ -49,20 +52,24 @@ test("the schedule's current phases on 9/29: registration and submission overlap
 
 test("the next milestone counts JST calendar days, 0 being today", () => {
   assert.deepEqual(nextMilestone(jst("2026-09-29T12:00:00")), {
-    milestone: { key: "registrationCloses", day: "2026-10-24", at: "end" },
-    daysLeft: 25,
+    milestone: { key: "registrationCloses", day: "2026-11-23", at: "end" },
+    daysLeft: 55,
   });
-  assert.equal(nextMilestone(jst("2026-10-24T23:00:00"))?.daysLeft, 0);
+  assert.equal(nextMilestone(jst("2026-11-23T23:00:00"))?.daysLeft, 0);
+  assert.deepEqual(nextMilestone(jst("2026-11-24T00:00:00")), {
+    milestone: { key: "submissionCloses", day: "2026-11-30", at: "end" },
+    daysLeft: 6,
+  });
+  // The live week starts at the beginning of 12/1: on 11/30 it is tomorrow's, on 12/1 it is past.
   assert.equal(
-    nextMilestone(jst("2026-10-25T00:00:00"))?.milestone.key,
-    "submissionCloses",
-  );
-  // The live week starts at the beginning of 11/1: on 10/31 it is tomorrow's, on 11/1 it is past.
-  assert.equal(
-    nextMilestone(jst("2026-11-01T00:00:00"))?.milestone.key,
+    nextMilestone(jst("2026-12-01T00:00:00"))?.milestone.key,
     "reportDue",
   );
-  assert.equal(nextMilestone(jst("2026-12-07T00:00:00")), null);
+  assert.equal(
+    nextMilestone(jst("2026-12-15T00:00:00"))?.milestone.key,
+    "results",
+  );
+  assert.equal(nextMilestone(jst("2026-12-22T00:00:00")), null);
 });
 
 test("prize totals match rules §6: 3,000,000 + 2,000,000 = 5,000,000 JPY", () => {
@@ -88,13 +95,13 @@ const step = (key: string) => {
 test("a step with a window says whether it is open and for how many JST days", () => {
   assert.deepEqual(stepStatus(step("register"), jst("2026-09-29T12:00:00")), {
     kind: "open",
-    daysLeft: 25,
+    daysLeft: 55,
   });
-  assert.deepEqual(stepStatus(step("register"), jst("2026-10-24T23:59:00")), {
+  assert.deepEqual(stepStatus(step("register"), jst("2026-11-23T23:59:00")), {
     kind: "open",
     daysLeft: 0,
   });
-  assert.deepEqual(stepStatus(step("register"), jst("2026-10-25T00:00:00")), {
+  assert.deepEqual(stepStatus(step("register"), jst("2026-11-24T00:00:00")), {
     kind: "closed",
   });
   assert.deepEqual(stepStatus(step("submit"), jst("2026-09-20T12:00:00")), {
@@ -102,6 +109,10 @@ test("a step with a window says whether it is open and for how many JST days", (
     day: "2026-09-23",
   });
   assert.deepEqual(stepStatus(step("submit"), jst("2026-10-31T23:00:00")), {
+    kind: "open",
+    daysLeft: 30,
+  });
+  assert.deepEqual(stepStatus(step("submit"), jst("2026-11-30T23:00:00")), {
     kind: "open",
     daysLeft: 0,
   });
@@ -120,8 +131,9 @@ test("the API key form opens with the submission period and has no stated end", 
 });
 
 test("the steps collapse once the submission period is over", () => {
-  assert.equal(submissionClosed(jst("2026-10-31T23:59:59")), false);
-  assert.equal(submissionClosed(jst("2026-11-01T00:00:00")), true);
+  assert.equal(submissionClosed(jst("2026-11-01T00:00:00")), false);
+  assert.equal(submissionClosed(jst("2026-11-30T23:59:59")), false);
+  assert.equal(submissionClosed(jst("2026-12-01T00:00:00")), true);
 });
 
 test("step guide links point at the guide's own heading anchors", () => {
@@ -141,9 +153,23 @@ test("every step's guide anchor is in the guide's table of contents, in both lan
   }
 });
 
-test("the header's Submit is offered from 9/23 00:00 JST through the end of 10/31", () => {
+test("the header's Submit is offered from 9/23 00:00 JST through the end of 11/30", () => {
   assert.equal(submissionOpen(jst("2026-09-22T23:59:59")), false);
   assert.equal(submissionOpen(jst("2026-09-23T00:00:00")), true);
-  assert.equal(submissionOpen(jst("2026-10-31T23:59:59")), true);
-  assert.equal(submissionOpen(jst("2026-11-01T00:00:00")), false);
+  assert.equal(submissionOpen(jst("2026-11-01T00:00:00")), true);
+  assert.equal(submissionOpen(jst("2026-11-30T23:59:59")), true);
+  assert.equal(submissionOpen(jst("2026-12-01T00:00:00")), false);
+});
+
+test("the schedule is the rules' §1 as amended on 2026-10-26", () => {
+  const span = Object.fromEntries(SCHEDULE.map((p) => [p.key, [p.first, p.last]]));
+  assert.deepEqual(span, {
+    registration: ["2026-09-01", "2026-11-23"],
+    submission: ["2026-09-23", "2026-11-30"],
+    live: ["2026-12-01", "2026-12-07"],
+    review: ["2026-12-09", "2026-12-21"],
+    reportDeadline: ["2026-12-14", "2026-12-14"],
+    results: ["2026-12-22", "2026-12-22"],
+  });
+  assert.equal(LIVE_RESERVE_DAY, "2026-12-08");
 });

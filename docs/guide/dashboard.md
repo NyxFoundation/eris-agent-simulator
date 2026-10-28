@@ -94,9 +94,9 @@ work for runs recorded before `market.json` grew any of its fields.
 
 Every page sits under one header (`src/components/SiteHeader.tsx`): the ASCON logo, the five page
 links, **Register**, **Submit** and the language toggle. Register goes straight to the registration
-form (its "?" says to join the #ascon channel on Discord first, rules §1) and is not offered from 10/25
+form (its "?" says to join the #ascon channel on Discord first, rules §1) and is not offered from 11/24
 00:00 JST, when registration has closed. Submit, right of it, goes straight to the agent submission
-form and is shown only while that form takes submissions (9/23–10/31 JST); it is outlined, so the two
+form and is shown only while that form takes submissions (9/23–11/30 JST); it is outlined, so the two
 read as two different forms. Below 860px the page links fold into a menu, and Register, Submit and the
 language stay on the bar; at 430px and below the logo drops its wordmark so they fit.
 
@@ -126,7 +126,7 @@ The Overview (`/`) is, top to bottom:
   `npm run bundle:agent <id>` is shown as a command. Steps with a window say "open · N days left" /
   "closed" / "from 9/23" — the dashboard knows the date, not how far a participant has got, so it never
   points at "your" step. The submission form is linked from its step while it is open
-  (`SUBMISSION_FORM_URL`); the API-key form is not on the page (Discord #ascon has it). After 10/31 the
+  (`SUBMISSION_FORM_URL`); the API-key form is not on the page (Discord #ascon has it). After 11/30 the
   panel folds into one line
 - **Scoring, Prizes, Submission & limits** — three cards, each showing its gist (for example "one ZIP ·
   replace it up to 5 times a day"), the full statement behind a "?", and a link to that section of the
