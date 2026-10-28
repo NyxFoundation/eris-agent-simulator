@@ -23,13 +23,13 @@ const RUN_BLOCKS = 4 * DAY;
 const SEED_ONLY = { saltWithEventList: false };
 
 // Four days in the shapes the period had before the revision: gaps that heal, a drift reshaping a
-// reversion. reviseEpisode is what turns them into today's.
+// reversion. reviseEpisode is what turns them into today's (the drift into a volatility burst).
 type Episode = Record<string, unknown> & { type: string };
 const OLD_SHAPES = (e: Episode): Episode =>
   e.type === "crash" || e.type === "spike"
     ? { type: e.type, magnitudeRange: [0.15, 0.22], windowFrac: e.windowFrac, rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
-    : e.type === "cexDrift"
-      ? { ...e, magnitudeRange: [0.001, 0.002], kappaMultRange: [0.15, 0.3] }
+    : e.type === "volBurst"
+      ? { type: "cexDrift", magnitudeRange: [0.001, 0.002], windowFrac: e.windowFrac, kappaMultRange: [0.15, 0.3], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
       : e;
 const oldPlan = dailyEpisodePlan(96).map((d) => ({ ...d, events: d.events.map(OLD_SHAPES) }));
 const oldEvents = oldPlan.flatMap((d) => d.events);
@@ -121,12 +121,14 @@ test("the generator rewrites day N onward and leaves every earlier line byte for
   const parseLine = (m: string) => parse(m) as Record<string, unknown> & { type: string };
   const { text: out, revised, days } = reviseStressEvents(text, 3, parseLine);
   assert.equal(days, 2);
-  assert.equal(revised, 2 * 3); // crash, spike and cexDrift on each of days 3 and 4
+  assert.equal(revised, 2 * 3); // crash, spike and the drift (now a volBurst) on each of days 3 and 4
   const a = text.split("\n");
   const b = out.split("\n");
   const day3 = a.findIndex((l) => l.startsWith("    # day 3 "));
   assert.deepEqual(b.slice(0, day3), a.slice(0, day3));
   const events = (parse(out) as { stress: { events: Record<string, unknown>[] } }).stress.events;
+  assert.deepEqual(events.filter((e) => e.type === "volBurst").length, 2);
+  assert.deepEqual(events.filter((e) => e.type === "cexDrift").length, 2);
   const crash = events.filter((e) => e.type === "crash");
   assert.deepEqual(crash.map((e) => e.recoverFrac ?? null), [null, null, [0, 0], [0, 0]]);
   assert.deepEqual(crash[2].windowFrac, oldEvents.filter((e) => e.type === "crash")[2].windowFrac);

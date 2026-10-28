@@ -16,6 +16,8 @@
 //   fade      after a gap (a block move over GAP_STEP), wait for the move to stall, then trade against
 //             the gap and hold FADE_HOLD blocks
 //   momentum  trade with a gap the block it is first seen and close MOMENTUM_HOLD blocks later
+//   trend     when the last TREND_LOOKBACK blocks moved more than TREND_K standard deviations of the
+//             run's own noise, follow that way for TREND_HOLD blocks (what found the cexDrift drift)
 //   usdc      hold USDC instead of WETH for the whole epoch (the static lean of the regime mix)
 //
 // Results are in bps of notional per epoch, with the standard error of the mean. The last row is the
@@ -41,6 +43,9 @@ const STALL = 0.01;
 const FADE_HOLD = 30;
 const MOMENTUM_HOLD = 3;
 const OPENING_FAIR = 3000;
+const TREND_LOOKBACK = 20;
+const TREND_K = 2.5;
+const TREND_HOLD = 20;
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -136,9 +141,32 @@ function momentumProbe(p: number[]): number {
   return pnl;
 }
 
+function trendProbe(p: number[], sigma: number): number {
+  const end = p.length - 1;
+  let pnl = 0;
+  let busyUntil = -1;
+  for (let t = TREND_LOOKBACK; t + LAG < end; t++) {
+    if (t <= busyUntil) continue;
+    const r = Math.log(p[t] / p[t - TREND_LOOKBACK]);
+    if (Math.abs(r) < TREND_K * sigma * Math.sqrt(TREND_LOOKBACK)) continue;
+    const entry = t + LAG;
+    const exit = Math.min(end, entry + TREND_HOLD);
+    pnl += Math.sign(r) * ret(p, entry, exit) - COST_BPS / 1e4;
+    busyUntil = exit;
+  }
+  return pnl;
+}
+
 const usdcProbe = (p: number[]) => -ret(p, 0, p.length - 1);
 
-const PROBES = { anchor: anchorProbe, fade: fadeProbe, momentum: momentumProbe, usdc: usdcProbe };
+// trend reads the run's own per-block noise (the uniform shock's sd), as an agent would estimate it.
+const PROBES = {
+  anchor: (p: number[]) => anchorProbe(p),
+  fade: (p: number[]) => fadeProbe(p),
+  momentum: (p: number[]) => momentumProbe(p),
+  trend: (p: number[], sigma: number) => trendProbe(p, sigma),
+  usdc: (p: number[]) => usdcProbe(p),
+};
 type Stat = { sum: number; sq: number; n: number };
 const blank = (): Stat => ({ sum: 0, sq: 0, n: 0 });
 const add = (s: Stat, x: number) => {
@@ -163,10 +191,11 @@ for (const regime of REGIMES) {
   setScenarioRegime(regime);
   const { config } = loadRunConfig(`config/regimes/${regime}.yaml`, { SEED: 1 });
   const row = Object.fromEntries(names.map((k) => [k, blank()])) as Record<string, Stat>;
+  const sigma = (config.ou.perBase.WETH ?? config.ou.global).volatility / Math.sqrt(3);
   for (let seed = 1; seed <= SEEDS; seed++) {
     const p = fairPath(config, seed);
     for (const k of names) {
-      const x = PROBES[k](p);
+      const x = PROBES[k](p, sigma);
       add(row[k], x);
       add(mix[k], x);
     }

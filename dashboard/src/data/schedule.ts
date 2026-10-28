@@ -7,7 +7,7 @@
 //
 // Windows are converted from the run-relative blocks the schedule records into rounds, because the
 // round is the axis everything else is on. Four event types are deliberately absent from the
-// per-block record (crash / spike / cexDrift / flowTrend change the price walk itself rather than
+// per-block record (crash / spike / cexDrift / volBurst / flowTrend change the price walk itself rather than
 // overlaying it), so this is the plan, and "planned" is what it says.
 
 import { intervalBlocksOf } from "@core/intervalSeries";

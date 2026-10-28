@@ -1132,3 +1132,26 @@ test("regimes that differ only in a type or a flag draw independently for the sa
   const reordered = { decayBlocks: 6, holdBlocks: 4, rampBlocks: [2, 4], windowFrac: [0.2, 0.6], magnitudeRange: [0.1, 0.2], count: [1, 2], type: "crash" } as StressEventConfig;
   assert.deepEqual(new EventSchedule([reordered], 7, 360).events, new EventSchedule([cfg], 7, 360).events);
 });
+
+// ADR 0029 Amendment 4: a volBurst raises the walk's volatility toward its peak along the trapezoid
+// and leaves its drift and reversion alone -- faster, with no side.
+test("volBurst: the volatility follows the trapezoid to its peak, and nothing else moves", () => {
+  const configs = parseStressEvents(
+    JSON.stringify([
+      { type: "volBurst", magnitudeRange: [0.01, 0.01], windowFrac: [0.5, 0.5], rampBlocks: 4, holdBlocks: 10, decayBlocks: 4 },
+    ]),
+  );
+  const s = new EventSchedule(configs, 7, 100);
+  const [ev] = s.events;
+  const params = { volatility: 0.004, kappa: 0, drift: 0 };
+  assert.deepEqual(s.ouOverrideAt(ev.startBlock - 1), { driftAdd: 0, kappaMult: 1 });
+  assert.equal(withOuOverride(params, s.ouOverrideAt(ev.startBlock - 1)), params);
+  const ramp = withOuOverride(params, s.ouOverrideAt(ev.startBlock));
+  assert.ok(Math.abs(ramp.volatility - (0.004 + 0.006 / 4)) < 1e-12);
+  const hold = withOuOverride(params, s.ouOverrideAt(ev.startBlock + 6));
+  assert.ok(Math.abs(hold.volatility - 0.01) < 1e-12);
+  assert.equal(hold.drift, 0);
+  assert.equal(hold.kappa, 0);
+  assert.equal(s.at(ev.startBlock + 6).wethMult, 1, "a burst is not an overlay");
+  assert.deepEqual(s.ouOverrideAt(ev.endBlock), { driftAdd: 0, kappaMult: 1 });
+});

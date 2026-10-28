@@ -59,11 +59,16 @@ export class StressAudit {
     publication: { stage: "price_submitted" | "storage_written"; hashes?: string[] },
   ): void {
     for (const event of this.active(blockIndex, e => e.base === base &&
-      (e.type === "crash" || e.type === "spike" || e.type === "cexDrift"))) {
+      (e.type === "crash" || e.type === "spike" || e.type === "cexDrift" || e.type === "volBurst"))) {
       const magnitude = event.magnitude * stressEnvelope(event, blockIndex);
       this.record(event, blockIndex, blockNumber, {
         ...publication, priceBefore: prices.before, unoverlaidPrice: prices.unoverlaid, fairPrice: prices.fair,
-        ...(event.type === "cexDrift" ? {
+        ...(event.type === "volBurst" ? {
+          // The volatility the walk was stepped with is the run's own blended toward this peak; the
+          // peak and how far along the trapezoid it is are the input, the price move is noise.
+          peakVolatility: event.magnitude,
+          envelope: stressEnvelope(event, blockIndex),
+        } : event.type === "cexDrift" ? {
           // The total price move also contains OU noise and any overlapping overlays. This is
           // the actual drift input, not an attribution of all of that movement to this event.
           driftAdd: (event.side === "sell" ? -1 : 1) * magnitude,

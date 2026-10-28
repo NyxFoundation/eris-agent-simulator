@@ -143,7 +143,7 @@ flow:
 # "trade toward the opening level" a sure thing net of fees; dropping the reversion is the fix, but in
 # one world that runs for weeks the official noise (sd 0.23% a block) would wander ~48% a day. At
 # 0.00037 a practice day spreads as far as one official epoch does (~4.4%); with the day's episodes
-# (below) ~6.6% a day, ~37% over the month left when this was set. The venues dislocate less from the
+# (below) ~6.9% a day, ~39% over the month left when this was set. The venues dislocate less from the
 # walk than in the official regimes; the episodes and the flow are the same.
 #
 # This was changed while the period ran (periodResume.ts "revising a period"): the walk from the
@@ -160,8 +160,9 @@ market:
 # Every kind of episode the official regimes run, once a day, in the official regimes' shapes
 # (config/regimes/{crash,spike,cex-drift,informed-flow,whale,depeg,cdp-incident}.yaml). From day 23
 # a gap stays where it lands and goes either way with even odds, as in the official regimes, at 2-4%
-# instead of 15-32% (two a day for a month of level shifts would wander the price by +/-150%), and a
-# drift is half the official rate for the same reason. Before day 23 a gap healed on a fixed clock.
+# instead of 15-32% (two a day for a month of level shifts would wander the price by +/-150%), and the
+# cex-drift episode is a volatility burst at the official peak (0.008-0.012 a block, no side) instead
+# of a drift. Before day 23 a gap healed on a fixed clock and the drift held a side.
 # The list is generated (`npm run gen:practice-episodes`, core/src/practiceEpisodes.ts has why): one
 # block per 24-hour segment of the period. `windowFrac` is a fraction of the run, measured from the
 # moment the coordinator starts, so the list is written for a start time -- **regenerate it right
@@ -430,7 +431,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [0.955863, 0.993772], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [0.955863, 0.993772], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [0.955863, 0.993772], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [0.955863, 0.993772], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [0.955863, 0.993772], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [0.955863, 0.993772], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.955863, 0.993772] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.955863, 0.993772], venue: balancer }
@@ -444,7 +445,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.002706, 1.00925], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.002706, 1.00925], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.002706, 1.00925], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.002706, 1.00925], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.002706, 1.00925], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.002706, 1.00925], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.002706, 1.00925] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.002706, 1.00925], venue: curve }
@@ -455,7 +456,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.014662, 1.052546], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.014662, 1.052546], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.014662, 1.052546], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.014662, 1.052546], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.014662, 1.052546], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.014662, 1.052546], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.014662, 1.052546] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.014662, 1.052546], venue: balancer }
@@ -466,7 +467,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.057958, 1.095843], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.057958, 1.095843], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.057958, 1.095843], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.057958, 1.095843], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.057958, 1.095843], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.057958, 1.095843], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.057958, 1.095843] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.057958, 1.095843], venue: curve }
@@ -477,7 +478,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.101255, 1.139139], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.101255, 1.139139], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.101255, 1.139139], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.101255, 1.139139], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.101255, 1.139139], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.101255, 1.139139], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.101255, 1.139139] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.101255, 1.139139], venue: balancer }
@@ -488,7 +489,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.144551, 1.182436], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.144551, 1.182436], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.144551, 1.182436], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.144551, 1.182436], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.144551, 1.182436], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.144551, 1.182436], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.144551, 1.182436] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.144551, 1.182436], venue: curve }
@@ -499,7 +500,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.187848, 1.225732], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.187848, 1.225732], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.187848, 1.225732], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.187848, 1.225732], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.187848, 1.225732], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.187848, 1.225732], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.187848, 1.225732] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.187848, 1.225732], venue: balancer }
@@ -510,7 +511,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.231144, 1.269029], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.231144, 1.269029], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.231144, 1.269029], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.231144, 1.269029], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.231144, 1.269029], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.231144, 1.269029], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.231144, 1.269029] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.231144, 1.269029], venue: curve }
@@ -521,7 +522,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.274441, 1.312325], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.274441, 1.312325], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.274441, 1.312325], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.274441, 1.312325], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.274441, 1.312325], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.274441, 1.312325], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.274441, 1.312325] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.274441, 1.312325], venue: balancer }
@@ -532,7 +533,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.317738, 1.355622], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.317738, 1.355622], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.317738, 1.355622], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.317738, 1.355622], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.317738, 1.355622], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.317738, 1.355622], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.317738, 1.355622] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.317738, 1.355622], venue: curve }
@@ -543,7 +544,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.361034, 1.398919], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.361034, 1.398919], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.361034, 1.398919], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.361034, 1.398919], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.361034, 1.398919], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.361034, 1.398919], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.361034, 1.398919] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.361034, 1.398919], venue: balancer }
@@ -554,7 +555,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.404331, 1.442215], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.404331, 1.442215], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.404331, 1.442215], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.404331, 1.442215], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.404331, 1.442215], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.404331, 1.442215], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.404331, 1.442215] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.404331, 1.442215], venue: curve }
@@ -565,7 +566,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.447627, 1.485512], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.447627, 1.485512], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.447627, 1.485512], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.447627, 1.485512], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.447627, 1.485512], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.447627, 1.485512], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.447627, 1.485512] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.447627, 1.485512], venue: balancer }
@@ -576,7 +577,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.490924, 1.528808], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.490924, 1.528808], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.490924, 1.528808], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.490924, 1.528808], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.490924, 1.528808], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.490924, 1.528808], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.490924, 1.528808] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.490924, 1.528808], venue: curve }
@@ -587,7 +588,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.53422, 1.572105], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.53422, 1.572105], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.53422, 1.572105], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.53422, 1.572105], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.53422, 1.572105], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.53422, 1.572105], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.53422, 1.572105] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.53422, 1.572105], venue: balancer }
@@ -598,7 +599,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.577517, 1.615401], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.577517, 1.615401], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.577517, 1.615401], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.577517, 1.615401], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.577517, 1.615401], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.577517, 1.615401], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.577517, 1.615401] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.577517, 1.615401], venue: curve }
@@ -609,7 +610,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.620813, 1.658698], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.620813, 1.658698], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.620813, 1.658698], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.620813, 1.658698], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.620813, 1.658698], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.620813, 1.658698], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.620813, 1.658698] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.620813, 1.658698], venue: balancer }
@@ -620,7 +621,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.66411, 1.701994], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.66411, 1.701994], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.66411, 1.701994], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.66411, 1.701994], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.66411, 1.701994], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.66411, 1.701994], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.66411, 1.701994] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.66411, 1.701994], venue: curve }
@@ -631,7 +632,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.707406, 1.745291], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.707406, 1.745291], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.707406, 1.745291], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.707406, 1.745291], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.707406, 1.745291], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.707406, 1.745291], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.707406, 1.745291] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.707406, 1.745291], venue: balancer }
@@ -642,7 +643,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.750703, 1.788588], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.750703, 1.788588], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.750703, 1.788588], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.750703, 1.788588], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.750703, 1.788588], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.750703, 1.788588], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.750703, 1.788588] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.750703, 1.788588], venue: curve }
@@ -653,7 +654,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.794, 1.831884], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.794, 1.831884], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.794, 1.831884], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.794, 1.831884], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.794, 1.831884], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.794, 1.831884], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.794, 1.831884] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.794, 1.831884], venue: balancer }
@@ -664,7 +665,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.837296, 1.875181], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.837296, 1.875181], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.837296, 1.875181], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.837296, 1.875181], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.837296, 1.875181], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.837296, 1.875181], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.837296, 1.875181] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.837296, 1.875181], venue: curve }
@@ -675,7 +676,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.880593, 1.918477], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.880593, 1.918477], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.880593, 1.918477], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.880593, 1.918477], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.880593, 1.918477], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.880593, 1.918477], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.880593, 1.918477] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.880593, 1.918477], venue: balancer }
@@ -686,7 +687,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.923889, 1.961774], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.923889, 1.961774], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.923889, 1.961774], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.923889, 1.961774], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.923889, 1.961774], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.923889, 1.961774], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.923889, 1.961774] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.923889, 1.961774], venue: curve }
@@ -697,7 +698,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.967186, 2.00507], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [1.967186, 2.00507], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [1.967186, 2.00507], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [1.967186, 2.00507], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [1.967186, 2.00507], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [1.967186, 2.00507], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.967186, 2.00507] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [1.967186, 2.00507], venue: balancer }
@@ -708,7 +709,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [2.010482, 2.048367], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [2.010482, 2.048367], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [2.010482, 2.048367], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [2.010482, 2.048367], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [2.010482, 2.048367], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [2.010482, 2.048367], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [2.010482, 2.048367] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [2.010482, 2.048367], venue: curve }
@@ -719,7 +720,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [2.053779, 2.091663], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [2.053779, 2.091663], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [2.053779, 2.091663], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [2.053779, 2.091663], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [2.053779, 2.091663], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [2.053779, 2.091663], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [2.053779, 2.091663] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [2.053779, 2.091663], venue: balancer }
@@ -730,7 +731,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [2.097075, 2.13496], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [2.097075, 2.13496], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [2.097075, 2.13496], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [2.097075, 2.13496], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [2.097075, 2.13496], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [2.097075, 2.13496], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [2.097075, 2.13496] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [2.097075, 2.13496], venue: curve }
@@ -741,7 +742,7 @@ stress:
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [2.140372, 2.178256], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
     - { type: spike, magnitudeRange: [0.02, 0.04], windowFrac: [2.140372, 2.178256], flipProb: 0.5, recoverFrac: [0, 0], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
     - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [2.140372, 2.178256], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
-    - { type: cexDrift, magnitudeRange: [0.0005, 0.001], windowFrac: [2.140372, 2.178256], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: volBurst, magnitudeRange: [0.008, 0.012], windowFrac: [2.140372, 2.178256], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
     - { type: flowTrend, magnitudeRange: [2, 3], windowFrac: [2.140372, 2.178256], trendCorrelation: 1, persistBlocks: 12, rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [2.140372, 2.178256] }
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [2.140372, 2.178256], venue: balancer }
