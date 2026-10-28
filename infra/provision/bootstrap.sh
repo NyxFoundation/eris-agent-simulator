@@ -16,7 +16,7 @@ set -euo pipefail
 ASCON_USER="${ASCON_USER:-ascon}"
 ERIS_REPO="${ERIS_REPO:-https://github.com/NyxFoundation/eris-agent-simulator.git}"
 ERIS_REF="${ERIS_REF:-main}"
-NODE_MAJOR="${NODE_MAJOR:-22}"
+NODE_MAJOR="${NODE_MAJOR:-24}"
 HOME_DIR="/home/${ASCON_USER}"
 ERIS_ROOT="${HOME_DIR}/workspace/eris-agent-simulator"
 ASCON_LOGS="${HOME_DIR}/ascon-logs"
