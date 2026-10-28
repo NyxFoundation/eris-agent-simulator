@@ -18,6 +18,7 @@ import {
   checkPeriodExtension,
   chooseCheckpoint,
   extendedScheduleProblems,
+  revisedScheduleProblems,
   clearNewPeriodRequest,
   closePeriod,
   configDiff,
@@ -289,7 +290,7 @@ import {
   STARTUP_FAIL_BPS,
   STARTUP_WARN_BPS,
 } from "./noArb.js";
-import { EventSchedule, withOuOverride } from "./events.js";
+import { EventSchedule, withOuOverride, type StressEventConfig } from "./events.js";
 import {
   auditOwnerGuards,
   guardFailureMessage,
@@ -881,6 +882,7 @@ export async function runRealtimeSimulation(
     rewound: boolean;
     head: number;
     extension: Record<string, unknown> | null;
+    revision: Record<string, unknown> | null;
   } | null = null;
   let newPeriodByMarker = false;
   if (periodMode) {
@@ -946,7 +948,8 @@ export async function runRealtimeSimulation(
           `the config does not describe the world period ${period.competitionId} was started in:\n  ` +
             `${check.diff.join("\n  ")}\n` +
             `Across a restart only ${MUTABLE_CONFIG_KEYS.join(", ")} may change, and the period may be ` +
-            "extended (a later run.endsAt, episodes appended, stress.windowBaseBlocks; infra/devnet/README.md). " +
+            "extended (a later run.endsAt, episodes appended, stress.windowBaseBlocks) or revised (market.*, the " +
+            "episodes not yet played, stress.saltWithEventList; infra/devnet/README.md). " +
             "Put the rest back, or start a new period with --new-period",
         );
       // The period's length is the one its first start converted run.endsAt into (the date is in the
@@ -971,12 +974,14 @@ export async function runRealtimeSimulation(
           config.seed,
           cpChosen.runBlocks,
           check.windowBaseBefore,
+          { saltWithEventList: config.stressSaltWithEventList },
         );
         const after = new EventSchedule(
           config.stressEvents,
           config.seed,
           extendedBlocks,
           check.windowBase,
+          { saltWithEventList: config.stressSaltWithEventList },
         );
         // Room for the first pass's catch-up and the episodes' own ramp: nothing appended may start
         // within a few minutes of the head.
@@ -1008,7 +1013,46 @@ export async function runRealtimeSimulation(
       } else {
         config.runBlocks = cpChosen.runBlocks;
       }
-      resume = { period, checkpoint: cpChosen, rewound: choice.rewound, head, extension };
+      // Revised (periodResume.ts "revising a period"): the walk's parameters and the unplayed
+      // episodes. The schedule is built the way the period had it and the way the config has it now,
+      // on the same run and base; every window that starts before the head (plus the margin the
+      // extension uses) has to come out identical.
+      let revision: Record<string, unknown> | null = null;
+      if (check.kind === "revise") {
+        const savedEvents = (cpChosen.world.stressEvents ?? []) as StressEventConfig[];
+        const savedSalt = cpChosen.world.stressSaltWithEventList as boolean | undefined;
+        const before = new EventSchedule(
+          savedEvents,
+          config.seed,
+          cpChosen.runBlocks,
+          check.windowBase,
+          { saltWithEventList: savedSalt ?? undefined },
+        );
+        const after = new EventSchedule(
+          config.stressEvents,
+          config.seed,
+          cpChosen.runBlocks,
+          check.windowBase,
+          { saltWithEventList: config.stressSaltWithEventList },
+        );
+        const nextOpenOffset = head - cpChosen.runStartBlock + 1 + EXTENSION_HEAD_MARGIN_BLOCKS;
+        const problems = revisedScheduleProblems(before.events, after.events, nextOpenOffset);
+        if (problems.length > 0)
+          throw new Error(
+            `period ${period.competitionId} cannot be revised:\n  ${problems.join("\n  ")}`,
+          );
+        const kept = before.events.filter((w) => w.startBlock < nextOpenOffset).length;
+        revision = {
+          changed: check.changed,
+          windowsKept: kept,
+          windowsBefore: before.events.length,
+          windowsAfter: after.events.length,
+          ...(after.events.length > kept
+            ? { firstRevisedBlock: cpChosen.runStartBlock + after.events[kept].startBlock }
+            : {}),
+        };
+      }
+      resume = { period, checkpoint: cpChosen, rewound: choice.rewound, head, extension, revision };
     }
   }
   const cp = resume?.checkpoint;
@@ -1066,6 +1110,7 @@ export async function runRealtimeSimulation(
       checkpointWrittenAt: resume.checkpoint.writtenAt,
       configChanges: changed,
       ...(resume.extension ? { extended: resume.extension } : {}),
+      ...(resume.revision ? { revised: resume.revision } : {}),
       ...(cutReport &&
       (cutReport.truncated.length > 0 ||
         cutReport.movedSegments.length > 0 ||
@@ -1111,6 +1156,10 @@ export async function runRealtimeSimulation(
         (resume.extension
           ? `; extended to ${resume.extension.endsAtAfter}: ends at block ${resume.extension.endBlock} ` +
             `(was ${resume.extension.endBlockBefore}), ${resume.extension.appendedWindows} episode window(s) appended`
+          : "") +
+        (resume.revision
+          ? `; revised (${(resume.revision.changed as string[]).join("; ")}): ${resume.revision.windowsKept} window(s) ` +
+            `kept as played, the rest from block ${String(resume.revision.firstRevisedBlock ?? "-")}`
           : ""),
     );
   } else {
@@ -1405,6 +1454,7 @@ export async function runRealtimeSimulation(
     config.seed,
     config.runBlocks,
     config.stressWindowBaseBlocks ?? config.runBlocks,
+    { saltWithEventList: config.stressSaltWithEventList },
   );
   const stressAudit = new StressAudit(schedule.events, event => logger.event(event));
   if (cp) stressAudit.restore(cp.stressAudit);

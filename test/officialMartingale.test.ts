@@ -86,3 +86,11 @@ test("across the official mix the expected gap is about zero", () => {
   // Gaps that may start at different points would make "none yet" say which way the next one goes.
   assert.equal(starts.size, 1, `gap windows start in different bands: ${[...starts].join(" ")}`);
 });
+
+test("no official regime gives up the event list's salt", () => {
+  // stress.saltWithEventList: false exists for the practice period, which revises its unplayed
+  // episodes mid-way (ADR 0029 Amendment 3). The official regimes share seeds across regimes, and the
+  // salt is what keeps crash#s and spike#s from drawing the same windows (events.ts EventSchedule).
+  for (const regime of OFFICIAL)
+    assert.equal(load(regime).stressSaltWithEventList, undefined, `${regime}: stress.saltWithEventList`);
+});

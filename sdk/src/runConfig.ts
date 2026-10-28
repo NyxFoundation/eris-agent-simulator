@@ -187,6 +187,9 @@ const SCHEMA: Record<string, string> = {
   "stress.events": "ERIS_STRESS_EVENTS",
   // What windowFrac is a fraction of, when a practice period was extended (core periodResume.ts).
   "stress.windowBaseBlocks": "ERIS_STRESS_WINDOW_BASE_BLOCKS",
+  // Whether the event list salts the schedule's stream (events.ts EventSchedule). Unset = only when
+  // a variation key is used; false keeps the seed-only stream (a practice period revised mid-way).
+  "stress.saltWithEventList": "ERIS_STRESS_SALT_WITH_EVENT_LIST",
   "stress.victimCount": "ERIS_STRESS_VICTIM_COUNT",
   "stress.victimHf0": "ERIS_STRESS_VICTIM_HF0",
   "stress.victimWethWei": "ERIS_STRESS_VICTIM_WETH_WEI",

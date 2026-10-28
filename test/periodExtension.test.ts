@@ -95,11 +95,6 @@ test("what an extension refuses: an earlier end, an edited episode, a moved base
   );
   // No base: the run grows, so every fraction would land on a later block.
   assert.match(refused(world({ runEndsAt: later })), /has to be 86400/);
-  // Episodes appended without the end moving.
-  assert.match(
-    refused(world({ stressEvents: [...plain(savedEvents), plain(savedEvents)[0]], stressWindowBaseBlocks: RUN_BLOCKS })),
-    /did not move/,
-  );
   // Another key changes alongside: still the ordinary refusal, naming it.
   assert.match(
     refused(world({ runEndsAt: later, stressWindowBaseBlocks: RUN_BLOCKS, seed: 8 })),
@@ -108,8 +103,11 @@ test("what an extension refuses: an earlier end, an edited episode, a moved base
 });
 
 test("with the base held, the saved windows resolve to the same blocks in the extended run", () => {
+  // The templates use variation keys (flipProb, recoverFrac), so the period runs on the seed-only
+  // stream (stress.saltWithEventList: false); with the list in the salt, appending would redraw it all.
+  const SEED_ONLY = { saltWithEventList: false };
   const configs = parseStressEvents(JSON.stringify(savedEvents));
-  const before = new EventSchedule(configs, 7, RUN_BLOCKS);
+  const before = new EventSchedule(configs, 7, RUN_BLOCKS, RUN_BLOCKS, SEED_ONLY);
   // Thirty more days, their episodes placed past the old end.
   const extendedBlocks = RUN_BLOCKS + 30 * 43_200;
   const appended = extensionEpisodePlan(
@@ -127,7 +125,7 @@ test("with the base held, the saved windows resolve to the same blocks in the ex
   const all = parseStressEvents(JSON.stringify([...savedEvents, ...appended]), {
     windowFracBeyondRun: true,
   });
-  const after = new EventSchedule(all, 7, extendedBlocks, RUN_BLOCKS);
+  const after = new EventSchedule(all, 7, extendedBlocks, RUN_BLOCKS, SEED_ONLY);
   assert.deepEqual(
     plain(after.events.slice(0, before.events.length)),
     plain(before.events),

@@ -20,10 +20,10 @@ import {
 } from "../core/src/realtime/events.js";
 
 const BLOCKS_PER_HOUR = 1800; // blockTimeSec 2
+// The day's two gaps go either way with even odds (ADR 0029 Amendment 3), so they are counted together.
 const PER_DAY = {
-  crash: 1,
+  gap: 2,
   liquidityPull: 2,
-  spike: 1,
   cexDrift: 1,
   flowTrend: 1,
   whale: 2,
@@ -47,11 +47,11 @@ function perDay(
   runHours: number,
   days: number,
 ) {
-  const schedule = new EventSchedule(
-    configs,
-    seed,
-    Math.round(runHours * BLOCKS_PER_HOUR),
-  );
+  const runBlocks = Math.round(runHours * BLOCKS_PER_HOUR);
+  // The stream config/practice.yaml runs on (stress.saltWithEventList: false).
+  const schedule = new EventSchedule(configs, seed, runBlocks, runBlocks, {
+    saltWithEventList: false,
+  });
   const seg = 24 * BLOCKS_PER_HOUR;
   const out: Array<Record<string, number>> = Array.from(
     { length: days },
@@ -63,7 +63,8 @@ function perDay(
       ev.endBlock <= (day + 1) * seg,
       `${ev.type} at ${ev.startBlock} runs past the end of day ${day + 1}`,
     );
-    if (day < days) out[day][ev.type] = (out[day][ev.type] ?? 0) + 1;
+    const kind = ev.type === "crash" || ev.type === "spike" ? "gap" : ev.type;
+    if (day < days) out[day][kind] = (out[day][kind] ?? 0) + 1;
   }
   return out;
 }

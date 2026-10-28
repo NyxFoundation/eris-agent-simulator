@@ -458,6 +458,22 @@ export const EXTENSION_KEYS = [
   "stressWindowBaseBlocks",
 ] as const;
 
+// ---- revising a period ----
+//
+// The other change a resume accepts: how the world moves from here on. ADR 0029 made the official
+// fair price a martingale and its gaps level shifts; the practice period, already running, was the
+// same hole (a walk reverting to its opening price, gaps that healed on a fixed clock), and a new
+// period would revert every participant's chain. So the walk's parameters (`market.*` = `ou`)
+// may change, and so may the episodes the period has not played yet, with `run.endsAt` and
+// `stress.windowBaseBlocks` held. Which episodes are unplayed is a question about blocks, not about
+// the list: the coordinator builds the schedule both ways and refuses unless every window that
+// starts before the head (plus a margin) resolves exactly as before (revisedScheduleProblems). That
+// holds only on a stream where an entry's draws do not depend on the lines after it, which is what
+// `stress.saltWithEventList: false` gives (events.ts EventSchedule).
+
+/** The world keys a revision may change. */
+export const REVISION_KEYS = ["ou", "stressEvents", "stressSaltWithEventList"] as const;
+
 export type PeriodExtensionCheck =
   | { kind: "same" }
   | {
@@ -469,6 +485,13 @@ export type PeriodExtensionCheck =
       appendedEvents: number;
       /** What windowFrac was a fraction of before this start (the saved base, or the saved run). */
       windowBaseBefore: number;
+      windowBase: number;
+    }
+  | {
+      kind: "revise";
+      /** What changed, `key: saved -> now` (stress.events abbreviated). */
+      changed: string[];
+      /** What windowFrac is a fraction of, unchanged by a revision. */
       windowBase: number;
     }
   | { kind: "refused"; diff: string[] };
@@ -484,7 +507,7 @@ export function checkPeriodExtension(
   now: Record<string, unknown>,
   savedRunBlocks: number,
 ): PeriodExtensionCheck {
-  const ext = new Set<string>(EXTENSION_KEYS);
+  const ext = new Set<string>([...EXTENSION_KEYS, ...REVISION_KEYS]);
   const split = (w: Record<string, unknown>) =>
     Object.fromEntries(Object.entries(w).filter(([k]) => !ext.has(k)));
   const pick = (w: Record<string, unknown>) =>
@@ -494,6 +517,39 @@ export function checkPeriodExtension(
   if (other.length === 0 && changed.length === 0) return { kind: "same" };
   if (changed.length === 0) return { kind: "refused", diff: other };
 
+  const differs = (k: string) => JSON.stringify(saved[k]) !== JSON.stringify(now[k]);
+  const savedBase =
+    typeof saved.stressWindowBaseBlocks === "number" ? saved.stressWindowBaseBlocks : savedRunBlocks;
+  if (!differs("runEndsAt")) {
+    // Not longer: a revision, or nothing this function accepts.
+    const problems = [...other];
+    if (differs("stressWindowBaseBlocks"))
+      problems.push(
+        `stressWindowBaseBlocks: ${JSON.stringify(now.stressWindowBaseBlocks)}: a revision keeps the base ` +
+          "the windowFrac were placed against (it moves only with an extension, run.endsAt later)",
+      );
+    if (problems.length > 0) return { kind: "refused", diff: problems };
+    return {
+      kind: "revise",
+      changed: REVISION_KEYS.filter(differs).map((k) =>
+        k === "stressEvents"
+          ? `stressEvents: ${changedEntries(saved.stressEvents, now.stressEvents)}`
+          : `${k}: ${JSON.stringify(saved[k] ?? null)} -> ${JSON.stringify(now[k] ?? null)}`,
+      ),
+      windowBase: savedBase,
+    };
+  }
+  const revised = REVISION_KEYS.filter((k) => k !== "stressEvents" && differs(k));
+  if (revised.length > 0)
+    return {
+      kind: "refused",
+      diff: [
+        ...other,
+        `${revised.join(", ")} changed alongside run.endsAt: extend and revise in separate restarts ` +
+          "(each checks the schedule against the period as it was)",
+      ],
+    };
+
   const problems = [...other];
   const before = saved.runEndsAt;
   const after = now.runEndsAt;
@@ -502,11 +558,7 @@ export function checkPeriodExtension(
       `runEndsAt: ${JSON.stringify(before)} -> ${JSON.stringify(after)}: only a period stated as a date (run.endsAt) can be extended`,
     );
   else if (!(Date.parse(after) > Date.parse(before)))
-    problems.push(
-      after === before
-        ? "stress.events / stress.windowBaseBlocks differ but run.endsAt did not move: episodes are only appended to an extension"
-        : `runEndsAt: ${before} -> ${after}: a period can be extended, not shortened`,
-    );
+    problems.push(`runEndsAt: ${before} -> ${after}: a period can be extended, not shortened`);
 
   const savedEvents = Array.isArray(saved.stressEvents) ? saved.stressEvents : [];
   const nowEvents = Array.isArray(now.stressEvents) ? now.stressEvents : [];
@@ -540,6 +592,14 @@ export function checkPeriodExtension(
     windowBaseBefore,
     windowBase: windowBase as number,
   };
+}
+
+function changedEntries(saved: unknown, now: unknown): string {
+  const a = Array.isArray(saved) ? saved : [];
+  const b = Array.isArray(now) ? now : [];
+  const first = a.findIndex((e, i) => JSON.stringify(e) !== JSON.stringify(b[i]));
+  const from = first < 0 ? a.length : first;
+  return `${a.length} -> ${b.length} entries, the first ${from} unchanged`;
 }
 
 function removedOrChanged(e: unknown): string {
@@ -587,6 +647,53 @@ export function extendedScheduleProblems(
       break;
     }
   return problems;
+}
+
+/**
+ * What is wrong with a revised schedule. `before` is the period's schedule as it was, `after` the
+ * revised one, both on the same run and base. Every window that starts before `nextOpenOffset` (a
+ * run-relative block the coordinator has not processed yet, with room for the catch-up) is played or
+ * about to be: those have to come first in both lists and resolve identically -- the same blocks and
+ * draws, and so the same indices, which is what the stress audit and the depeg / pull baselines in
+ * the checkpoint are keyed by. What starts after it may be anything.
+ */
+export function revisedScheduleProblems(
+  before: readonly ScheduledWindow[],
+  after: readonly ScheduledWindow[],
+  nextOpenOffset: number,
+): string[] {
+  const show = (v: unknown) =>
+    JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x));
+  const played = (ws: readonly ScheduledWindow[]) => {
+    const n = ws.findIndex((w) => w.startBlock >= nextOpenOffset);
+    const k = n < 0 ? ws.length : n;
+    const late = ws.slice(k).findIndex((w) => w.startBlock < nextOpenOffset);
+    return { k, late: late < 0 ? -1 : k + late };
+  };
+  const b = played(before);
+  const a = played(after);
+  const problems: string[] = [];
+  for (const [name, ws, p] of [["the period's", before, b], ["the revised", after, a]] as const)
+    if (p.late >= 0)
+      problems.push(
+        `${name} schedule has window ${p.late} (${ws[p.late].type} at run block ${ws[p.late].startBlock}) before ` +
+          `block ${nextOpenOffset} but after a later one: the played windows have to be a prefix of the list ` +
+          "(revise whole days from the end of the list)",
+      );
+  if (problems.length > 0) return problems;
+  if (a.k !== b.k)
+    return [
+      `${b.k} windows start before run block ${nextOpenOffset} in the period, ${a.k} once revised: an episode ` +
+        "the period has played or is about to play was added, removed or moved -- revise only days that start later",
+    ];
+  for (let i = 0; i < b.k; i++)
+    if (show(before[i]) !== show(after[i]))
+      return [
+        `window ${i} (${before[i].type} at run block ${before[i].startBlock}) resolves differently once revised ` +
+          `(${after[i].type} at run block ${after[i].startBlock}): the period has played it or is about to. ` +
+          "Keep its line as it was, and stress.saltWithEventList: false (a salted stream redraws every window)",
+      ];
+  return [];
 }
 
 /** A roster entry as it bears on the world: who, which key or address, what runs it. */
