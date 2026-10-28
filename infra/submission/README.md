@@ -18,8 +18,10 @@ process.env reads (WARN); package.json install
 lifecycle hooks (supply-chain) and non-registry deps; hardcoded secrets and crypto-miner signatures.
 Additional secret checks cover non-code UTF-8 text files outside vendored copies, forge artifacts and node_modules,
 unless handled by an existing specialized path (package-manager configuration, manifests/locks, requirements or Solidity sources).
-The entire file must decode as UTF-8 without NUL bytes. Matches WARN; secret-material names (`.env` / `.env.*` except `.env.example`,
-`.env.sample`, `.env.template`; `*.pem`, `*.key`, `id_rsa`, `id_ed25519`, `*.p12`, `*.pfx`) also WARN regardless of content.
+A file with a NUL byte is treated as binary and skipped; bytes that are not UTF-8 (a Shift_JIS note) are replaced, not skipped.
+In these files a 0x + 64-hex string counts only after a key-like name on the same line (`PRIVATE_KEY=`, `secret:`, `mnemonic`),
+since a tx hash or event topic has the same shape. Matches WARN; secret-material names (`.env` / `.env.*` except names ending in
+`.example`, `.sample`, `.template`; `*.pem`, `*.key`, `id_rsa`, `id_ed25519`, `*.p12`, `*.pfx`) also WARN regardless of content.
 
 Calibration: all 24 `example/agents/*` accept (0 BLOCK); a sample agent using child_process + fetch +
 a cheatcode + a postinstall hook is rejected (3 BLOCK; its fs writes are a WARN). Not a sandbox and not exhaustive —
