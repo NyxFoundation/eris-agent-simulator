@@ -804,7 +804,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 
 ### 市場ストレスイベント（spike/crash + Aave 清算。ADR 0009。既定 off）
 
-**公式 12 レジームの base は martingale**（`market.kappa: 0` を 12 本に明示。ADR 0029）。OU は開始時の fair（毎エポック同じ $3,000 / $60,000、ブロック 0 で読める）へ回帰していたので、「開始水準へ向かって建てる」が手数料後も全レジームで名目の ~470bps / エポック（`scripts/measurePredictability.ts`。20 倍の GMX なら配布額の数十 %）。κ を下げるだけでは消えない（乖離が育つ）。ショックは既定のままなので venue の乖離はほぼ不変、エポック終端の fair の sd は ~1.15% → ~4.4%。sdk 既定の κ = 0.02 は公式外（練習期間・venue 単体 regime・example）のために残し、`test/officialMartingale.test.ts` が 12 本 × base で 0 を検査する。cex-drift の `kappaMultRange` / `repriceAnchorProb` は κ = 0 で効かないので外した（全窓が水準を残す）。
+**公式 12 レジームの base は martingale**（`market.kappa: 0` を 12 本に明示。ADR 0029）。OU は開始時の fair（毎エポック同じ $3,000 / $60,000、ブロック 0 で読める）へ回帰していたので、「開始水準へ向かって建てる」が手数料後も全レジームで名目の ~470bps / エポック（`scripts/measurePredictability.ts`。20 倍の GMX なら配布額の数十 %）。κ を下げるだけでは消えない（乖離が育つ）。ショックは既定のままなので venue の乖離はほぼ不変、エポック終端の fair の sd は ~1.15% → ~4.4%。sdk 既定の κ = 0.02 は公式外（練習期間・venue 単体 regime・example）のために残し、`test/officialMartingale.test.ts` が 12 本 × base で 0 を検査する。cex-drift の `kappaMultRange` / `repriceAnchorProb` は κ = 0 で効かないので外した（全窓が水準を残す）。**価格ギャップも戻らない**（ADR 0029 Amendment 1）: crash / spike / lending-incident / cdp-incident は `recoverFrac: [0, 0]`（旧 [0.4, 1.0] は「止まったら逆張り」が名目の +1,100〜2,200bps / エポック、下限が 0 より上なので利幅を縮めただけだった。decay は直線なので幅を 0 跨ぎにしても追随で取れる）・`rampBlocks: [2, 3]`（約定が観測の 2 ブロック後なので 4 だと最後の 1/4 を追随で取れた）・crash `flipProb: 0.5`・spike は 1 本 24〜32% 反転なし（下固定の lending + cdp と釣り合わせ、12 本一様のギャップ期待 ≈ 0 = 「base を持たない」が得にならない）・4 本とも `windowFrac: [0.3, 0.7]`。測定は `npx tsx scripts/measurePredictability.ts`。
 
 OU の base price はそのまま進め、その上に **SEED 由来でランダム化した決定論オーバーレイ**（`core/src/realtime/events.ts` `EventSchedule`）を重ねて effective price を導出する。effective が PriceFeed・Aave WETH オラクル・GMX・採点へ一貫伝播し、窓外では β≈0 を保つ（ADR 0007 を毀損しない）。清算を成立させる **seed 由来 victim 群**（採点対象外）を建てる。`config/local.yaml` の `stress:` セクションで指定:
 
@@ -830,7 +830,7 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
 - **窓の数・形・向き・戻り方も seed が引く**（2026-09-27）。以前は magnitude と開始位置しか引いておらず、本数・バンド・台形の長さ・crash の向き・必ず全部戻ることは YAML に書いてあった。
   `count: [min, max]`（0 可。重ならず、開始は `windowFrac` 内で一様。follower は anchor の本数を窓ごとに対で継ぐ）/ `minGapBlocks` /
   `rampBlocks` 等の `[min, max]` / `flipProb`（crash・spike。解決済みは `type: spike, flippedFrom: crash`。victim のあるレジームでは使わない）/
-  `recoverFrac`（crash・spike。戻らない分は run 終了まで残る = 「急変に逆張りして窓で手仕舞う」の構造的正解を消す。**練習期間では使わない**。残差が複利になる）/
+  `recoverFrac`（crash・spike。戻らない分は run 終了まで残る。公式 4 本は `[0, 0]` = 全く戻らない（ADR 0029 Amendment 1。0 より上の下限は逆張りの利幅を縮めるだけ）。**練習期間では使わない**。残差が複利になる）/
   `venue: random`（whale）/ `repriceAnchorProb`（cexDrift）。公式 10 本に適用済み（calm・vuln は無変更。lending-incident / cdp-incident は暴落 1 本・下落固定で、形と回復だけ）。
   **これらを 1 つでも使うスケジュールはイベント列（FNV-1a）も stream の salt に混ぜる**（イベント列を混ぜないと crash#s と spike#s、depeg と depeg-persist、
   lending-incident と cdp-incident が同じ draw を引き、同じブロックに開いて反転も連動していた）。使わない config は seed だけの stream。

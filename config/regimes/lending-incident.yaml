@@ -103,17 +103,18 @@ flow:
 stress:
   # Give ranges, not values (the seed samples them) = suppresses overfitting to a specific path (ADR 0009)
   #
-  # The crash's trapezoid and how much of the gap recovers are drawn as in crash.yaml. It stays one
-  # crash, always down: the victims are the regime, a second crash would find them liquidated
-  # already, and one that went up breaches nobody. A partial recovery can leave the oracle low
-  # enough that a victim nobody took during the window is still under water after it.
+  # The ramp and the level shift are as in crash.yaml: nothing recovers (ADR 0029 Amendment 1), so a
+  # victim nobody took during the window stays under water to the end. It stays one crash, always
+  # down: the victims are the regime, a second crash would find them liquidated already, and one that
+  # went up breaches nobody. spike.yaml carries the upward gap that keeps the official mix's expected
+  # gap at ~0.
   events:
     - {
         type: crash,
-        recoverFrac: [0.4, 1.0],
+        recoverFrac: [0, 0],
         magnitudeRange: [0.12, 0.16],
         windowFrac: [0.3, 0.7],
-        rampBlocks: [2, 4],
+        rampBlocks: [2, 3],
         holdBlocks: [4, 8],
         decayBlocks: [6, 10],
       }
