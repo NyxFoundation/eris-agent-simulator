@@ -1328,9 +1328,11 @@ agent 側の `ctx.rng` は address 由来（run の seed ではない）。`SimC
   **vuln factory・その owner（`vuln-pools` 財布、全 run で同額のガス）・`disclosures/`・`ERIS_VULN_*` は全 run**（プールは窓で
   `createPool(initCode)` 1 本で deploy = ADR 0014 Amendment 2。以前は setup で全部 deploy し、作成 selector が正解を名指していた）。
   agent に渡す追加 env の形は `core/src/realtime/agentEnv.ts` が config から決め、coordinator は起動前に照合して違えば落ちる。
-  **victim の一覧（`ERIS_LIQUIDATION_VICTIMS` / `ERIS_LIQUITY_VICTIMS`）だけは既知の例外**: env を消しても victim は block 0 から
-  チェーン上に見える（Aave の HF 1.10 の借り手、`SortedTroves.getLast()` の ICR 1.20）ので、塞ぐには全レジームに victim を
-  置く（デコイ）必要があり、レジームの意味が変わるので別に決める。もう 1 つの既知の穴は vuln プールのソースが公開 repo に
+  **victim は全 12 本で同じ cohort を建てる**（Aave 2 体 HF 1.10 + Liquity 2 本 ICR 1.20。ADR 0029 Amendment 2）。env を消しても
+  victim は block 0 からチェーン上に見える（Aave の HF 1.10 の借り手、`SortedTroves.getLast()` の ICR 1.20）ので、lending-incident /
+  cdp-incident だけにいた頃は「下に 12〜16% 落ちる」が block 0 で分かった。他のレジームではデコイで、割れるのは crash の下向きギャップ
+  （~52%）か κ = 0 の乱歩（Aave ~3% / Liquity ~5%）。coordinator の「victim がいるのに crash が無い」警告は、反転しない crash を
+  持つ regime だけで出す。`test/regimeStartInvariance.test.ts` が env と cohort の同一性を検査する。残っている既知の穴は vuln プールのソースが公開 repo に
   あること（bytecode の骨格で照合できる）
 - **setup ブロックの tx と環境財布の残高もレジームで変えない**（同じテスト）。agent はゲートウェイ越しに
   `runStartBlock` より前のブロック・ログ・残高を読めるので、config と env を揃えても setup がレジームを名指していた:
@@ -1339,7 +1341,7 @@ agent 側の `ctx.rng` は address 由来（run の seed ではない）。`SimC
   （600 WETH + 2.4M USDC。公式の最大の引きを賄う額で、超える引き = 練習期間だけ増やす）、**launch は固定 3 スロット**、
   **deployer の standing approval は `core/src/realtime/standingApprovals.ts` が全 run で同じ集合を送り**、depeg と
   引き抜きの setup は送らずに検査だけする（`requireStandingApprovals`）。公式レジームの最大の引きが固定額に収まることも
-  テストが持つ。flow 財布の配布額・本数も 12 本で同一であることを検査する。**victim の Trove / Aave 建玉は上の既知の例外のまま**
+  テストが持つ。flow 財布の配布額・本数も 12 本で同一であることを検査する。victim の Trove / Aave 建玉も 12 本で同一（上）
 - **bind-mount モードと `--agent-sandbox process` は隔離境界ではない**（repo / host のファイルが全部見える）
 自己改善型は `ERIS_IMPROVE_LOG_CALLS: "1"`（ロスターの env）で LLM との生の対話（system 全文・送信
 messages・生応答・エラー）を `agents/<agentId>.llm.jsonl` に残せる（opt-in。プロンプト調整の一次情報）。
