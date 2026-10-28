@@ -122,3 +122,35 @@ victim のアドレスは env（`ERIS_LIQUIDATION_VICTIMS` / `ERIS_LIQUITY_VICTI
 
 帰結: lending-incident と crash の違いは、ギャップの大きさ・本数・向き（下固定か半々か）だけになる。
 どちらも起きた後にしか分からない。
+
+## Amendment 3: 練習期間も同じ形にする（2026-10-28）
+
+本文の「練習期間」が先送りしたもの。練習期間（`config/practice.yaml`）は sdk 既定の OU（κ = 0.02、開始時の fair へ回帰）
+で、ギャップは毎日 15〜22% が 3 + 6 + 8 ブロックで全部戻っていた。公式と同じ 2 つの穴で、練習の順位は非公式でも
+それで決まりうるし、参加者が練習で調整した戦略が本番の世界と違うものを学ぶ。
+
+1 本のチェーンが 1 か月続くので、公式の手（κ = 0 と、戻らない 15〜32% のギャップ）はそのまま入らない。ブロックごとの
+ショックが公式と同じなら乱歩だけで 1 日 sd ~48%、戻らないギャップ 2 本 / 日は上下半々でも 1 か月で ±150%。
+有界に保つために回帰を残せば、それが読める向きになる（本文）。よって**揺れを下げて martingale にする**:
+
+- `market: { volatility: 0.00037, kappa: 0 }`。ブロック sd は公式の 1/11（0.021%）で、練習の 1 日の散らばり
+  （~4.4%）が公式 1 エポックと同じ。参照価格の揺れが作る venue の乖離は公式より少ない（エピソードとフローは同じ）
+- ギャップは公式と同じ形（戻らない・ramp ≤ 3・`flipProb: 0.5` で上下半々）で、大きさは 2〜4%。cexDrift は
+  公式の半分の速さ（0.05〜0.1% / ブロック）で、水準は戻らない。`core/src/practiceEpisodes.ts` の `dayTemplates`
+- 合計の散らばりは 1 日 ~6.6%（エピソードだけで ~5.1%）、残り 32 日で ~37%（`EventSchedule` で 400 seed）
+
+**期間を止めずに途中から切り替える**（新しい期間はチェーンを戻すので）。`periodResume.ts` に「revise」を足した:
+`market.*` と、まだ再生していないエピソードは再起動で変えてよく、`run.endsAt` と `stress.windowBaseBlocks` は
+そのまま。coordinator は schedule を変更前と変更後で作り、head + 300 ブロックより前に始まる窓が両方の先頭に
+同じ形で並ぶ（同じブロック・同じ引き）ことを確かめ、違えば拒否する（`revisedScheduleProblems`）。
+
+これには引きが行の順に取られ、後ろの行に依存しない stream が要る。ADR 0027 以後、変化キー（`flipProb` /
+`recoverFrac` 等）を 1 つでも使うリストはリスト全体の digest を salt に混ぜるので、未来の行を変えると過去の窓が
+全部引き直される。**`stress.saltWithEventList: false`** で seed だけの stream に固定する（練習期間はそれまで変化キーを
+持たず、ずっとこの stream だった）。salt が防いでいたのは「同じ seed の別レジームが同じ引きをする」ことで、
+秘密の seed を持つ 1 レジームの練習期間には当たらない。公式レジームは設定しない。
+
+`config/practice.yaml` は day 23（10/30 22:03 JST から始まる日。チェーンは止まっていた分だけ遅れている）から
+書き換えた: `npm run gen:practice-episodes -- --revise-from-day 23`。day 22 までの 220 窓は、変更前と変更後で
+同一に解決されることを 5 seed で確認した。再起動が day 23 の窓に間に合わなければ coordinator が拒否するので、
+N を後ろにして作り直す（手順は `infra/devnet/README.md`「Revising a period」）。

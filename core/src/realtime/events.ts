@@ -369,6 +369,7 @@ export class EventSchedule {
     seed: number,
     runBlocks: number,
     windowBaseBlocks: number = runBlocks,
+    opts: { saltWithEventList?: boolean } = {},
   ) {
     if (configs.length > 0 && runBlocks <= 0) {
       // The window is determined by a fraction of run length, so a fixed-length run (ERIS_RUN_BLOCKS>0) is required.
@@ -411,11 +412,17 @@ export class EventSchedule {
     // them keeps the stream of the seed alone, so its entries draw the same whatever else the list
     // holds (before ADR 0027 that was to keep the practice period's windows byte for byte; the key
     // moves every realization now).
+    //
+    // `saltWithEventList: false` (stress.saltWithEventList) keeps the seed-only stream with variation
+    // keys in the list. Draws are taken entry by entry in list order, so on that stream an entry draws
+    // the same as long as nothing before it changes -- which is what a practice period needs when it
+    // revises the episodes it has not played yet (periodResume.ts): with the list in the salt, every
+    // window already played would be redrawn. The practice period is one regime with its own secret
+    // seed, so the pairing the salt breaks up does not arise there.
+    const salted = opts.saltWithEventList ?? configs.some(usesVariation);
     const rng = Rng.fromSeed(
       seed,
-      configs.some(usesVariation)
-        ? (STRESS_SEED_SALT ^ configDigest(configs)) >>> 0
-        : STRESS_SEED_SALT,
+      salted ? (STRESS_SEED_SALT ^ configDigest(configs)) >>> 0 : STRESS_SEED_SALT,
     );
     // First pass: every draw, in list order. How many draws an entry makes is a function of the
     // config alone -- a count draws its maximum number of windows, not the number it landed on -- so

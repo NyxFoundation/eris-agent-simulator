@@ -15,10 +15,19 @@
 // is ~93 blocks, three minutes, so the margin is nothing to the placement). A final slice shorter than
 // MIN_SLICE_HOURS gets no episodes: there is no room to place ten windows away from its edges.
 //
-// The magnitudes and shapes are the official regimes' (config/regimes/{crash,spike,cex-drift,
-// informed-flow,whale,depeg,cdp-incident}.yaml), unchanged from the weekly plan.
+// The shapes are the official regimes' (config/regimes/{crash,spike,cex-drift,informed-flow,whale,
+// depeg,cdp-incident}.yaml). Three things are not, because this is one world that runs for weeks
+// rather than a fresh one per epoch (ADR 0029 Amendment 3): a price gap stays where it lands and goes
+// either way with even odds, as in the official regimes, but 2-4% rather than 15-32% -- two a day
+// for a month of level shifts would otherwise wander the price by +/-150% -- and a cexDrift episode
+// drifts half as fast, for the same reason now that nothing pulls its level back.
 
 export const EDGE_MARGIN_HOURS = 1.5;
+
+/** A day's two price gaps: level shifts of 2-4%, each up or down with even odds (ADR 0029 Amendment 3). */
+export const GAP_MAGNITUDE = [0.02, 0.04];
+/** cexDrift per block: half the official 0.1-0.2%, its level now staying where the drift left it. */
+export const DRIFT_MAGNITUDE = [0.0005, 0.001];
 export const MIN_SLICE_HOURS = 2 * EDGE_MARGIN_HOURS + 1;
 
 type Episode = Record<string, unknown> & { type: string };
@@ -29,7 +38,9 @@ export function dayTemplates(day: number): Episode[] {
   return [
     {
       type: "crash",
-      magnitudeRange: [0.15, 0.22],
+      magnitudeRange: GAP_MAGNITUDE,
+      flipProb: 0.5,
+      recoverFrac: [0, 0],
       rampBlocks: 3,
       holdBlocks: 6,
       decayBlocks: 8,
@@ -44,7 +55,9 @@ export function dayTemplates(day: number): Episode[] {
     },
     {
       type: "spike",
-      magnitudeRange: [0.15, 0.22],
+      magnitudeRange: GAP_MAGNITUDE,
+      flipProb: 0.5,
+      recoverFrac: [0, 0],
       rampBlocks: 3,
       holdBlocks: 6,
       decayBlocks: 8,
@@ -59,8 +72,7 @@ export function dayTemplates(day: number): Episode[] {
     },
     {
       type: "cexDrift",
-      magnitudeRange: [0.001, 0.002],
-      kappaMultRange: [0.15, 0.3],
+      magnitudeRange: DRIFT_MAGNITUDE,
       rampBlocks: 6,
       holdBlocks: 24,
       decayBlocks: 12,
@@ -243,6 +255,48 @@ function flow(value: unknown): string {
       .map(([k, v]) => `${k}: ${flow(v)}`)
       .join(", ")} }`;
   return String(value);
+}
+
+/**
+ * An episode as the period plays it from the revision on (ADR 0029 Amendment 3): gaps and drifts
+ * take today's shapes, every other kind is returned as it was. The window is kept.
+ */
+export function reviseEpisode(e: Episode): Episode {
+  if (e.type !== "crash" && e.type !== "spike" && e.type !== "cexDrift") return e;
+  const template = dayTemplates(0).find((t) => t.type === e.type)!;
+  const { type, magnitudeRange, ...rest } = template;
+  return { type, magnitudeRange, windowFrac: e.windowFrac, ...rest };
+}
+
+/**
+ * Rewrite the episodes of every day from `fromDay` (1-based, as the `# day N` lines count) with
+ * reviseEpisode, keeping every other line byte for byte: the days before it are the period's
+ * record, and a running period resumes revised only if every window it has played or is about to
+ * resolves as before (periodResume.ts revisedScheduleProblems). Returns the text and how many
+ * lines changed.
+ */
+export function reviseStressEvents(
+  text: string,
+  fromDay: number,
+  parseLine: (flowMapping: string) => Episode,
+): { text: string; revised: number; days: number } {
+  const lines = text.split("\n");
+  let day = 0;
+  let revised = 0;
+  const days = new Set<number>();
+  const out = lines.map((line) => {
+    const header = /^ {4}# day (\d+) /.exec(line);
+    if (header) day = Number(header[1]);
+    const entry = /^ {4}- (\{.*\})\s*$/.exec(line);
+    if (!entry || day < fromDay) return line;
+    const next = `    - ${flow(reviseEpisode(parseLine(entry[1])))}`;
+    if (next !== line) {
+      revised++;
+      days.add(day);
+    }
+    return next;
+  });
+  return { text: out.join("\n"), revised, days: days.size };
 }
 
 /**

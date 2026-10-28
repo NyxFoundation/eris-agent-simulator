@@ -25,6 +25,12 @@ export type RealtimeConfig = SimConfig & {
   // period was first converted to, so the windows already placed keep their blocks. Absent = the run,
   // and absent rather than 0 so that a config without it describes the same world as before.
   stressWindowBaseBlocks?: number;
+  // Whether the stress schedule's stream takes the event list into its salt (stress.saltWithEventList;
+  // EventSchedule). Absent = when the list uses a variation key, which every official regime does.
+  // A practice period sets false: its episodes are revised while it runs (periodResume.ts), and a
+  // salted stream would redraw every window already played when one future line changed. Absent
+  // rather than defaulted so a config without it describes the same world as before.
+  stressSaltWithEventList?: boolean;
   // Vulnerability injection events (ADR 0014). Deploys and funds N new pools (mix of honest/rigged)
   // during the run, derived from SEED. A JSON array (range spec) in ERIS_VULN_EVENTS. Empty (default) matches a normal run.
   vulnEvents: VulnEventConfig[];

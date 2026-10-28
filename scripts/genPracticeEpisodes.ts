@@ -5,6 +5,8 @@
 //   npm run gen:practice-episodes -- --hours 26                           a rehearsal of that length
 //   npm run gen:practice-episodes -- --extend runs/<period>/resume/state.json
 //                                                  append the days a later run.endsAt adds to a running period
+//   npm run gen:practice-episodes -- --revise-from-day N
+//                                                  rewrite day N onward in today's shapes, for a running period
 //   [--config config/practice.yaml] [--print]
 //
 // Run it for the start the coordinator is about to have: `windowFrac` is a fraction of the run and
@@ -22,6 +24,7 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import {
   appendStressEvents,
+  reviseStressEvents,
   dailyEpisodePlan,
   EDGE_MARGIN_HOURS,
   extensionEpisodePlan,
@@ -40,6 +43,28 @@ const text = readFileSync(path, "utf8");
 const run = ((parse(text) as { run?: Record<string, unknown> }).run ??
   {}) as Record<string, unknown>;
 const segmentHours = Number(run.segmentHours ?? 24);
+
+// --revise-from-day: a running period takes today's episode shapes from day N on (ADR 0029
+// Amendment 3; periodResume.ts "revising a period"). Every line before day N stays byte for byte.
+// Pick a day that starts after the restart: the coordinator refuses the revision if any rewritten
+// window could open before the head, and then the answer is a later day.
+const reviseFlag = flag("revise-from-day");
+if (reviseFlag !== undefined) {
+  const fromDay = Number(reviseFlag);
+  if (!Number.isInteger(fromDay) || fromDay < 1)
+    throw new Error(`--revise-from-day takes a day number from the "# day N" lines, got ${reviseFlag}`);
+  const { text: out, revised, days } = reviseStressEvents(
+    text,
+    fromDay,
+    (m) => parse(m) as Record<string, unknown> & { type: string },
+  );
+  if (process.argv.includes("--print")) process.stdout.write(out);
+  else writeFileSync(path, out);
+  console.error(
+    `[gen:practice-episodes] ${path}: revised ${revised} episode line(s) over ${days} day(s) from day ${fromDay}`,
+  );
+  process.exit(0);
+}
 
 const extendFlag = flag("extend");
 if (extendFlag !== undefined) {
