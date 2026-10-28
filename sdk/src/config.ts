@@ -780,7 +780,7 @@ export const INTERVAL_ENV = {
 // never both -- the `intervalSeconds` / `intervalBlocks` precedent.
 //
 // A practice period is a run whose end is a date on the calendar (rules §2.7: the trial ends on
-// 10/31), not a number of blocks. Stated in blocks, it ended N blocks after whenever the coordinator
+// 11/30), not a number of blocks. Stated in blocks, it ended N blocks after whenever the coordinator
 // happened to start: a period started on 9/23 ran into the live week, and every restart (a restart is
 // a new competition) got a fresh full length. Stated as a date, the block count is whatever remains
 // at this chain's cadence when the process starts, so a restart ends on the same day and the episode
@@ -804,7 +804,7 @@ export function resolveRunLength(
   // different hour on a different machine.
   if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(endsAt))
     throw new Error(
-      `run.endsAt must carry a time zone (e.g. 2026-10-31T23:59:59+09:00), got ${JSON.stringify(endsAt)}`,
+      `run.endsAt must carry a time zone (e.g. 2026-11-30T23:59:59+09:00), got ${JSON.stringify(endsAt)}`,
     );
   const endMs = Date.parse(endsAt);
   if (!Number.isFinite(endMs))

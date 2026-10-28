@@ -9,7 +9,7 @@
 | [1. リハーサル](#1-リハーサル26h) | on-demand EC2 × 2（非公開） | 26h | Claude |
 | [2. 本番短縮版](#2-本番短縮版約-1h) | 本番 box | 起動から最初の 2 評価区間（約 1h） | devnet 運用担当者 |
 | [3. 定常点検](#3-定常点検) | 本番 box | 毎日（切替の後に 5 分）+ 毎週 | devnet 運用担当者 |
-| [6. ライブ週](#6-ライブ週) | 本番 box | 11/1〜11/8: エポックごと + 毎日 | 運営 |
+| [6. ライブ週](#6-ライブ週) | 本番 box | 12/1〜12/8: エポックごと + 毎日 | 運営 |
 
 **使い方**: 実施のたびに GitHub issue を 1 本立て（題: `devnet 受け入れ <段> <日付> (<commit>)`）、
 該当する節をそのまま貼って、チェックと `記録:` 欄を埋める。runbook 自体は書き換えない。直すべき点が
@@ -411,7 +411,7 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
 - [ ] **チェーン（外側）**: カナリアのマシンから、CF ヘッダ + キーありが 200 / キーなしが
   `missing or unknown X-ASCON-Key` / CF ヘッダなしが Cloudflare の 403 / `anvil_setBalance` が
   `method not permitted`（[infra/access](../access/README.md) の 4 つ）
-- [ ] **環境**: `run_started_realtime` の `runEndsAt` が 10/31 23:59:59 JST、`lst_setup` が
+- [ ] **環境**: `run_started_realtime` の `runEndsAt` が 11/30 23:59:59 JST、`lst_setup` が
   `reserveCoversRun: true`、`stress_schedule` がある、`envfail` が何も出さない
 - [ ] **環境**: 登録ファイルの全員に `agent_external_registered` が出て、`registration_failed` が 0。
   最初の境界（`intervals.jsonl` の 1 行目）に全員の値がある（= 初日から採点される）→ 記録: 件数
@@ -529,7 +529,7 @@ docker agent が書けてコンテナより長生きするのは `ERIS_AGENT_STA
 
 ## 6. ライブ週
 
-練習 devnet ではなく、ライブ週（11/1 00:00〜11/8 00:00 JST、k = 60）の点検。切替の手順は
+練習 devnet ではなく、ライブ週（12/1 00:00〜12/8 00:00 JST、k = 60）の点検。切替の手順は
 [infra/live-week/README.md](../live-week/README.md)（`cutover.sh` / `run-week.sh`）。項目は 2026-10-20 の
 リハーサル（12 エポック、運営の記録 ascon-ops#7）で実際に見たもの。各エポックの終わり（168 分ごとの枠の中、
 エポック自体は約 12 分 + 準備）と、毎日 1 回まとめて見る。

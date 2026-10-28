@@ -51,7 +51,7 @@ const USAGE = `usage:
           \`npm run backtest -- --scenarios <plan> --follow-schedule\` waits for each). --every-minutes
           is the spacing; --ends-at spreads the k epochs evenly over [starts-at, ends-at) instead, one
           slot of (ends-at − starts-at) / k each, so the last starts one slot before ends-at. The live
-          week: --starts-at 2026-11-01T00:00:00+09:00 --ends-at 2026-11-08T00:00:00+09:00 --k 60 is
+          week: --starts-at 2026-12-01T00:00:00+09:00 --ends-at 2026-12-08T00:00:00+09:00 --k 60 is
           an epoch every 168 minutes (ADR 0026). A slot shorter than one epoch's wall time makes
           every epoch after it start late`;
 

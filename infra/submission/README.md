@@ -225,11 +225,12 @@ If the ACCEPT line cannot be written the script exits 2 and says to record the d
 
 ```sh
 infra/submission/ledger.sh check --ledger ~/ascon/ledger.jsonl --unit team-alice   # exit 3 = no submissions left today
-infra/submission/ledger.sh final --ledger ~/ascon/ledger.jsonl --deadline 2026-10-31T15:00:00Z
+infra/submission/ledger.sh final --ledger ~/ascon/ledger.jsonl --deadline 2026-11-30T15:00:00Z
 ```
 
 `final` prints the last ACCEPT per unit as a table (time, digest, ZIP sha256, number of accepts, any
 REJECTs after it, days over the limit) and as the `agents:` block for the field config
-(`- id: <unit>` / `wallet: AUTO`). `--deadline` drops lines at or after it (10/31 24:00 JST is
-`2026-10-31T15:00:00Z`); `--format table|yaml` prints one of the two. `record` is what the script
-calls (`--unit --result [--zip --digest --reason --at]`), for a line that has to be added by hand.
+(`- id: <unit>` / `wallet: AUTO`). `--deadline` drops lines at or after it (11/30 24:00 JST, the
+submission deadline, is `2026-11-30T15:00:00Z`); `--format table|yaml` prints one of the two.
+`record` is what the script calls (`--unit --result [--zip --digest --reason --at]`), for a line
+that has to be added by hand.

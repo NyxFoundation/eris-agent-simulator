@@ -165,7 +165,7 @@ period is and where each day ends, what the limits are, and which addresses are 
   "status": { "scored": false, "label": "practice", "note": "…not the official scoring…" },
   "chain":  { "rpcUrl": "…", "chainId": 42069, "blockTimeSec": 2 },
   "round":  { "intervalBlocks": 900, "epochBlocks": 900, "approxSeconds": 1800 },
-  "period": { "endsAt": "2026-10-31T14:59:59.000Z", "blocks": 1488969, "startBlock": 1234,
+  "period": { "endsAt": "2026-11-30T14:59:59.000Z", "blocks": 1488969, "startBlock": 1234,
               "startedAt": "2026-09-28T01:00:00.000Z", "seconds": 3628800, "dayHours": 24 },
   "protocols": ["uniswap", "balancer", "curve", "gmx", "aave", "lst", "liquity"],
   "actions": { "uniswap": ["swap", "mintLiquidity", …], … },

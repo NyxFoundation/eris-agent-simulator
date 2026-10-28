@@ -1,6 +1,6 @@
 # infra/provision — bring up a replacement box
 
-gohanserver was sold, so the practice (9/23–10/31) and live (11/1–11/7) environments have to be
+gohanserver was sold, so the practice (9/23–11/30) and live (12/1–12/7) environments have to be
 rented. The selection and its reasoning are in ASCON `docs/27`; this directory is the mechanical part.
 
 ## What is portable, and what is not
