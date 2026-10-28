@@ -19,15 +19,16 @@
 // depeg,cdp-incident}.yaml). Three things are not, because this is one world that runs for weeks
 // rather than a fresh one per epoch (ADR 0029 Amendment 3): a price gap stays where it lands and goes
 // either way with even odds, as in the official regimes, but 2-4% rather than 15-32% -- two a day
-// for a month of level shifts would otherwise wander the price by +/-150% -- and a cexDrift episode
-// drifts half as fast, for the same reason now that nothing pulls its level back.
+// for a month of level shifts would otherwise wander the price by +/-150%. The cex-drift episode is
+// a volatility burst as in the official regime (Amendment 4), at the official peak: the same 0.008-
+// 0.012 a block in absolute terms, ~25x this period's own noise for the length of a window.
 
 export const EDGE_MARGIN_HOURS = 1.5;
 
 /** A day's two price gaps: level shifts of 2-4%, each up or down with even odds (ADR 0029 Amendment 3). */
 export const GAP_MAGNITUDE = [0.02, 0.04];
-/** cexDrift per block: half the official 0.1-0.2%, its level now staying where the drift left it. */
-export const DRIFT_MAGNITUDE = [0.0005, 0.001];
+/** volBurst peak volatility: the official regime's, in the unit of market.volatility. */
+export const BURST_PEAK = [0.008, 0.012];
 export const MIN_SLICE_HOURS = 2 * EDGE_MARGIN_HOURS + 1;
 
 type Episode = Record<string, unknown> & { type: string };
@@ -71,8 +72,8 @@ export function dayTemplates(day: number): Episode[] {
       decayBlocks: 12,
     },
     {
-      type: "cexDrift",
-      magnitudeRange: DRIFT_MAGNITUDE,
+      type: "volBurst",
+      magnitudeRange: BURST_PEAK,
       rampBlocks: 6,
       holdBlocks: 24,
       decayBlocks: 12,
@@ -258,12 +259,15 @@ function flow(value: unknown): string {
 }
 
 /**
- * An episode as the period plays it from the revision on (ADR 0029 Amendment 3): gaps and drifts
- * take today's shapes, every other kind is returned as it was. The window is kept.
+ * An episode as the period plays it from the revision on (ADR 0029 Amendments 3-4): gaps take
+ * today's shapes and a drift becomes a volatility burst; every other kind is returned as it was.
+ * The window is kept.
  */
 export function reviseEpisode(e: Episode): Episode {
-  if (e.type !== "crash" && e.type !== "spike" && e.type !== "cexDrift") return e;
-  const template = dayTemplates(0).find((t) => t.type === e.type)!;
+  if (e.type !== "crash" && e.type !== "spike" && e.type !== "cexDrift" && e.type !== "volBurst")
+    return e;
+  const kind = e.type === "cexDrift" ? "volBurst" : e.type;
+  const template = dayTemplates(0).find((t) => t.type === kind)!;
   const { type, magnitudeRange, ...rest } = template;
   return { type, magnitudeRange, windowFrac: e.windowFrac, ...rest };
 }

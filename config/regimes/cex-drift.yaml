@@ -41,10 +41,9 @@ run:
 market:
   volatility: 0.004 # same per-block noise as calm: the regime is the episodes, not the noise
   # A martingale within the epoch, as in every official regime (ADR 0029; calm.yaml says why). The
-  # episodes used to weaken the reversion while a window was open (kappaMultRange) and, in about a
-  # third of them, move the level it reverted to (repriceAnchorProb). With nothing to revert to,
-  # every episode leaves the level it reached -- what repriceAnchor did for a third of them -- and
-  # the fade after a window that did not reprice is no longer there to collect.
+  # drift episodes used to weaken the reversion while a window was open (kappaMultRange) and move the
+  # level it reverted to (repriceAnchorProb); the episodes are volatility bursts now (below), which
+  # leave no level and no side.
   kappa: 0
 
 funding:
@@ -100,33 +99,34 @@ flow:
   baseInformedMax: { WBTC: "10000000" } # 0.1 BTC: matches the 2 WETH Uniswap informed cap
 
 stress:
-  # The drift is episodes rather than a run-wide setting (issue #56).
+  # The reference price moves faster for a while, in no particular direction (ADR 0029 Amendment 4).
   #
-  # Held run-wide, this regime broke at its own length. Measured at 360 blocks with drift 0.0015 and
-  # kappa 0.004: the fair price ran from 3,000 to 4,037 (+34.6%) and the pool sat a mean 1,055bps --
-  # ten percent -- away from it for the whole run, with a median of 1,171 and a peak of 2,420. That
-  # is not an arbitrage regime, it is a standing gift: informed flow is capped at 2 WETH a block and
-  # cannot chase a reference price moving 0.15% a block, so any agent that swaps toward fair collects
-  # (venue-arb took +8,458 USDC on ~49k of capital). The same settings over 60 blocks look sane at
-  # 55bps, which is how it survived: the regime was never measured at the length it declares.
+  # This regime used to be a drift: 0.1-0.2% a block one way for 30-54 blocks, the side drawn by the
+  # seed. The pools could not keep up with it, which is what the regime is for -- but the direction
+  # could be read too. Against noise of 0.23% a block it shows itself in ~10 blocks, and following it
+  # for the rest paid +540 to +700 bps of notional per epoch net of fees, against -13 to -47 for the
+  # same rule in calm (scripts/measurePredictability.ts). With leverage that is the regime's winner
+  # decided by size, not by arbitrage.
   #
-  # As windows the drift is bounded by its own trapezoid, several episodes fit in one run, and when
-  # each opens is drawn from the seed rather than announced by the regime's name.
+  # A volBurst keeps the first half and drops the second: per-block volatility rises from the run's
+  # 0.004 to a peak of 0.008-0.012 (2-3x) over the ramp, holds, and comes back over the decay; the
+  # shock stays symmetric, so the walk has no side. The pools still fall behind a reference that moves
+  # two to three times as far a block, and the gap they leave is on either side.
   #
-  # Calibration from the run-wide values this replaces: drift 0.001-0.002 per block against the old
-  # 0.0015. The direction is left to the seed -- a published regime whose drift is always up is
-  # memorisable.
+  # Before that it was a run-wide drift, broken at its own length (issue #56: at 360 blocks the fair
+  # ran +34.6% and the pools sat ~10% away from it for the whole run; venue-arb took +8,458 USDC).
+  # Episodes bounded by their own trapezoid replaced it; the count, lengths and placement below are
+  # those episodes', drawn from the seed: 2-4 windows at least 10 blocks apart, each 30-54 blocks long.
   #
-  # How many episodes and how long each one runs are drawn as well. This used to be exactly three,
-  # in three fixed bands, and only the middle one repriced -- so an agent that counted to two knew
-  # which move would stay. Now 2-4 episodes spread over the run at least 10 blocks apart, each 30-54
-  # blocks long. Every one of them stays now (market.kappa above).
+  # How far the pools fall behind a burst, against the drift it replaces, is not yet measured on a
+  # chain. 2-3x is the starting point; it is set against calm's ~40bps venue gap and the 30bps band
+  # informed flow closes (issue #79) once a backtest has measured it.
   events:
     - {
-        type: cexDrift,
+        type: volBurst,
         count: [2, 4],
         minGapBlocks: 10,
-        magnitudeRange: [0.001, 0.002],
+        magnitudeRange: [0.008, 0.012],
         windowFrac: [0.1, 0.85],
         rampBlocks: [4, 8],
         holdBlocks: [18, 30],

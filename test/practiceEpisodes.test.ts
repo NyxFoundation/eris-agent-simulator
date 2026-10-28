@@ -24,7 +24,7 @@ const BLOCKS_PER_HOUR = 1800; // blockTimeSec 2
 const PER_DAY = {
   gap: 2,
   liquidityPull: 2,
-  cexDrift: 1,
+  volBurst: 1,
   flowTrend: 1,
   whale: 2,
   depeg: 1,

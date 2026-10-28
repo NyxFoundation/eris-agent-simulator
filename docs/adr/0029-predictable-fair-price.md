@@ -136,8 +136,8 @@ victim のアドレスは env（`ERIS_LIQUIDATION_VICTIMS` / `ERIS_LIQUITY_VICTI
 - `market: { volatility: 0.00037, kappa: 0 }`。ブロック sd は公式の 1/11（0.021%）で、練習の 1 日の散らばり
   （~4.4%）が公式 1 エポックと同じ。参照価格の揺れが作る venue の乖離は公式より少ない（エピソードとフローは同じ）
 - ギャップは公式と同じ形（戻らない・ramp ≤ 3・`flipProb: 0.5` で上下半々）で、大きさは 2〜4%。cexDrift は
-  公式の半分の速さ（0.05〜0.1% / ブロック）で、水準は戻らない。`core/src/practiceEpisodes.ts` の `dayTemplates`
-- 合計の散らばりは 1 日 ~6.6%（エピソードだけで ~5.1%）、残り 32 日で ~37%（`EventSchedule` で 400 seed）
+  公式の半分の速さ（0.05〜0.1% / ブロック）で、水準は戻らない（**Amendment 4 で volBurst に置き換えた**）。`core/src/practiceEpisodes.ts` の `dayTemplates`
+- 合計の散らばりは 1 日 ~6.6%（エピソードだけで ~5.1%）、残り 32 日で ~37%（`EventSchedule` で 400 seed。Amendment 4 の後は 1 日 ~6.9%、~39%）
 
 **期間を止めずに途中から切り替える**（新しい期間はチェーンを戻すので）。`periodResume.ts` に「revise」を足した:
 `market.*` と、まだ再生していないエピソードは再起動で変えてよく、`run.endsAt` と `stress.windowBaseBlocks` は
@@ -154,3 +154,30 @@ victim のアドレスは env（`ERIS_LIQUIDATION_VICTIMS` / `ERIS_LIQUITY_VICTI
 書き換えた: `npm run gen:practice-episodes -- --revise-from-day 23`。day 22 までの 220 窓は、変更前と変更後で
 同一に解決されることを 5 seed で確認した。再起動が day 23 の窓に間に合わなければ coordinator が拒否するので、
 N を後ろにして作り直す（手順は `infra/devnet/README.md`「Revising a period」）。
+
+## Amendment 4: cex-drift はドリフトではなく揺れの窓にする（2026-10-28）
+
+本文の後も cex-drift だけは読める向きを持っていた。窓（30〜54 ブロック × 2〜4 本）の間、1 ブロック 0.1〜0.2% の
+ドリフトが片側に乗る。ノイズ（sd 0.23%）に対して ~10 ブロックで見分けられ、残りを追随すれば取れる。
+「直近 20 ブロックで 2.5σ 以上動いたら、その向きに 20 ブロック乗る」で（κ = 0 の後、2,000 seed、往復 10bps）:
+
+| | calm | cex-drift |
+|---|---|---|
+| トレンド追随（bps / エポック） | −13 | **+541**（12〜24 ブロックの組み合わせで +600〜705） |
+
+レジームの目的は「参照価格にプールが追いつけない」ことで、片側に読める向きは要らない。
+
+**新しい process イベント `volBurst`** に置き換える（`core/src/realtime/events.ts`）。`magnitudeRange` はピークの
+ブロックごとの volatility（`market.volatility` と同じ単位 = 一様ショックの半幅）。台形に沿って run 自身の
+volatility からピークへ上げて戻し、ドリフトと回帰は触らない。ショックは対称のままなので、歩みは向きを持たない。
+
+- 公式 cex-drift: 0.008〜0.012（2〜3 倍）。本数・長さ・配置は従来の窓と同じ
+- 変更後のトレンド追随は **−49bps**（手数料）。12 本の他の規則も変わらず手数料以下（`scripts/measurePredictability.ts`
+  に trend を追加）
+- 練習期間も day 23 以降の cex-drift の行を volBurst（同じ絶対値 0.008〜0.012 = 練習のノイズの ~25 倍）に。
+  合計の散らばりは 1 日 ~6.9%、残り 32 日で ~39%
+- `cexDrift` 型は公式外の config（metric-* や venue 単体の regime）のために残す。`test/officialMartingale.test.ts` が
+  公式での使用を拒む
+- **未測定**: プールが burst にどれだけ遅れるか。ドリフトは乖離を片側に溜めた（窓化後の実測で平均 461bps）が、
+  burst の乖離は上下に出て一部は自然に戻るので、venue 裁定の取り分はドリフトより小さい見込み。2〜3 倍は出発点で、
+  calm の ~40bps と informed flow が閉じる 30bps 帯に対して backtest で測ってから決める

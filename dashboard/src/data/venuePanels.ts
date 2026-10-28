@@ -1134,6 +1134,8 @@ const scenarioUnrecorded = (type: string): string | undefined => {
       return t("vp.scenario.crash");
     case "cexDrift":
       return t("vp.scenario.cexDrift");
+    case "volBurst":
+      return t("vp.scenario.volBurst");
     case "flowTrend":
       return t("vp.scenario.flowTrend");
     default:

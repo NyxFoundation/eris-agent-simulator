@@ -232,7 +232,7 @@ ETH を担保に預けて、新しく発行されるドル建てのトークン 
 | # | レジーム | 環境が何をするか | それを狙って書かれた参照エージェント（§8） |
 |---|---|---|---|
 | 0 | 平常 `calm` | イベント無し。参照価格は乱歩（開始時の水準へ戻る力は無い）、注文フローは中立 | `venue-arb` / `multi-arb` / `stat-arb`。裁定の基準線で、ここで負ける戦略は他でも負ける |
-| 1 | CEX ドリフト `cex-drift` | 窓の間だけ参照価格にドリフトが乗る（1 ブロック 0.1〜0.2%）。2〜4 窓あり、窓が閉じてもドリフトで動いた水準は戻らない。プール価格が参照価格から乖離し続ける | venue 間裁定勢が仕事を得る。方向を持つ `levered-long` は β で大きく振れる |
+| 1 | CEX ドリフト `cex-drift` | 窓の間だけ参照価格の揺れが 2〜3 倍になる（1 ブロックの揺れ幅 ±0.8〜1.2%、向きは無い）。2〜4 窓あり、1 窓 30〜54 ブロック。プール価格が速く動く参照価格に追いつけず、上下どちらにも乖離する | venue 間裁定勢が仕事を得る。方向を持つ `levered-long` は β で大きく振れる |
 | 2 | 方向性フロー `informed-flow` | 環境の注文フローが窓の間だけ一方向に傾く（サイズ 2〜3 倍・相関 1.0・12 ブロック持続、2 窓）。calm と見分けにくい | `stat-arb` / `multi-arb` |
 | 3 | 大口注文 `whale` | 25〜60 WETH の単発注文がプールの中値を動かす。4 回で、うち 2 回は Balancer / Curve 指定。参照価格は動かない | `venue-arb` / `multi-arb` / `max-profit-arb`。乖離を先に取る者が勝つので priority fee の入札が効く |
 | 4 | 貸借インシデント `lending-incident` | 参照価格が 12〜16% 暴落して戻らず（ramp 2〜3 ブロック）、同じ窓で全 AMM の depth が 40〜60% 抜かれ、全レジームにいる HF 1.10 の victim 2 体が Aave で清算可能になる | `liquidator`（清算する側）/ `levered-long`（清算される側にならない管理） |
@@ -690,7 +690,7 @@ npm run dashboard        # http://localhost:5173
 | 裁定 | `flash-arb` | Aave のフラッシュローンで自己資本を超えるサイズの裁定を 1 tx で行う（`rawTx`）。受け取りコントラクトは雛形の設定（`run.flashArb: true`）でしか置かれないので、公式レジームではそのままでは revert する | Aave + AMM | whale / crash（自分の受け取りコントラクトを置いて呼び先を変えた場合） | 無 |
 | 裁定 | `basis-arb` | AMM の 1 leg を GMX の perp でヘッジする（現物と先物の乖離） | AMM + GMX | cex-drift | 有 |
 | LP | `lp-provider` | Uniswap V3 に建玉を置いて手数料を集め、乖離が大きいときは引き上げる | Uniswap | calm | 無 |
-| レバレッジ | `levered-long` | 手持ちを Aave の担保にして借り、配られた量より多くの WETH を持つ（レバレッジ）。HF を決めた範囲に保ち、下限を割ったら返済 | Aave | cex-drift（方向が出る）/ lending-incident・crash（守る側） | 無 |
+| レバレッジ | `levered-long` | 手持ちを Aave の担保にして借り、配られた量より多くの WETH を持つ（レバレッジ）。HF を決めた範囲に保ち、下限を割ったら返済 | Aave | cex-drift（大きく振れる）/ lending-incident・crash（守る側） | 無 |
 | レバレッジ | `lst-carry` | LST をステークして利回りを取るか、償還レートと市場価格の乖離を取る。Aave 担保ループは `ERIS_LST_LEVERAGE_TARGET_HF` で opt-in | LST + Aave | calm | 有 |
 | 清算 | `liquidator` | Aave の `liquidationCall`。victim が現れるまで待つ。**`run(ctx)` 形式**の例（§3。提出はできない形） | Aave | lending-incident | 無 |
 | CDP | `redemption-arb` | eUSD をディスカウントで買い、最もリスクの高い Trove に対して償還する | Liquity + eUSD プール | eUSD が par を割ったとき。専用の検証レジームは `config/regimes/liquity.yaml` | 有 |

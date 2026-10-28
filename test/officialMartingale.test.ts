@@ -94,3 +94,12 @@ test("no official regime gives up the event list's salt", () => {
   for (const regime of OFFICIAL)
     assert.equal(load(regime).stressSaltWithEventList, undefined, `${regime}: stress.saltWithEventList`);
 });
+
+test("no official episode leans the walk one way", () => {
+  // A cexDrift held a side for 30-54 blocks, readable in ~10 and worth +540 to +700 bps of notional
+  // to whoever followed it (ADR 0029 Amendment 4). The cex-drift regime runs volBursts: faster, no side.
+  for (const regime of OFFICIAL)
+    for (const ev of load(regime).stressEvents)
+      assert.notEqual(ev.type, "cexDrift", `${regime}: a cexDrift episode`);
+  assert.ok(load("cex-drift").stressEvents.some((ev) => ev.type === "volBurst"));
+});

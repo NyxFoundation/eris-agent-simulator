@@ -588,6 +588,7 @@ const en = {
   "vp.scenario.flipped": "{type} (drawn as {from})",
   "vp.scenario.recovered": "{pct}% recovered",
   "vp.scenario.cexDrift": "changes the price walk — see the price chart",
+  "vp.scenario.volBurst": "makes the price walk faster, either way — see the price chart",
   "vp.scenario.flowTrend": "tilts the order flow — see the swap volume",
   "vp.scenario.venueEvents": "Venue events",
   "vp.scenario.venueEventsSub":
@@ -1739,6 +1740,7 @@ const ja: Record<MessageKey, string> = {
   "vp.scenario.flipped": "{type}（{from} から反転）",
   "vp.scenario.recovered": "{pct}% 回復",
   "vp.scenario.cexDrift": "ランダムウォーク自体を変更（価格チャート参照）",
+  "vp.scenario.volBurst": "ランダムウォークの揺れを大きくする・向きは無い（価格チャート参照）",
   "vp.scenario.flowTrend": "注文フローを一方向に偏らせる（スワップ出来高参照）",
   "vp.scenario.venueEvents": "venue イベント",
   "vp.scenario.venueEventsSub": "清算・償還・スラッシュ・裁定機会",

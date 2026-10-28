@@ -33,7 +33,7 @@ They differ in *kind*, not just in parameters, and the kind decides how the run 
 | `overlay` | a multiplier layered on the fair price every block of the window | `spike` `crash` |
 | `point` | executed once, on the block it lands on | `lstSlash` `whale` |
 | `state` | a target the coordinator holds the venue at, reconciled every block | `liquidityPull` `eusdDepeg` `depeg` |
-| `process` | a parameter the generator itself reads while the window is open | `cexDrift` `flowTrend` `tokenLaunch` |
+| `process` | a parameter the generator itself reads while the window is open | `cexDrift` `volBurst` `flowTrend` `tokenLaunch` |
 
 `rampBlocks` / `holdBlocks` / `decayBlocks` describe a trapezoid and are required for every kind
 except `point`, which lands on a single block and takes them as optional.
@@ -129,7 +129,19 @@ That is why the magnitude is calibrated on the **yield** scale: against a 70-blo
 accrual, 10–30bps is a real event. The first attempt at 100–300bps was fifteen times the yield and
 made staking a guaranteed loss. Emits `lst_slash` (or `lst_slash_skipped`).
 
+### `volBurst` — the reference price moves faster, either way
+
+A `process` event (ADR 0029 Amendment 4): `magnitudeRange` is the peak per-block volatility, in the
+unit of `market.volatility` (the uniform shock's half-width). The walk's volatility moves from the
+run's own to the peak over the ramp, holds, and returns over the decay; drift and reversion are left
+alone, so the walk keeps no side. `config/regimes/cex-drift.yaml` runs it at 0.008-0.012 (2-3x the
+official 0.004). It replaced `cexDrift` there because a held direction could be read in ~10 blocks and
+followed for the rest of the window (+540 to +700 bps of notional per epoch net of fees,
+`scripts/measurePredictability.ts`). Emits `stress_event_applied` with `peakVolatility` / `envelope`.
+
 ### `cexDrift` — the reference price walks away and does not come back
+
+No official regime runs it any more (above).
 
 The official regimes run with `market.kappa: 0` (ADR 0029): the walk has no mean reversion, so the
 drift alone is the episode and every level it reaches stays. `kappaMultRange` and `repriceAnchor` below
