@@ -11,6 +11,7 @@ The dashboard's "Updates" page carries the same entries.
 
 | Date | What changed |
 |---|---|
+| [2026-10-28](2026-10-28.en.md) | The schedule has moved (submission deadline Nov 30, live competition Dec 1 – 7, results Dec 22); the commitment to the hidden set's generation key; the practice environment extended to Nov 30; the dashboard's Register button fixed |
 | [2026-10-18](2026-10-18.en.md) | The hidden set's commitment is published; Anthropic and OpenAI added as inference services (from November 1); submitted ZIPs need no rebuild; what is fixed on October 31 |
 | [2026-10-08](2026-10-08.en.md) | The priority fee cap (5 gwei) is removed; the reference price is written directly into the contracts |
 | [2026-10-06](2026-10-06.en.md) | The permissionless lending contract (SimpleLending) is no longer deployed in the official regimes; only strategies using the `lending` actions in local backtests are affected |

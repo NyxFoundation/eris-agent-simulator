@@ -332,18 +332,18 @@ Three notes.
 
 ### The competition timeline
 
-The schedule of rules §1 (Japan Standard Time), with what you do at each stage.
+The schedule of rules §1 (Japan Standard Time; amended on 2026-10-26), with what you do at each stage.
 
 | When | What happens | What you do |
 |---|---|---|
-| 9/1 – 10/24 | Registration period | Join the ASCON channel on the Discord and submit the registration form |
+| 9/1 – 11/23 | Registration period | Join the ASCON channel on the Discord and submit the registration form |
 | 9/23 | The submission period opens. Appendix A's values (epoch length, evaluation interval, k, gas ETH), the inference proxy's model list and the list of permitted exploit targets are published **by this day** (rules §7.1) | Work through §2–§6 of this guide |
-| 9/23 – 10/31 | **Submission period.** Evaluate yourself on the 60 public scenarios and replace your submission **up to 5 times a day**. In the same period the operator's **trial environment** (rules §2.7) is open: the same configuration as the competition, take any transaction you like, but **no standings are posted** and nothing counts | Build → run → fix (§6). Submit the `bundle:agent` zip (§10) |
-| 10/31 | **Submission deadline = the agent is frozen.** The last accepted submission is the one evaluated (rules §2.2). The hash of the lottery seed is published | No more code changes |
-| 11/1 – 11/7 | **Live competition.** One epoch is one unit; k of them, the world reinitialised each time, every unit starting at once. Score and cumulative standings update after every epoch | **You operate nothing.** Your agent runs in the operator's container and the only thing that moves is the in-epoch LLM revision. Watch the standings on the dashboard (§7) |
-| 11/8 | Reserve day, for the same-seed re-run of an epoch that failed on the operator's side (rules §4.4.2) | — |
-| 11/9 – 11/30 | Review period: audit of violations, review of the report track (entries due 11/21), the standings are finalised. No new epochs run | Enter the report track by 11/21 if you want to |
-| 12/7 | Results. After a 7-day objection period the run directories, decision logs and the lottery seed's original are published in full (rules §7.2) | — |
+| 9/23 – 11/30 | **Submission period.** Evaluate yourself on the 60 public scenarios and replace your submission **up to 5 times a day**. In the same period the operator's **trial environment** (rules §2.7) is open: the same configuration as the competition, take any transaction you like, but **no standings are posted** and nothing counts | Build → run → fix (§6). Submit the `bundle:agent` zip (§10) |
+| 11/30 | **Submission deadline = the agent is frozen.** The last accepted submission is the one evaluated (rules §2.2). The hash of the lottery seed is published | No more code changes |
+| 12/1 – 12/7 | **Live competition.** One epoch is one unit; k of them, the world reinitialised each time, every unit starting at once. Score and cumulative standings update after every epoch | **You operate nothing.** Your agent runs in the operator's container and the only thing that moves is the in-epoch LLM revision. Watch the standings on the dashboard (§7) |
+| 12/8 | Reserve day, for the same-seed re-run of an epoch that failed on the operator's side (rules §4.4.2) | — |
+| 12/9 – 12/21 | Review period: audit of violations, review of the report track (entries due 12/14), the standings are finalised. No new epochs run | Enter the report track by 12/14 if you want to |
+| 12/22 | Results. After a 7-day objection period the run directories, decision logs and the lottery seed's original are published in full (rules §7.2) | — |
 
 **What you see during the live week** is whatever part of the standings, the scenario page and the agent
 pages can be shown without breaking a competition in progress. Which epoch is which regime is withheld
@@ -866,8 +866,8 @@ submission & limits** (the gist on the card, the full statement behind the ?, an
 authoritative rules on ascon.dev), the **top 5** of the selected competition (with how many days or
 epochs each was scored on), and the **links** (this guide, the rules, Discord, and the practice
 environment's RPC, explorer and environment manifest). **Register** at the top right opens the
-registration form, and disappears when registration closes (Oct 24). **Submit**, right of it, opens the
-submission form, and is there only during the submission period (Sep 23 – Oct 31).
+registration form, and disappears when registration closes (Nov 23). **Submit**, right of it, opens the
+submission form, and is there only during the submission period (Sep 23 – Nov 30).
 
 ### Standings (`/standings`)
 
@@ -937,7 +937,7 @@ rank within the world (scenario) currently open is on the **Overview** tab. The 
 The operator-hosted dashboard is public, but whatever would break a competition in progress is dropped on
 the server. `ERIS_DASHBOARD_AUDIENCE=1 npm run dashboard` shows you the same view locally.
 
-| | Local (`npm run dashboard`) | Trial environment (9/23 – 10/31) | Live week (11/1 – 11/7) | After the results |
+| | Local (`npm run dashboard`) | Trial environment (9/23 – 11/30) | Live week (12/1 – 12/7) | After the results |
 |---|---|---|---|---|
 | Standings | shown | **not shown** (rules §4.7) | shown, updated per epoch | shown |
 | A scenario's regime and seed | shown | — (a continuous chain, no regimes) | **not shown** (only `epoch s`) | shown |

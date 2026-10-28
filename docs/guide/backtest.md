@@ -157,7 +157,7 @@ instead, so one unattended process runs the live week (ADR 0026):
 
 ```bash
 npm run competition -- plan --hidden hidden.yaml --lottery lottery.yaml --k 60 \
-  --starts-at 2026-11-01T00:00:00+09:00 --ends-at 2026-11-08T00:00:00+09:00 --out plan.yaml   # one every 168 min
+  --starts-at 2026-12-01T00:00:00+09:00 --ends-at 2026-12-08T00:00:00+09:00 --out plan.yaml   # one every 168 min
 npm run competition -- wallet-keygen <secret-dir>/live-wallet-secret.yaml   # once per week; never published
 ERIS_WALLET_SECRET_FILE=<secret-dir>/live-wallet-secret.yaml \
 npm run backtest -- --scenarios plan.yaml --agents field.yaml --follow-schedule \
