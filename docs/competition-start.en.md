@@ -440,7 +440,9 @@ of them.**
   keeper from the next block on), Aave borrowing, a Liquity Trove, borrowing WETH against ERLST
   (`lst-carry`)
 - **Buy your position in the block.** Bid with `maxPriorityFeePerGasWei` on the action. The highest fee
-  anyone else paid in the most recent block is `obs.competition.maxCompetitorPriorityFeeWei`
+  anyone else paid in the most recent block is `obs.competition.maxCompetitorPriorityFeeWei` (leaving
+  out the environment's transactions that pay a fixed fee set for reasons other than the auction, such
+  as the GMX keeper's executions and the oracle writes; its ordinary trades are in it)
 - **Inspect a pool that appears mid-epoch before touching it.** In regime 7 the operator places pools
   during the epoch, some of which skim assets (rules §3.2). `obs.discoveredPools` carries the address,
   the code hash (a fingerprint of the code: the same code gives the same value), the reserves and a
@@ -632,7 +634,8 @@ are. Everyone sees the same things with the same delay (writes to `PriceFeed` la
 so the reference price is always one block behind).
 
 **The highest competitor priority fee in the most recent block is observable**
-(`obs.competition.maxCompetitorPriorityFeeWei`); it is mined history. `ctx.publicClient` permits
+(`obs.competition.maxCompetitorPriorityFeeWei`); it is mined history. Calls to the environment's
+keeper, oracle and registry contracts are not bids and are not in it. `ctx.publicClient` permits
 additional read-only chain queries. There is no `ctx.walletClient`: return an action or use
 `ctx.submit({ type: "rawTx", tx })` for transactions. Sending through a separate client on the same
 key races the runtime's nonce and bypasses its `submitted` records. Keep all sends in the runtime.

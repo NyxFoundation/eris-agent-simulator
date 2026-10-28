@@ -8,11 +8,11 @@
  * - gas manager (ADR 0011 §4; every run): when the ETH balance drops below the threshold, auto-refill via WETH unwrap /
  *   USDC->WETH swap
  */
-import { encodeFunctionData, type Address, type Hex } from "viem";
+import { encodeFunctionData, toFunctionSelector, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { wethAbi } from "@eris/sdk/abis.js";
 import { parseAction, validateAction } from "@eris/sdk/action.js";
-import { TOKENS } from "@eris/sdk/constants.js";
+import { GMX, LST, TOKENS } from "@eris/sdk/constants.js";
 import { participantFees } from "@eris/sdk/feeRule.js";
 import { createJsonlAppender } from "./agentLog.js";
 import type { TradeLedger } from "./evidence.js";
@@ -81,6 +81,89 @@ const DEPENDENT_TX_GAS = BigInt(
   process.env.ERIS_DEPENDENT_TX_GAS ?? "2000000",
 );
 
+// ---- the environment's own calls in the competition signal ----
+//
+// The competition signal is meant to say what the other bidders paid. The environment also sends
+// transactions, and some of them carry a fixed fee chosen for reasons that have nothing to do with
+// the auction: the GMX keeper bids high so a full block cannot shut it out (ADR 0011), and
+// under the tx-based oracle profile the oracle writes bid above every participant to land first
+// (ADR 0010). Counted as a competitor, the keeper alone set the signal in ~57% of blocks (two
+// 150-block calm runs, 2026-10-08), and a strategy that bids "competitor + margin" up to a share of
+// its edge -- adaptive-arb, max-profit-arb, whatever copies them -- sat at that ceiling after every
+// such block, paying roughly twice the tips it needed.
+//
+// What is left out is identified by where the call goes, never by what the calldata says: these are
+// the environment's own contracts, whose entry points only an environment key can call. A selector
+// alone would not do -- anyone can deploy a contract whose trade function has the selector of
+// `setAnswer`, and so take its real bids out of every competitor's signal. A call to one of these
+// addresses from anyone else reverts, and leaving it out hides nothing that traded.
+// The environment's ordinary trades (flow, whale, launch waves, depeg sales) stay in: they are
+// priced like anyone's and compete for the same positions.
+//
+// Not covered: the tx-based oracle profile's writes to the Aave aggregators and GMX's mock oracle
+// provider, whose addresses the runtime does not hold. Neither the official regimes nor the practice
+// period use that profile (economicGas: true writes prices to storage; there is no transaction).
+const LST_OPERATOR_SELECTORS = new Set<Hex>(
+  [
+    "slash(uint256)",
+    "setRewardRate(uint256)",
+    "setWithdrawalDelayBlocks(uint256)",
+    "setQueueThroughput(uint256)",
+    "setOperator(address,bool)",
+  ].map((sig) => toFunctionSelector(sig)),
+);
+
+export type BlockTxBid = {
+  from: Address;
+  to?: Address | null;
+  input?: Hex;
+  maxPriorityFeePerGas?: bigint;
+};
+
+/** Whether a transaction is one of the environment's own privileged calls (see above). */
+export function environmentCallFilter(opts: {
+  /** Contracts whose every state-changing entry point is the environment's (keeper / owner only). */
+  contracts: ReadonlyArray<Address | undefined | null>;
+  /** The LST vault, whose operator functions are the environment's and the rest everyone's. */
+  lstVault?: Address | null;
+}): (tx: BlockTxBid) => boolean {
+  const contracts = new Set(
+    opts.contracts.filter((a): a is Address => !!a).map((a) => a.toLowerCase()),
+  );
+  const vault = opts.lstVault?.toLowerCase();
+  return (tx) => {
+    const to = tx.to?.toLowerCase();
+    if (!to) return false;
+    if (contracts.has(to)) return true;
+    return (
+      to === vault &&
+      LST_OPERATOR_SELECTORS.has((tx.input ?? "0x").slice(0, 10).toLowerCase() as Hex)
+    );
+  };
+}
+
+/**
+ * The highest priority fee in a block from anyone but `self` (`competitor`) and from anyone
+ * (`block`), both leaving out the environment's privileged calls. A legacy transaction carries no
+ * maxPriorityFeePerGas and counts as 0, as it always has here.
+ */
+export function blockBids(
+  txs: ReadonlyArray<BlockTxBid>,
+  self: Address,
+  isEnvironmentCall: (tx: BlockTxBid) => boolean,
+): { competitor: bigint; block: bigint } {
+  const me = self.toLowerCase();
+  let competitor = 0n;
+  let block = 0n;
+  for (const tx of txs) {
+    if (isEnvironmentCall(tx)) continue;
+    const fee = tx.maxPriorityFeePerGas ?? 0n;
+    if (fee > block) block = fee;
+    if (tx.from.toLowerCase() !== me && fee > competitor) competitor = fee;
+  }
+  return { competitor, block };
+}
+
 export class Sender {
   private readonly ctx: SimContext;
   private readonly adapters: ProtocolAdapter[];
@@ -94,6 +177,7 @@ export class Sender {
         observation: AgentObservation,
       ) => { ok: true } | { ok: false; reason: string })
     | undefined;
+  private readonly isEnvironmentCall: (tx: BlockTxBid) => boolean;
 
   // ---- self-managed nonce + serialized sending ----
   private nextNonce: number | null = null;
@@ -126,6 +210,9 @@ export class Sender {
       action: AgentAction,
       observation: AgentObservation,
     ) => { ok: true } | { ok: false; reason: string };
+    // The run's environment-only contracts the caller knows and the constants do not (PriceFeed,
+    // MarketRegistry): left out of the competition signal with the GMX keeper's handlers.
+    environmentContracts?: ReadonlyArray<Address | undefined | null>;
   }) {
     this.ctx = opts.ctx;
     this.adapters = opts.adapters;
@@ -134,6 +221,14 @@ export class Sender {
     this.logMempool = opts.logMempool;
     this.ledger = opts.ledger;
     this.guard = opts.guard;
+    this.isEnvironmentCall = environmentCallFilter({
+      contracts: [
+        GMX.OrderHandler,
+        GMX.LiquidationHandler,
+        ...(opts.environmentContracts ?? []),
+      ],
+      lstVault: LST?.vault,
+    });
   }
 
   private async allocNonce(): Promise<number> {
@@ -522,7 +617,8 @@ export class Sender {
       .reverse()
       .find((t) => t.txIndex !== undefined);
     const lastTxIndex = lastWithIdx?.txIndex ?? null;
-    // 2. The highest competitor bid in the latest block (the highest maxPriorityFeePerGas other than your own).
+    // 2. The highest competitor bid in the latest block (the highest maxPriorityFeePerGas other than
+    // your own), leaving out the environment's privileged calls (environmentCallFilter says why).
     let maxComp = 0n;
     let maxAll = 0n;
     try {
@@ -530,16 +626,13 @@ export class Sender {
         blockNumber: BigInt(bn),
         includeTransactions: true,
       });
-      for (const tx of block.transactions) {
-        if (typeof tx === "string") continue;
-        const fee = tx.maxPriorityFeePerGas ?? 0n;
-        if (fee > maxAll) maxAll = fee;
-        if (
-          tx.from.toLowerCase() !== this.address.toLowerCase() &&
-          fee > maxComp
-        )
-          maxComp = fee;
-      }
+      const bids = blockBids(
+        block.transactions.filter((tx) => typeof tx !== "string"),
+        this.address,
+        this.isEnvironmentCall,
+      );
+      maxComp = bids.competitor;
+      maxAll = bids.block;
     } catch {
       // if fetching the block fails, continue without the signal
     }
