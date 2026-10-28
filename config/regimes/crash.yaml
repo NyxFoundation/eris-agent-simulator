@@ -104,28 +104,33 @@ stress:
   # Ranges, not values: the seed samples them (ADR 0009). Deeper than lending-incident's crash because
   # nothing here has to stay inside a victim's health-factor calibration.
   #
-  # Beyond size and start, the seed decides four more things, each of which a participant could
-  # otherwise read off this file:
-  #   count        1-2 gaps, at least 20 blocks apart (counted from the end of the pull's decay)
-  #   trapezoid    ramp 2-4 / hold 4-8 / decay 6-10 blocks, so the start of a gap no longer gives
-  #                away the block it bottoms out on or the one it is over by
-  #   flipProb     a quarter of the gaps go the other way. The regime keeps its lean; its name no
-  #                longer says which side to stand on
-  #   recoverFrac  the decay closes 40-100% of the gap and the rest stays to the end of the epoch.
-  #                When every gap healed in full on a fixed clock, "fade any 15% move and close it
-  #                17 blocks later" was right by construction -- the hole depeg-persist closed for
-  #                stables (issue #106). What stays is a loss for everyone who holds the base, noop
-  #                included, and a gain for whoever read it.
+  # A gap is a level shift: once it is seen, nothing about where the price goes next can be read off
+  # it (ADR 0029 Amendment 1). Three things make that so:
+  #   recoverFrac  [0, 0]: nothing comes back. It used to close 40-100% of the gap over the decay, so
+  #                "fade a gap once it stalls" was worth ~2,200 bps of notional per epoch here, and
+  #                ~1,100 in the victim regimes, net of fees -- a smaller version of the hole
+  #                depeg-persist closed for stables (issue #106), and leverage was its only bound.
+  #                hold / decay below still shape the window the pull aligns to; the price stays at
+  #                the bottom from the end of the ramp on
+  #   rampBlocks   2-3. An order placed after the first step fills two blocks later (the GMX keeper
+  #                executes in the block after the order lands), so a 4-block ramp left a quarter of
+  #                the gap to collect by joining it. The pools lag the first step either way; taking
+  #                that is the arbitrage this regime is for
+  #   flipProb     0.5, drawn per gap. A second gap is as likely to go up as down whatever the first
+  #                did, and across the official mix the expected gap is ~0 (spike.yaml has the sum),
+  #                so holding less base than the basket has no edge of its own
+  # count (1-2, at least 20 blocks apart counted from the end of the pull's decay) and the start are
+  # drawn as before.
   events:
     - {
         type: crash,
         count: [1, 2],
         minGapBlocks: 20,
-        flipProb: 0.25,
-        recoverFrac: [0.4, 1.0],
+        flipProb: 0.5,
+        recoverFrac: [0, 0],
         magnitudeRange: [0.15, 0.22],
-        windowFrac: [0.25, 0.7],
-        rampBlocks: [2, 4],
+        windowFrac: [0.3, 0.7],
+        rampBlocks: [2, 3],
         holdBlocks: [4, 8],
         decayBlocks: [6, 10],
       }
@@ -138,7 +143,7 @@ stress:
     - {
         type: liquidityPull,
         magnitudeRange: [0.4, 0.6],
-        windowFrac: [0.25, 0.7],
+        windowFrac: [0.3, 0.7],
         alignWith: crash,
         rampBlocks: [2, 4],
         holdBlocks: [6, 10],
