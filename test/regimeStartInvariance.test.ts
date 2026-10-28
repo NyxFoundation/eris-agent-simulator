@@ -7,8 +7,9 @@
 // The vuln pools were worse: deployed at setup, readable from block 0, and created through a
 // selector that named the answer (createRiggedPool / createSimplePool).
 //
-// This holds the start equal across the official regimes, with the victim lists as the one
-// documented exception (core/src/realtime/agentEnv.ts says why).
+// This holds the start equal across the official regimes. The victim lists were the last
+// exception: they are on-chain from block 0 whatever the env says, so both cohorts are now staged in
+// every official regime, as decoys where nothing breaches them (ADR 0029 Amendment 2).
 //
 // The chain's own history is held too, as far as it is a pure function of the config. The setup
 // blocks before the first scored block are readable through the gateway, and their senders and
@@ -28,7 +29,7 @@ import { parse as parseYaml } from "yaml";
 
 const { loadRunConfig } = await import("../core/src/runConfig.js");
 const { renderAgentConfig } = await import("../core/src/realtime/agentView.js");
-const { agentExtraEnvKeys, REGIME_REVEALING_AGENT_ENV } = await import(
+const { agentExtraEnvKeys, AGENT_ENV_VICTIMS } = await import(
   "../core/src/realtime/agentEnv.js"
 );
 const { vulnFactoryAbi } = await import("../core/src/realtime/vulnPools.js");
@@ -65,30 +66,39 @@ test("every official regime hands its agents the same config file", () => {
     assert.equal(text, firstText, `${regime}'s agent config differs from ${first}'s`);
 });
 
-test("every official regime hands its agents the same env keys, but the documented victim lists", () => {
-  const exceptions = new Set(Object.keys(REGIME_REVEALING_AGENT_ENV));
+test("every official regime hands its agents the same env keys", () => {
   const byRegime = OFFICIAL.map(
     (r) => [r, agentExtraEnvKeys(load(r), { segmented: false })] as const,
   );
-  const common = byRegime[0][1].filter((k) => !exceptions.has(k));
+  const common = byRegime[0][1];
   for (const [regime, keys] of byRegime)
-    assert.deepEqual(
-      keys.filter((k) => !exceptions.has(k)),
-      common,
-      `${regime} hands a different set of env keys`,
-    );
-  // The registry and the vuln factory are among them: their absence is what named launch and vuln.
-  for (const key of ["ERIS_MARKET_REGISTRY_ADDRESS", "ERIS_VULN_FACTORY"])
+    assert.deepEqual(keys, common, `${regime} hands a different set of env keys`);
+  // Among them the four whose absence used to name a regime: the registry (launch), the vuln
+  // factory (vuln) and the two victim lists (lending-incident, cdp-incident -- a crash is coming).
+  for (const key of [
+    "ERIS_MARKET_REGISTRY_ADDRESS",
+    "ERIS_VULN_FACTORY",
+    ...Object.keys(AGENT_ENV_VICTIMS),
+  ])
     assert.ok(common.includes(key), `${key} is not handed out in every regime`);
 });
 
-test("the documented exceptions are exactly the victim regimes, and no more", () => {
-  const carrying = (key: string) =>
-    OFFICIAL.filter((r) =>
-      agentExtraEnvKeys(load(r), { segmented: false }).includes(key),
-    ).sort();
-  assert.deepEqual(carrying("ERIS_LIQUIDATION_VICTIMS"), ["lending-incident"]);
-  assert.deepEqual(carrying("ERIS_LIQUITY_VICTIMS"), ["cdp-incident"]);
+test("every official regime stages the same victims", () => {
+  // The env is the half of it an agent is handed; the other half is the chain. The cohorts are
+  // opened before block 0, so their count, size and starting HF / ICR are readable by anyone, and a
+  // cohort that differed by regime would name it as surely as the env did.
+  const cohorts = (regime: string) => {
+    const c = load(regime);
+    return {
+      aave: [c.stressVictimCount, c.stressVictimHf0, c.stressVictimSupplyWethWei],
+      liquity: [c.stressLiquityVictimCount, c.stressLiquityVictimIcr, c.stressLiquityVictimCollWethWei],
+      liquityRecoveryTcr: c.stressLiquityRecoveryTcr,
+    };
+  };
+  const reference = cohorts(OFFICIAL[0]);
+  assert.ok(reference.aave[0] > 0 && reference.liquity[0] > 0, "the official cohorts are staged");
+  for (const regime of OFFICIAL)
+    assert.deepEqual(cohorts(regime), reference, `${regime} stages different victims`);
 });
 
 test("vuln pools are created through one selector that does not name the kind", () => {

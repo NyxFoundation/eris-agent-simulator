@@ -98,3 +98,27 @@ crash / spike / lending-incident / cdp-incident の価格ギャップは overlay
 帰結: crash 系のエポックの P はギャップの時点で何を持っていたかで大きく振れる（期待値 0）。victim は戻らない
 ので窓の後も清算できる。spike は crash の鏡像ではなくなった（大きさ・本数が違う）。レジームの中身で区別できる
 のはギャップが起きた後で、それはこの変更の対象外（起きたことは誰にでも見える）。
+
+## Amendment 2: victim は全レジームに建てる（2026-10-28）
+
+lending-incident と cdp-incident だけが victim を持っていた（Aave 2 体 HF 1.10、Liquity 2 本 ICR 1.20）。
+victim のアドレスは env（`ERIS_LIQUIDATION_VICTIMS` / `ERIS_LIQUITY_VICTIMS`）で渡り、env を消しても
+開始前の setup で建つのでチェーン上で見える。2 本とも暴落は 1 本・下向き固定なので、**ブロック 0 で
+「この先 12〜16% 落ちる」が分かった**。60 エポック中の期待 10 本で、base を手放すか GMX で売り建てれば
+レバレッジの分だけ勝てる（`core/src/realtime/agentEnv.ts` は既知の例外として列挙し、「デコイはレジームの
+意味を変えるので別に決める」としていた）。
+
+**両 cohort を同じパラメータで公式 12 本すべてに建てる**。env も全レジームで渡る。
+
+- 割れるのはレジームの仕事（κ = 0、本文と Amendment 1 の後、4,000 seed）: lending-incident ~98%
+  （暴落前に上がっていると割れない 2% が残る）、crash ~52%（下向きのギャップがあれば）、spike 0.3〜0.6%、
+  その他の乱歩だけのレジームで Aave ~3% / Liquity ~5%。デコイが割れるのは普通の清算の仕事
+- coordinator の `stress_calibration_warning`「victim がいるのに crash が無い」は、反転しない crash を
+  持つレジームでだけ出す（それ以外では crash が無いのが予定どおり）
+- Liquity の victim はソートの末尾なので、償還はまず victim に当たる。eUSD のデペグは cdp-incident にしか
+  無いので、他のレジームでは償還自体がほぼ起きない
+- `test/regimeStartInvariance.test.ts`: env キーは例外なしで 12 本同一、cohort の本数・HF / ICR・サイズも
+  12 本同一。`REGIME_REVEALING_AGENT_ENV` は `AGENT_ENV_VICTIMS` に改名（もう例外ではない）
+
+帰結: lending-incident と crash の違いは、ギャップの大きさ・本数・向き（下固定か半々か）だけになる。
+どちらも起きた後にしか分からない。

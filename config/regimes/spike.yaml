@@ -24,7 +24,8 @@
 #     thins every enabled venue on the same window -- the same shape as crash.yaml.
 #   - `spike` is an ADR 0009 overlay type (wethMult = 1 + m·e): the same trapezoid as crash with
 #     the sign flipped. `liquidityPull` aligns with it through `alignWith: spike`.
-#   - the crash-specific calibration warning (a victim's HF) does not apply here: no victims.
+#   - the victim cohorts below are decoys here (an upward gap breaches nobody); they exist so
+#     the start of this regime looks like every other (ADR 0029 Amendment 2).
 #   - funding is an ETH/BTC/USDC basket, not USDC-only (issue #54) -- the reasoning is on the
 #     funding block itself.
 # The roster is the default for pre-submission verification. Replaceable via --agents <roster.yaml|json>.
@@ -109,12 +110,12 @@ flow:
 
 stress:
   # Ranges, not values: the seed samples them (ADR 0009). Deeper than lending-incident's crash because
-  # nothing here has to stay inside a victim's health-factor calibration.
+  # nothing here is calibrated to a victim's health factor (the victims below are decoys here).
   #
   # A gap is a level shift: once it is seen, nothing about where the price goes next can be read off
   # it (ADR 0029 Amendment 1; crash.yaml has the recoverFrac / rampBlocks reasoning). What is
   # particular to this file is that it carries the other side of the official mix. lending-incident
-  # and cdp-incident gap down only (the victims are those regimes) by 12-16%, so 0.28 of expected
+  # and cdp-incident gap down only (the victims are their point) by 12-16%, so 0.28 of expected
   # gap per twelve epochs goes down; crash goes either way with even odds. One upward gap of 24-32%
   # here (mean 0.28) puts the mix's expected gap at ~0, which is what keeps "hold less base than the
   # basket" from paying on its own. It is one gap, never flipped: a second one that was more likely
@@ -144,6 +145,18 @@ stress:
         holdBlocks: [6, 10],
         decayBlocks: [10, 14],
       }
+  # Victims (ADR 0029 Amendment 2): the same two cohorts in all twelve official regimes. They are on
+  # chain from block 0 (Aave borrowers at HF 1.10, the lowest Troves at ICR 1.20) and their addresses
+  # are handed to every agent, so while only lending-incident and cdp-incident had them, an agent knew
+  # at block 0 that a 12-16% fall was coming and which way to stand. What reaches them is the regime's
+  # business: lending-incident and cdp-incident gap down onto them (~98% of epochs breach), crash does
+  # whenever one of its gaps goes down (~52%), and with no mean reversion (market.kappa) the walk alone
+  # breaches HF 1.10 in ~3% of the other regimes' epochs and ICR 1.20 in ~5% -- liquidation work like
+  # any other. test/regimeStartInvariance.test.ts holds the values equal across the twelve.
+  victimCount: 2
+  victimHf0: 1.10
+  liquityVictimCount: 2
+  liquityVictimIcr: 1.20
 
 # On in every official regime, not only `launch`: the agent's config carries this section and the
 # runtime is handed the registry's address, so a regime that left it off would be told apart from

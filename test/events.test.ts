@@ -872,7 +872,10 @@ test("config/regimes/cdp-incident.yaml: crash, pull and eUSD depeg on one window
   assert.ok(doc.run.protocols.includes("liquity"));
   assert.equal(doc.stress.liquityVictimCount, 2);
   assert.equal(doc.stress.liquityVictimIcr, 1.2);
-  assert.equal(doc.stress.victimCount, undefined, "no Aave cohort: that is lending-incident's axis");
+  // Both cohorts are staged in every official regime (ADR 0029 Amendment 2), so the Aave one is here
+  // too: test/regimeStartInvariance.test.ts holds the twelve equal. What makes this regime is the
+  // crash and the depeg below, not who is standing there.
+  assert.equal(doc.stress.victimCount, 2);
   const configs = parseStressEvents(JSON.stringify(doc.stress.events));
   assert.deepEqual(configs.map((c) => c.type), ["crash", "liquidityPull", "eusdDepeg"]);
   assert.equal(configs[1].alignWith, "crash");

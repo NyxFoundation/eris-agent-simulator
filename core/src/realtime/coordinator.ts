@@ -4197,8 +4197,14 @@ export async function runRealtimeSimulation(
         events: schedule.events,
       });
       // A cohort with nothing to breach it: every crash drew count 0 or flipped upwards (flipProb).
-      // The per-crash checks below cannot see an absent crash, so say it here.
+      // The per-crash checks below cannot see an absent crash, so say it here. Only where the victims
+      // are the regime's point -- a configured crash that cannot flip. The official regimes stage
+      // the cohorts everywhere as decoys (ADR 0029 Amendment 2), and there no crash is the plan.
+      const victimsAreThePoint = config.stressEvents.some(
+        (ev) => ev.type === "crash" && (ev.flipProb ?? 0) === 0,
+      );
       if (
+        victimsAreThePoint &&
         (minVictimHf0 !== null || minLiquityVictimIcr0 !== null) &&
         !schedule.events.some((ev) => ev.type === "crash")
       )

@@ -158,7 +158,7 @@ Curve にはこのほかに、ほぼ等価で交換される資産どうしの�
 | WBTC | 70% | 75% | 10% |
 | ERLST（`"LST"`） | 70% | 75% | 7.5% |
 
-借りられるのは実質 WETH と USDC です。WBTC も借入は有効ですが、開始時の Aave に WBTC が無く、誰かが預けるまで借りられません。ERLST は担保専用で借りられません。借りただけでは資産価値は変わりません（借りたものが手元にあり、同じ額の借金が引かれるため）。レジーム `lending-incident` では、運営が HF 1.10 の借り手を 2 つ建ててから参照価格を暴落させるので、清算の機会が生まれます。清算は専用アクションではなく、Aave の `liquidationCall` を `rawTx` で送ります（`example/agents/lib/aave-liquidation.ts`）。victim のアドレスは環境変数 `ERIS_LIQUIDATION_VICTIMS` で渡されます。参照の `liquidator` は `run(ctx)` 形式なので、そのままでは提出できません。状態は `obs.protocols.aave` の `healthFactor`（10^18 倍）/ `supplied` / `borrowed` / `availableBorrowsBase`（ドルの 8 桁）で見られます。
+借りられるのは実質 WETH と USDC です。WBTC も借入は有効ですが、開始時の Aave に WBTC が無く、誰かが預けるまで借りられません。ERLST は担保専用で借りられません。借りただけでは資産価値は変わりません（借りたものが手元にあり、同じ額の借金が引かれるため）。どのレジームでも、運営が開始前に HF 1.10 の借り手を 2 つ建てています（Liquity にも ICR 1.20 の Trove が 2 本）。レジーム `lending-incident` ではその後に参照価格を暴落させるので、清算の機会が生まれます。他のレジームでも、下向きのギャップや値動きで割れれば同じく清算できます。victim がいること自体はレジームの手掛かりになりません。清算は専用アクションではなく、Aave の `liquidationCall` を `rawTx` で送ります（`example/agents/lib/aave-liquidation.ts`）。victim のアドレスは環境変数 `ERIS_LIQUIDATION_VICTIMS` で渡されます。参照の `liquidator` は `run(ctx)` 形式なので、そのままでは提出できません。状態は `obs.protocols.aave` の `healthFactor`（10^18 倍）/ `supplied` / `borrowed` / `availableBorrowsBase`（ドルの 8 桁）で見られます。
 
 #### GMX v2 — 証拠金取引（perp）
 
@@ -235,13 +235,13 @@ ETH を担保に預けて、新しく発行されるドル建てのトークン 
 | 1 | CEX ドリフト `cex-drift` | 窓の間だけ参照価格にドリフトが乗る（1 ブロック 0.1〜0.2%）。2〜4 窓あり、窓が閉じてもドリフトで動いた水準は戻らない。プール価格が参照価格から乖離し続ける | venue 間裁定勢が仕事を得る。方向を持つ `levered-long` は β で大きく振れる |
 | 2 | 方向性フロー `informed-flow` | 環境の注文フローが窓の間だけ一方向に傾く（サイズ 2〜3 倍・相関 1.0・12 ブロック持続、2 窓）。calm と見分けにくい | `stat-arb` / `multi-arb` |
 | 3 | 大口注文 `whale` | 25〜60 WETH の単発注文がプールの中値を動かす。4 回で、うち 2 回は Balancer / Curve 指定。参照価格は動かない | `venue-arb` / `multi-arb` / `max-profit-arb`。乖離を先に取る者が勝つので priority fee の入札が効く |
-| 4 | 貸借インシデント `lending-incident` | 参照価格が 12〜16% 暴落して戻らず（ramp 2〜3 ブロック）、同じ窓で全 AMM の depth が 40〜60% 抜かれ、HF 1.10 で建てられた victim 2 体が Aave で清算可能になる | `liquidator`（清算する側）/ `levered-long`（清算される側にならない管理） |
+| 4 | 貸借インシデント `lending-incident` | 参照価格が 12〜16% 暴落して戻らず（ramp 2〜3 ブロック）、同じ窓で全 AMM の depth が 40〜60% 抜かれ、全レジームにいる HF 1.10 の victim 2 体が Aave で清算可能になる | `liquidator`（清算する側）/ `levered-long`（清算される側にならない管理） |
 | 5 | ステーブルのデペッグ `depeg` | 環境が DAI を USDC/DAI プールへ売ってディスカウントを作る（depth の 35〜60%。ramp 12 / hold 36 / decay 45 ブロック）。**GMX が無い（`depeg-persist` も同じ）** | `peg-arb`。DAI には償還フロアが無いので「戻ると信じるか」の判断になる |
-| 6 | クラッシュ `crash` | 参照価格が 15〜22% ギャップして戻らない（1〜2 回、それぞれ上か下かは半々、ramp 2〜3 ブロック）。同じ窓で流動性が 40〜60% 抜かれる。victim は建てない | 全員。薄い板では裁定のサイズが縮み、レバレッジは HF を割る。`trove-manager` / `sp-underwriter` は Liquity 側で同じ局面を扱う |
+| 6 | クラッシュ `crash` | 参照価格が 15〜22% ギャップして戻らない（1〜2 回、それぞれ上か下かは半々、ramp 2〜3 ブロック）。同じ窓で流動性が 40〜60% 抜かれる。下向きのギャップは全レジームにいる victim を割る | 全員。薄い板では裁定のサイズが縮み、レバレッジは HF を割る。`trove-manager` / `sp-underwriter` は Liquity 側で同じ局面を扱う |
 | 7 | 新規プールの出現 `vuln` | エポック途中に 4〜6 個のプールが 2 回湧き、50〜70% は一定規模（配布 USDC の 4〜8%）を超える取引で資産を差し引く。餌は 3〜6% の割安 | `discovery-arb-verify`（dry-run で検証してから取る）/ `discovery-arb`（無検証の対照） |
-| 8 | 上方ギャップ `spike` | 参照価格が 24〜32% **上に** 1 回ギャップして戻らない（ramp 2〜3 ブロック）。同じ窓で流動性が 40〜60% 抜かれる。victim は建てない。下に固定の lending-incident / cdp-incident と釣り合う大きさで、12 レジーム全体ではギャップの期待値がほぼ 0 | 全員。バスケットを持っているだけの側が報われ、ヘッジや short が払う唯一のレジーム。裁定の売買が crash と逆向きになるので USDC 在庫が要る |
+| 8 | 上方ギャップ `spike` | 参照価格が 24〜32% **上に** 1 回ギャップして戻らない（ramp 2〜3 ブロック）。同じ窓で流動性が 40〜60% 抜かれる（上向きなので victim は割れない）。下に固定の lending-incident / cdp-incident と釣り合う大きさで、12 レジーム全体ではギャップの期待値がほぼ 0 | 全員。バスケットを持っているだけの側が報われ、ヘッジや short が払う唯一のレジーム。裁定の売買が crash と逆向きになるので USDC 在庫が要る |
 | 9 | 戻らないデペッグ `depeg-persist` | `depeg` と同じく環境が DAI を売ってディスカウントを作るが（depth の 35〜60%、ramp 12 / hold 36）、**買い戻さない**。ディスカウントは最終採点ブロックまで残り、買い戻しは採点後 | `peg-arb`。`depeg` では「待てば戻る」が構造で正解だったが、ここでは par に戻ると信じた分だけ最終的な評価額で損をする。戻るかどうかを判断しているかが分かれる唯一のレジーム |
-| 10 | CDP インシデント `cdp-incident` | 運営が ICR 1.20 の Trove を 2 本建て、参照価格が 12〜16% 暴落して戻らず（同じ窓で depth も 40〜60% 抜ける）、同じ窓で環境が eUSD を売ってデペグさせる。Trove は MCR 1.10 を割り、eUSD は割安になる | `sp-underwriter`（Stability Pool で吸収し自分で清算）/ `redemption-arb`（割安 eUSD を買って victim に対して償還）/ `trove-manager`（自分の Trove を償還経路と清算から守る） |
+| 10 | CDP インシデント `cdp-incident` | 全レジームにいる ICR 1.20 の Trove 2 本に対して、参照価格が 12〜16% 暴落して戻らず（同じ窓で depth も 40〜60% 抜ける）、同じ窓で環境が eUSD を売ってデペグさせる。Trove は MCR 1.10 を割り、eUSD は割安になる | `sp-underwriter`（Stability Pool で吸収し自分で清算）/ `redemption-arb`（割安 eUSD を買って victim に対して償還）/ `trove-manager`（自分の Trove を償還経路と清算から守る） |
 | 11 | 新規トークンの上場 `launch` | エポックの途中（0.2〜0.5）で運営が 2〜3 の新トークンを 1.00 USDC で USDC プール（片側 2 万〜10 万 USDC）に上場する。新しい市場の一覧（登録簿 `obs.registry`）に `uniswapV3Pool` + `erc20` として翌ブロックに現れる。トークンごとに独立に、需要の波（上場の 2 ブロック後から、プール USDC の 0.25〜1 倍を ramp 20 ブロックかけて買い、30 ブロック持ち、decay 30 ブロックで 50〜100% を売り戻す）が来るか、30〜50% の確率で来ない（空振り = dud）。事前告知は無く、ramp の最初の数ブロックが唯一の手掛かり。**エポック終了時に持っている上場トークンは 0 と評価される**（規約 §4.1） | `launch-confirm`（買いが売りを上回るブロックが続くのを見てから入り、売りが上回ったら出る）/ `launch-sniper`（見た瞬間に買い、一定ブロック後に売る対照） |
 
 3 つ補足します。
