@@ -229,12 +229,14 @@ export interface ProtocolAdapter {
       fromBlock?: bigint;
       toBlock?: bigint;
       // A keeper that read an order and declined to execute it says so here (gmx: an order with a
-      // participant callback). Without it the adapter writes to stderr.
+      // participant callback, or one that is not a market order). Without it the adapter writes to stderr.
       onOrderRefused?: (refusal: {
         key: string;
         account: string;
         callbackContract: string;
         callbackGasLimit: bigint;
+        // GMX Order.OrderType; -1 when the order could not be read.
+        orderType: number;
         reason: string;
       }) => void;
       // Issue #225: the GMX keeper had more executable orders than MAX_ORDER_FILLS_PER_BLOCK; how

@@ -247,7 +247,7 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   レバレッジは**建てるとき 5%（20 倍）・清算 1%**。**これが GMX が受け付ける上限**で
   （`ConfigUtils.validateRange` が MIN_COLLATERAL_FACTOR > 5% と _FOR_LIQUIDATION > 1% を revert する。
   10% / 5% を入れたら deploy が落ちた）、Arbitrum の 0.5〜1% よりは厳しい。
-  **swap も同じ**: keeper は `OrderCreated` を種類を問わず全部執行するので、`rawTx` の `MarketSwap` 注文が
+  **swap も同じ**: keeper は成行の `MarketSwap` 注文も執行するので、`rawTx` の `MarketSwap` 注文が
   fair・手数料 0・impact 0 で通り、AMM-vs-fair の裁定が片側の AMM 手数料で済んでいた。swap fee 0.05% / 0.07%、
   swap impact 3e-10 / 2e-10・指数 2（Arbitrum の値）を入れた。GM の deposit / withdraw は keeper が拾わないので執行されない。
   **清算 keeper がある**（`liquidatePositions`。以前は注文を執行するだけで**清算は一度も起きず**、crash を 20 倍の逆張りで
@@ -255,8 +255,14 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   `Reader.isPositionLiquidatable` を注文 keeper と同じ fair で判定して `LiquidationHandler.executeLiquidation` を送る。
   1 ブロック 2 件まで（各 6M gas を宣言するので、連鎖で参加者のブロックを埋めない）、送った建玉は 3 ブロック再送しない。
   **採点は床なしのまま**: 清算が無い状態で床を 0 にすると、1 agent が 20 倍のロングとショートを両方持てば負け側が 0 で
-  止まるタダのストラドルになる。清算があれば負けは証拠金 1% 付近で止まる。**指値・ストップ注文は今も執行されない**
-  （keeper は新しい `OrderCreated` しか見ない。SDK のアクションは成行のみ）`basis-arb` の往復コスト既定は 0 → 12bps。
+  止まるタダのストラドルになる。清算があれば負けは証拠金 1% 付近で止まる。**指値・ストップ注文は keeper が拒否する**
+  （成行 = `MarketSwap` / `MarketIncrease` / `MarketDecrease` だけを執行。それ以外は `gmxKeeperRefusal` が拒否して
+  `keeper_order_refused`（`orderType` 付き）。SDK のアクションは成行のみで、作れるのは `rawTx` だけ。以前は keeper が
+  新しい注文を種類を問わず次ブロックで 1 回だけ試し、価格はブロックの前に storage へ書かれているので、毎ブロック張り直す
+  stop が**遅れ 0 の条件付き注文**になった = crash / spike のギャップの最初のブロックで約定し、戻らない残りの ramp を
+  最大 20 倍で取れた。他の全員は 1 ブロック遅れで観測して 1 ブロック後に約定する（ADR 0029 の LAG = 2）。
+  条件不成立なら `InvalidOrderPrices` で revert して再試行されなかった。拒否した注文の証拠金と実行手数料は
+  OrderVault に残って 0 評価で、本人が `cancelOrder` するまで戻らない（成行以外はいつでも cancel できる）） `basis-arb` の往復コスト既定は 0 → 12bps。
   **採点は「今閉じたら残る額」**（`positionExitValueUsd`。Reader の `getAccountPositionInfoList` を fair で引き、
   証拠金 + 基準 PnL + 決済時と建玉時に繰り延べた impact − 決済手数料・未払い borrowing・funding + 受け取る funding）。
   建玉時の手数料は証拠金から既に引かれているので、額面（証拠金 + PnL）のままだと**鐘の後まで持ち越した建玉は手数料を
