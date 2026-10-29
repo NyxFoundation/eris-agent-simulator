@@ -831,7 +831,7 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
   run の最後まで保持（`decayBlocks: 0` 必須。decay を黙って無視しないため fail-fast）、`repriceAnchor` は
   OU の anchor をドリフト分だけ動かして新しい水準を常態にする。**teardown の買い戻しは残る**
   （起動チェックがデペグ済みプールを拒否するので、次の run が始められなくなる。最終採点ブロックより後）
-- **`alignWith: <type>`** — 窓の開始位置を他イベントと共有する。**同じ `windowFrac` レンジでも draw は独立**なので、360 ブロック run では crash と liquidityPull が平均 ~160 ブロック離れて落ちる。「gap の最中に板が薄い」は組み合わせの性質なので明示が要る（`config/regimes/crash.yaml` が使用例）
+- **`alignWith: <type>`** — 窓の開始位置を他イベントと共有する。**同じ `windowFrac` レンジでも draw は独立**なので、360 ブロック run では crash と liquidityPull が平均 ~160 ブロック離れて落ちる。「gap の最中に板が薄い」は組み合わせの性質なので明示が要る（`config/regimes/crash.yaml` が使用例）。`alignOffsetBlocks: N` で anchor の N ブロック後に始める（cdp-incident の eusdDepeg は 1。pull と同じ deployer 鍵から送るので、揃えると gap の価格が載る前のパスで pending nonce が他の gap レジームより 1 多く進み、レジーム = 下向きを名指していた）
 - **窓の数・形・向き・戻り方も seed が引く**（2026-09-27）。以前は magnitude と開始位置しか引いておらず、本数・バンド・台形の長さ・crash の向き・必ず全部戻ることは YAML に書いてあった。
   `count: [min, max]`（0 可。重ならず、開始は `windowFrac` 内で一様。follower は anchor の本数を窓ごとに対で継ぐ）/ `minGapBlocks` /
   `rampBlocks` 等の `[min, max]` / `flipProb`（crash・spike。解決済みは `type: spike, flippedFrom: crash`。victim のあるレジームでは使わない）/

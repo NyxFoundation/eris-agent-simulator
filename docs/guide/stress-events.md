@@ -235,6 +235,7 @@ USDC the wave paid, USDC it took back).
 | key | applies to | what it does |
 |---|---|---|
 | `alignWith: <type>` | any | Start where the nearest event of that type starts (window by window when it has a `count`). Required because *same range is not same window*: two events sampling `[0.25, 0.7]` of a 360-block run land ~160 blocks apart on average. Chained alignment and self-alignment are rejected |
+| `alignOffsetBlocks: N` | with `alignWith` | Start N blocks after the anchor's window does (default 0; non-negative integer). Draws nothing. The delayed window must still end inside the run, and with a `count` each window's claim includes the delay. `config/regimes/cdp-incident.yaml` delays its `eusdDepeg` by 1: the depeg sells from the deployer key that also sends the aligned pull, and on the crash's first pass that key's pending nonce rose by one more than in any other gap regime -- naming the regime (a gap that only goes down) a block before the gap's first price write was on chain |
 | `stress.windowBaseBlocks: N` (beside `events`, not on an entry) | every entry | What `windowFrac` is a fraction of, instead of the run: N blocks. Set only when a running practice period is extended (`npm run gen:practice-episodes -- --extend`, [infra/devnet/README.md](../../infra/devnet/README.md) "Extending a period") — it keeps the period's first length, so the windows already placed stay on their blocks while the run grows, and the appended days' fractions run past 1. A window still has to end inside the run |
 | `persist: true` | `depeg` `eusdDepeg` | The dislocation holds to the end of the run. **Requires `decayBlocks: 0`** — a decay that never runs would read as a window that closes. The teardown still buys back *after* the last scored block, because the startup check refuses to begin on a depegged pool. `config/regimes/depeg-persist.yaml` is the official regime built on it: without one, every dislocation in the set heals and "buy the discount and hold" is right by construction (issue #106) |
 | `repriceAnchor: true` | `cexDrift` | The OU anchor moves with the drift (above) |
@@ -316,7 +317,8 @@ never trade; they are not scored.
   observation and do not need it.
 
 `config/regimes/cdp-incident.yaml` puts the cohort under a crash with the pull and an `eusdDepeg`
-aligned to it: liquidation for the Stability Pool, redemption against the victims for redemption arb,
+aligned to it (one block behind, `alignOffsetBlocks: 1`, so the deployer key's pending nonce matches
+the other gap regimes until the gap is on chain): liquidation for the Stability Pool, redemption against the victims for redemption arb,
 and a redemption path a borrower has to stay out of.
 
 ### Recovery Mode (issue #59)

@@ -142,11 +142,21 @@ stress:
     # Pool depositor buying the cheap eUSD it deposits, 55 % of depth read as a 92 bps discount at
     # probe size, 13 bps short of what redemption arb needs (50 bps fee floor + ~35 bps to exit the
     # ETH + its own 20 bps of safety). The field absorbs a depeg; the range has to allow for that.
+    #
+    # One block behind the crash (alignOffsetBlocks: 1). The depeg sells from the same deployer key
+    # as the aligned pull, and both are sent in the pass before the block that carries the gap's
+    # first price write. Starting together, the key's pending nonce rose by 4 on that pass where
+    # crash / spike / lending-incident show 3 (the pull's three venues) -- naming this regime, and
+    # so a gap that only goes down, a block before any price moved (measured on a 2026-10-09 run:
+    # 3 pull + 1 depeg deployer txs on each of the window's first blocks). One block later the
+    # gap's first step is already on chain at "latest" when the depeg's first tx is pending, so the
+    # direction it would give away is public. The depeg still ramps during the crash's ramp/hold.
     - {
         type: eusdDepeg,
         magnitudeRange: [0.65, 0.85],
         windowFrac: [0.3, 0.7],
         alignWith: crash,
+        alignOffsetBlocks: 1,
         rampBlocks: [3, 5],
         holdBlocks: [16, 24],
         decayBlocks: [10, 14],

@@ -342,6 +342,86 @@ test("alignWith refuses what it cannot align", () => {
   );
 });
 
+test("alignOffsetBlocks starts the follower that many blocks after its anchor", () => {
+  // FIXED_CRASH / FIXED_PULL use no variation key, so the stream is the seed's alone and the field
+  // (which draws nothing) cannot move any draw: everything but the follower's start is identical.
+  for (const seed of [1, 7, 42]) {
+    const plain = new EventSchedule(
+      [FIXED_CRASH, { ...FIXED_PULL, alignWith: "crash" }],
+      seed,
+      40,
+    );
+    const zero = new EventSchedule(
+      [FIXED_CRASH, { ...FIXED_PULL, alignWith: "crash", alignOffsetBlocks: 0 }],
+      seed,
+      40,
+    );
+    assert.deepEqual(zero.events, plain.events, "offset 0 is no offset");
+    const late = new EventSchedule(
+      [FIXED_CRASH, { ...FIXED_PULL, alignWith: "crash", alignOffsetBlocks: 2 }],
+      seed,
+      40,
+    );
+    assert.deepEqual(late.events[0], plain.events[0], "the anchor does not move");
+    assert.deepEqual(late.events[1], {
+      ...plain.events[1],
+      startBlock: plain.events[1].startBlock + 2,
+      endBlock: plain.events[1].endBlock + 2,
+    });
+  }
+  // With a count, each window's claim includes the delay, so the next anchor window never opens
+  // inside a delayed follower.
+  const configs: StressEventConfig[] = [
+    { ...FIXED_CRASH, count: [1, 3], windowFrac: [0.1, 0.8] },
+    { ...FIXED_PULL, alignWith: "crash", alignOffsetBlocks: 3, decayBlocks: [8, 10] },
+  ];
+  for (const seed of SEEDS) {
+    const s = new EventSchedule(configs, seed, 200);
+    const crashes = s.events.filter((e) => e.type === "crash");
+    const pulls = s.events.filter((e) => e.type === "liquidityPull");
+    for (const [k, c] of crashes.entries()) {
+      assert.equal(pulls[k].startBlock, c.startBlock + 3);
+      if (k > 0) assert.ok(c.startBlock >= pulls[k - 1].endBlock, `seed ${seed}: crash ${k} opens inside pull ${k - 1}`);
+    }
+  }
+});
+
+test("alignOffsetBlocks is validated", () => {
+  const pull = (extra: string) =>
+    `[{"type":"crash","magnitudeRange":[0.1,0.1],"windowFrac":[0.5,0.5],"rampBlocks":2,"holdBlocks":2,"decayBlocks":2},` +
+    `{"type":"liquidityPull","magnitudeRange":[0.4,0.6],"windowFrac":[0.3,0.7],"rampBlocks":1,"holdBlocks":1,"decayBlocks":1${extra}}]`;
+  assert.equal(parseStressEvents(pull(',"alignWith":"crash","alignOffsetBlocks":1'))[1].alignOffsetBlocks, 1);
+  assert.equal(parseStressEvents(pull(',"alignWith":"crash"'))[1].alignOffsetBlocks, undefined);
+  assert.throws(() => parseStressEvents(pull(',"alignOffsetBlocks":1')), /only applies with alignWith/);
+  assert.throws(
+    () => parseStressEvents(pull(',"alignWith":"crash","alignOffsetBlocks":-1')),
+    /alignOffsetBlocks must be a non-negative integer/,
+  );
+  assert.throws(
+    () => parseStressEvents(pull(',"alignWith":"crash","alignOffsetBlocks":1.5')),
+    /alignOffsetBlocks must be a non-negative integer/,
+  );
+  // The delayed window still has to end inside the run: crash clamped to block 14 of 20 (span 6),
+  // pull span 4, +2 = ends at 20 (fits); +3 = 21 (does not).
+  const late: [number, number] = [0.99, 0.99];
+  const short = { ...FIXED_PULL, decayBlocks: 0 };
+  const fits = new EventSchedule(
+    [{ ...FIXED_CRASH, windowFrac: late }, { ...short, alignWith: "crash", alignOffsetBlocks: 2 }],
+    1,
+    20,
+  );
+  assert.equal(fits.events[1].endBlock, 20);
+  assert.throws(
+    () =>
+      new EventSchedule(
+        [{ ...FIXED_CRASH, windowFrac: late }, { ...short, alignWith: "crash", alignOffsetBlocks: 3 }],
+        1,
+        20,
+      ),
+    /\(\+3 = block 17\), but its own window is 4 blocks and the run is 20/,
+  );
+});
+
 test("alignWith is checked against the events that exist", () => {
   assert.throws(
     () => new EventSchedule([{ ...FIXED_PULL, alignWith: "crash" }], 1, 20),
@@ -880,12 +960,17 @@ test("config/regimes/cdp-incident.yaml: crash, pull and eUSD depeg on one window
   assert.deepEqual(configs.map((c) => c.type), ["crash", "liquidityPull", "eusdDepeg"]);
   assert.equal(configs[1].alignWith, "crash");
   assert.equal(configs[2].alignWith, "crash");
+  // The depeg sells from the deployer key the pull does; one block behind the crash, its first tx is
+  // pending only once the gap's first step is on chain (the YAML's comment).
+  assert.equal(configs[2].alignOffsetBlocks, 1);
   // Every drawn crash breaches a 1.20 Trove: the magnitude floor is above 1 − 1.10/1.20.
   assert.ok(configs[0].magnitudeRange[0] > 1 - 1.1 / 1.2);
   const s = new EventSchedule(configs, 101, doc.run.blocks);
   const [crash, pull, depeg] = s.events;
   assert.equal(pull.startBlock, crash.startBlock);
-  assert.equal(depeg.startBlock, crash.startBlock);
+  assert.equal(depeg.startBlock, crash.startBlock + 1);
+  // Still the same incident: the depeg opens inside the crash's ramp/hold.
+  assert.ok(depeg.startBlock < crash.startBlock + crash.rampBlocks + crash.holdBlocks);
   const frac = crash.startBlock / doc.run.blocks;
   assert.ok(frac >= 0.3 && frac <= 0.7, `window frac ${frac}`);
   assert.ok(s.hasEusdDepeg());

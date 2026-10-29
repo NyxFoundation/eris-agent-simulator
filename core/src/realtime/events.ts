@@ -217,6 +217,13 @@ export type StressEventConfig = {
   // would almost never thin the book while the price is gapping. Issue #52's composition is a
   // property of the pair, not of either event, and it has to be stated rather than hoped for.
   alignWith?: StressEventType;
+  // With alignWith: start this many blocks after the anchor's window does (default 0). For a pair
+  // whose follower is sent from a key an observer can watch: cdp-incident's eUSD depeg goes out from
+  // the same deployer key as the aligned liquidityPull, so on the anchor's first block the key's
+  // pending nonce jumped by one more than in any other gap regime -- naming the regime (and so the
+  // gap's direction) a block before the gap's first step was on chain. Draws nothing, so the RNG
+  // consumption is unchanged; the window still has to end inside the run.
+  alignOffsetBlocks?: number;
   // How many windows this entry opens, drawn [min, max] (inclusive integers; 0 allowed, so an entry
   // can be "maybe"). Omitted = exactly one, placed as before. The windows share windowFrac as the
   // range their *starts* fall in (pulled in, as a single window is, when the last one would run past
@@ -479,7 +486,13 @@ export class EventSchedule {
         // Each window claims the blocks of its longest member, so a pull that outlasts its crash
         // still ends before the next crash begins.
         windows.map((w, k) =>
-          Math.max(w.span, ...followers.map((j) => drawn[j].windows[k].span)),
+          Math.max(
+            w.span,
+            ...followers.map(
+              (j) =>
+                (configs[j].alignOffsetBlocks ?? 0) + drawn[j].windows[k].span,
+            ),
+          ),
         ),
         windows.map((w) => w.startU),
         runBlocks,
@@ -493,14 +506,18 @@ export class EventSchedule {
     configs.forEach((c, i) => {
       const anchorIndex = anchorOf[i];
       if (anchorIndex < 0) return;
-      starts[i] = starts[anchorIndex].map((start, k) => {
+      const offset = c.alignOffsetBlocks ?? 0;
+      starts[i] = starts[anchorIndex].map((anchorStart, k) => {
+        const start = anchorStart + offset;
         const span = drawn[i].windows[k].span;
         // A follower with a longer trapezoid than its anchor cannot start where the anchor does when
         // the anchor sits near the end of the run. Silently sliding it earlier would un-align the
         // pair -- which is the single thing alignWith exists to guarantee -- so this is a config error.
         if (start + span > runBlocks) {
           throw new Error(
-            `stress event[${i}] aligns with a ${c.alignWith} at block ${start}, but its own ` +
+            `stress event[${i}] aligns with a ${c.alignWith} at block ${anchorStart}` +
+              (offset > 0 ? ` (+${offset} = block ${start})` : "") +
+              `, but its own ` +
               `window is ${span} blocks and the run is ${runBlocks}: shorten it, or lower windowFrac's ` +
               "upper bound (a heavily shortened run, e.g. --blocks on a smoke test, can hit this on " +
               "some seeds where the regime's own length does not)",
@@ -1034,7 +1051,10 @@ function placeWindows(
 ): number[] {
   const gap = c.minGapBlocks ?? 0;
   const most = (c.count as [number, number])[1];
-  const longest = Math.max(maxSpan(c), ...followers.map(maxSpan));
+  const longest = Math.max(
+    maxSpan(c),
+    ...followers.map((f) => (f.alignOffsetBlocks ?? 0) + maxSpan(f)),
+  );
   const lo = c.windowFrac[0] * windowBaseBlocks;
   const hi = c.windowFrac[1] * windowBaseBlocks;
   if ((most - 1) * (longest + gap) > hi - lo) {
@@ -1306,6 +1326,13 @@ function parseOne(
     if (o.alignWith === o.type)
       throw new Error(`${label}.alignWith must name a different event type`);
   }
+  if (o.alignOffsetBlocks !== undefined) {
+    if (o.alignWith === undefined)
+      throw new Error(
+        `${label}.alignOffsetBlocks only applies with alignWith (it is the follower's delay behind its anchor)`,
+      );
+    parseNonNegInt(o.alignOffsetBlocks, `${label}.alignOffsetBlocks`);
+  }
   if (o.side !== undefined) {
     if (o.type !== "whale" && o.type !== "cexDrift")
       throw new Error(
@@ -1518,6 +1545,9 @@ function parseOne(
       : {}),
     ...(o.alignWith !== undefined
       ? { alignWith: o.alignWith as StressEventType }
+      : {}),
+    ...(o.alignOffsetBlocks !== undefined
+      ? { alignOffsetBlocks: o.alignOffsetBlocks as number }
       : {}),
     ...(o.kappaMultRange !== undefined
       ? { kappaMultRange: o.kappaMultRange as [number, number] }
