@@ -10,6 +10,8 @@
 // run, and failedReads/failedReadTargets carry the same accountability as valueSeries.
 import type { Address, Hex, PublicClient } from "viem";
 import { parseAbi, zeroAddress } from "viem";
+import { LST_ACCOUNT_SUMMARY_GAS } from "@eris/sdk/protocols/lst.js";
+import { readIsolated, splitIsolatedReads } from "./isolatedReads.js";
 import {
   balancerQueriesAbi,
   collSurplusPoolAbi,
@@ -300,6 +302,7 @@ type MulticallContract = {
   abi: any;
   functionName: string;
   args?: readonly unknown[];
+  isolatedGas?: bigint;
 };
 
 class ReadBatch {
@@ -680,7 +683,7 @@ export async function reconstructMarketSeries(opts: {
   let failedReads = 0;
   const failedReadTargets = new Map<string, FailedReadTarget>();
 
-  const call = async (
+  const viaMulticall = async (
     contracts: MulticallContract[],
     blockNumber: bigint,
   ): Promise<unknown[]> => {
@@ -700,6 +703,25 @@ export async function reconstructMarketSeries(opts: {
       return r.result;
     });
   };
+  // The same split as the scorer's (isolatedReads.ts): an agent-sized read goes alone, capped.
+  const call = (
+    contracts: MulticallContract[],
+    blockNumber: bigint,
+  ): Promise<unknown[]> =>
+    splitIsolatedReads(
+      contracts,
+      (shared) => viaMulticall(shared, blockNumber),
+      async (alone) => {
+        const results = await readIsolated(publicClient, alone, blockNumber);
+        results.forEach((r, i) => {
+          if (r === undefined) {
+            failedReads++;
+            mergeFailedReads(failedReadTargets, alone[i]);
+          }
+        });
+        return results;
+      },
+    );
 
   const extraBases = baseTokens()
     .map((t) => t.symbol)
@@ -1417,6 +1439,8 @@ async function readLstPositionsAtEnd(opts: {
     abi: lstVaultAbi,
     functionName: "accountSummary",
     args: [a.address],
+    // Walks every request the owner made: the owner sets its cost (LST_ACCOUNT_SUMMARY_GAS).
+    isolatedGas: LST_ACCOUNT_SUMMARY_GAS,
   }));
   const results = await opts.call(reads as never, BigInt(opts.blockNumber));
   const out: LstPositionAtEnd[] = [];

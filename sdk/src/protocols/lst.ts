@@ -651,6 +651,17 @@ export function realizableWethWei(input: {
   };
 }
 
+// Gas for one `accountSummaryAt(owner, horizon)`. The vault walks every request the owner ever
+// made (`_requestIdsOf`, claimed ones included), so the read's cost is the owner's to choose:
+// measured on anvil 1.5.1 at 9,248 gas per `requestWithdraw(1 wei)` (each ~250k gas to send, free
+// at tip 0), 3,180 requests read for 29.4M and 3,250 no longer fit the 30M block gas limit. Inside
+// the shared Multicall3 such a read takes 63/64 of the chunk's gas, leaving ~0.5M for every read
+// listed after it -- other agents' positions and the fair price alike. So it is read alone
+// (`isolatedGas`) under this cap: the same 10M an agent may spend on one transaction (maxTxGas,
+// issue #40 T0), ~1,080 requests, three per block for a whole 360-block epoch. An account past it
+// is reported `read-failed`; nobody else's read is affected.
+export const LST_ACCOUNT_SUMMARY_GAS = 10_000_000n;
+
 /// Historical valuation (issue #41's staged reads, issue #38's realizable marking).
 ///
 /// Two stages, because both the instant-exit quote and the queue's wait depend on a balance the
@@ -681,6 +692,7 @@ export async function* lstValuationRun(
       abi: lstVaultAbi,
       functionName: "accountSummaryAt",
       args: [a.address, BigInt(ctx.horizonBlock)],
+      isolatedGas: LST_ACCOUNT_SUMMARY_GAS,
     })),
   ];
 
@@ -886,7 +898,11 @@ export const lstAdapter: ProtocolAdapter = {
         abi: lstVaultAbi,
         functionName: "accountSummaryAt",
         args: [agent, BigInt(blockNumber)],
-      }) as Promise<readonly bigint[]>,
+        // Same cap as the boundary read, so the two agree on which accounts are readable. A failure
+        // throws here; the coordinator's post-run loop reports it (core/src/realtime/postRunValues.ts).
+        // (viem accepts `gas` on a call but does not type it on readContract; untrustedRead.ts too.)
+        gas: LST_ACCOUNT_SUMMARY_GAS,
+      } as never) as Promise<readonly bigint[]>,
       ctx.publicClient.readContract({
         address: deployment.vault,
         abi: lstVaultAbi,

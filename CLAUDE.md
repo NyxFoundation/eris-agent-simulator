@@ -573,6 +573,12 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     （`scoresFromIntervals`。`run-start.json` の終了ブロックに最後の境界が一致するときだけ。値は V_0 規則適用済みで
     `epochPnlFromSeries` も同じなので summary と同じ数）。そのエポックは `pnlSource: "intervals-fallback"`・agent と
     エポックの `flags` に出る（netPnl・alpha・事後の規則検査は走っていない）。系列が終了ブロックに届いていなければ従来どおり除外
+  - **gas を agent が決められる読取は共有 Multicall3 に入れない**（`core/src/realtime/isolatedReads.ts`）。`accountSummaryAt` は
+    owner の全 request を走査する（1 本 9,248 gas、3,180 本で 29.4M・3,250 本で 30M 超）。aggregate3 の中では chunk の 63/64 を
+    取って後続に ~0.5M しか残さず、実測では後ろに 100 本並べた aggregate3 が丸ごと `MemoryOOG` で落ちた（viem の ~1 KB chunk では
+    LST 読取 24 本は生き残ったが、余裕であって保証ではない）。今は `ValuationRead.isolatedGas` を付けた読取を 1 本ずつ
+    `LST_ACCOUNT_SUMMARY_GAS` = 10M（= maxTxGas、~1,080 request）で `eth_call` し、超えた agent だけ `read-failed`。境界読取・事後 sweep・
+    market.json が同じ分け方なので `interval_series_agreement` は変わらない。**練習期間で 1 か月 request を積む agent は 10M に届きうる**
   - **agent にはエポック番号を渡す**（issue #167）。env `ERIS_EPOCH_INDEX`（プラン上の s）/ `ERIS_EPOCH_COUNT`（k）と
     `obs.epoch = {index, count}`（`sdk/src/epoch.ts`）。重み w_s が s で変わるのに、毎エポック同じ初期状態から再起動される
     agent には今が何本目か知る手段が無かった。s は**この起動で何本目かではなくプランの値**なので `--resume`・再実行・
