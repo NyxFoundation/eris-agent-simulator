@@ -5674,6 +5674,7 @@ export async function runRealtimeSimulation(
     // start sweeping from. On a short run the two are the same numbers -- the same reader, the same
     // blocks, the same median window -- so nothing about a bounded run changes.
     const wholeIntervalSeries = liveScorer.series();
+    const gmxShortfallByAgent = liveScorer.shortfallChargedByAgent();
     // The summary written here belongs to whichever directory `logger` points at -- which, when
     // segmenting, is the *final segment*, not the whole period. Scoring it over the whole series
     // gave the last day the week's intervals: every earlier segment's returns counted twice in any
@@ -6148,6 +6149,12 @@ export async function runRealtimeSimulation(
         // is the normal case.
         ...(agent.id in markedValueByAgent
           ? { markedValueUsdc: markedValueByAgent[agent.id] }
+          : {}),
+        // GMX liquidation shortfalls charged to this agent's opposite-side PnL at the last boundary
+        // (cross-margin per account and market; sdk protocols/gmxInsolvency.ts). Already in the
+        // boundary values, so in pnlUsdc; absent when nothing was charged.
+        ...(agent.id in gmxShortfallByAgent
+          ? { gmxShortfallChargedUsd: gmxShortfallByAgent[agent.id] }
           : {}),
         // Present only when the agent process went away before the run ended (ADR 0017 §4 reads this
         // to disqualify the agent for that scenario instead of scoring its frozen position).

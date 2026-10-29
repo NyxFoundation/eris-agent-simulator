@@ -4,6 +4,7 @@ import type { SimConfig } from "../config.js";
 import type { Rng } from "../rng.js";
 import type { StablePrices } from "../stables.js";
 import type { UnpricedAmount } from "../valuation.js";
+import type { GmxInsolvencyLedger } from "./gmxInsolvency.js";
 import type {
   AgentObservation,
   BalanceSnapshot,
@@ -139,6 +140,11 @@ export type ValuationContext = {
   // Issue reads at one of those earlier blocks, as one multicall. A failed read is undefined, as in
   // a stage. Present whenever medianWindow is non-empty.
   readAt?: (reads: ValuationRead[], blockNumber: number) => Promise<unknown[]>;
+  // GMX insolvent closes so far (protocols/gmxInsolvency.ts), already fed every EventEmitter log up
+  // to blockNumber. Given, the GMX adapter charges each account's liquidation shortfalls to the
+  // PnL of its opposite-side positions in the same market (cross-margin per account). Absent = no
+  // charge, which is what a caller that does not track the logs gets.
+  gmxInsolvency?: GmxInsolvencyLedger;
 };
 
 // A holding the adapter could not fold into its value, either because it cannot be priced (#41) or
@@ -163,6 +169,10 @@ export type AgentProtocolValue = {
   // already marks a stable leg at its own size (Liquity's Trove debt) leaves it out.
   stableLongs?: Record<string, bigint>;
   stableShorts?: Record<string, bigint>;
+  // Already deducted from both values above: a liability the venue's own accounting does not carry
+  // (GMX: a straddle's insolvent leg, charged to the winning leg -- gmxInsolvency.ts). Reported so
+  // summary.json can say how much of a value was this.
+  shortfallChargedUsd?: number;
 };
 
 // Yields the reads it wants for a stage, receives that stage's results, and finally returns each

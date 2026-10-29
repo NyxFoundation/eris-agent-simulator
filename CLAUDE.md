@@ -244,7 +244,7 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   （position fee 0.04% / 0.06%、impact 9e-11 / 3e-11・指数 2 / 1・上限 0.5% / 0.4%、borrowing は
   `borrowingRateConfig_LowerMax_WithHigherOptimal`）。impact は Arbitrum の OI に合わせた係数なので、この pool では
   $1M の偏りで ~0.9bps しか効かない（**効くのは fee**。深度に合わせて盛るのは較正の仕事として見送った）。
-  レバレッジは**建てるとき 5%（20 倍）・清算 1%**。**これが GMX が受け付ける上限**で
+  レバレッジは patch では**建てるとき 5%（20 倍）・清算 1%**（run の setup が建てる側を 33% = ~3.03 倍に上書きする。下の B2）。**これが Config 経由で GMX が受け付ける上限**で
   （`ConfigUtils.validateRange` が MIN_COLLATERAL_FACTOR > 5% と _FOR_LIQUIDATION > 1% を revert する。
   10% / 5% を入れたら deploy が落ちた）、Arbitrum の 0.5〜1% よりは厳しい。
   **swap も同じ**: keeper は `OrderCreated` を種類を問わず全部執行するので、`rawTx` の `MarketSwap` 注文が
@@ -255,7 +255,32 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   `Reader.isPositionLiquidatable` を注文 keeper と同じ fair で判定して `LiquidationHandler.executeLiquidation` を送る。
   1 ブロック 2 件まで（各 6M gas を宣言するので、連鎖で参加者のブロックを埋めない）、送った建玉は 3 ブロック再送しない。
   **採点は床なしのまま**: 清算が無い状態で床を 0 にすると、1 agent が 20 倍のロングとショートを両方持てば負け側が 0 で
-  止まるタダのストラドルになる。清算があれば負けは証拠金 1% 付近で止まる。**指値・ストップ注文は今も執行されない**
+  止まるタダのストラドルになる。**ただし清算があっても負けは証拠金で止まらなかった**: 公式レジームの gap は 2〜3 ブロックで
+  12〜32%（戻らない）で、20 倍の建玉は 1 ステップで健全から債務超過に飛ぶ。GMX は清算に限って証拠金を超える損失での決済を許し
+  （`DecreasePositionCollateralUtils` の `isInsolventCloseAllowed`）、残りは採点されない GM pool が被る（`InsolventClose`）。
+  実測 spike#101（150 ブロック）で USDC 証拠金 $24k の 19.5 倍ストラドルが P = +51,411（noop +6,799）。2 段で塞いだ:
+  **(B1) 採点は口座ごと・市場ごとのクロスマージン**（`sdk/src/protocols/gmxInsolvency.ts`）。境界 B での控除 =
+  min(B までの shortfall 合計（`remainingCostUsd`）, max(0, 反対側の建玉の PnL))。反対側は清算された建玉と**生存期間が重なった**
+  ものだけで、PnL は実現（`PositionDecrease.basePnlUsd`。勝ち脚を先に閉じても残る）+ B での未実現。片側だけの建玉は
+  オンチェーンどおり有限責任（控除 0）、清算後に新しく建てた反対側は対象外。InsolventClose は口座を持たないので同じ tx の
+  `PositionDecrease`（同じ orderKey）で口座に結び付ける。ライブ採点（毎ブロック getLogs = 練習 node の 300 ブロック保持より短い間隔）と
+  事後 sweep（窓を 1 回読む）が同じ ledger を同じ境界で引くので `interval_series_agreement` は 0 のまま（`core/src/realtime/gmxShortfall.ts`）。
+  控除は境界の値に入るので P に効く。`gmx_insolvent_close` イベント、summary の `agents[].gmxShortfallChargedUsd`、
+  練習期間の再開は `LiveScorerSnapshot.gmxShortfall`。**口座をまたぐストラドル（2 体で片側ずつ）は対象外**（1 参加単位 1 体が前提）。
+  **(B2) レバレッジ上限 ~3.03 倍**（`GMX_MIN_COLLATERAL_FACTOR` = 0.33。`sdk/src/protocols/gmxKeys.ts`）。最大 gap 32% に対し、
+  6 倍未満の建玉は ramp の 1 ステップ目では清算対象にすらならず gap 全体を被るので、債務超過しないには レバ × 0.32 + 決済費用 < 1。
+  **keeper で拒否するのではなく GMX 自身に執行させる**: `setupGlobal` が DataStore の `MIN_COLLATERAL_FACTOR` を CONTROLLER として
+  直接書く（Config.setUint は 5% 超を validateRange で revert するため）。上限を超える increase は executeOrder の中で GMX が
+  cancel し、**証拠金と実行手数料を同じ tx で返す**（keeper 拒否だと注文は OrderVault に `requestExpirationTime` 300 秒残り、
+  その間 0 評価になる）。証拠金を引き出す decrease は引き出し額が 0 に直され、上限を超えたまま残る部分 decrease は cancel、
+  全決済は常に通る。清算閾値（1%）は不変。観測 `protocols.gmx.maxLeverage`（DataStore から読む）と manifest の
+  `limits.gmxMaxLeverage` で公開。書いた値は読み返して違えば setup で落ちる。背景フローは ~1.4 倍なので影響しない。
+  **実測（spike#101・150 ブロック、2026-10-29）**: B1 だけ（上限なし）だと 19.5 倍ストラドルは P +42,767（控除 8,650 = shortfall 全額）で、
+  残りは**清算後に裸で残った勝ち脚が ramp の残りを取る分**（短い脚が 1 ステップ目で清算され、ロングだけが 2 ステップ目を被る）。
+  これは債務超過ではないので B1 では消えず、B2 で消える: 上限ありでは 19.5 倍の注文は `InsufficientCollateralUsd` で cancel・返金され
+  P +6,798（noop +6,799）、3 倍ストラドルは +6,687（noop − 手数料 112）、3 倍の片側ショートは −1,978（証拠金 12k のうち 8.8k 失い債務超過なし）。
+  `interval_series_agreement` は両 run で差 0。
+  **指値・ストップ注文は今も執行されない**
   （keeper は新しい `OrderCreated` しか見ない。SDK のアクションは成行のみ）`basis-arb` の往復コスト既定は 0 → 12bps。
   **採点は「今閉じたら残る額」**（`positionExitValueUsd`。Reader の `getAccountPositionInfoList` を fair で引き、
   証拠金 + 基準 PnL + 決済時と建玉時に繰り延べた impact − 決済手数料・未払い borrowing・funding + 受け取る funding）。

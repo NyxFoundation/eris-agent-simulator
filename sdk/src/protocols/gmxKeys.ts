@@ -309,3 +309,46 @@ function round2(v: number): number {
 function round6(v: number): number {
   return Math.round(v * 1e6) / 1e6;
 }
+
+// ---------------------------------------------------------------------------
+// Leverage cap
+//
+// The official regimes gap the price by up to 32% (spike: 24-32% over a 2-3 block ramp, never
+// recovered; crash 15-22%, lending-/cdp-incident 12-16%). A position is liquidated only once its
+// equity is under 1% of its size, and the liquidation lands a block after the keeper sees it, so a
+// position under ~6x is not even liquidatable after the ramp's first step and rides the whole gap.
+// To stay solvent through it, leverage x gap + closing costs must stay under 1: 1 / 0.32 = 3.1x.
+// MIN_COLLATERAL_FACTOR = 0.33 caps it at 1/0.33 = 3.03x -- an order at 3.00x passes with its
+// opening fee (0.04-0.06% of size) taken out, and at the cap a 32% gap loses 97% of the collateral.
+//
+// GMX enforces the factor itself, which is why it lives in the DataStore and not in the keeper: an
+// increase that would leave equity (collateral + PnL + impact - fees) or collateral under 33% of
+// size fails inside executeOrder and GMX cancels the order and refunds the collateral and the
+// execution fee in the same transaction. A decrease that withdraws collateral below it has the
+// withdrawal zeroed (or, with no size, is cancelled); a partial decrease that would leave the rest
+// over the cap is cancelled; a full close always goes through. Config.setUint caps the factor at 5%
+// (ConfigUtils.validateRange), so the environment writes the DataStore directly as CONTROLLER.
+// Liquidation still triggers at MIN_COLLATERAL_FACTOR_FOR_LIQUIDATION (1%), unchanged.
+
+/** The highest leverage GMX accepts here: size / equity, at the oracle (fair) price. */
+export const GMX_MAX_LEVERAGE = 1 / 0.33;
+/** Keys.MIN_COLLATERAL_FACTOR value the environment writes for every market (30 decimals). */
+export const GMX_MIN_COLLATERAL_FACTOR = 33n * 10n ** 28n;
+
+const MIN_COLLATERAL_FACTOR = hashString("MIN_COLLATERAL_FACTOR");
+
+/** Keys.minCollateralFactorKey(market). */
+export function gmxMinCollateralFactorKey(market: Address): Hex {
+  return keccak256(
+    encodeAbiParameters(
+      [{ type: "bytes32" }, { type: "address" }],
+      [MIN_COLLATERAL_FACTOR, market],
+    ),
+  );
+}
+
+/** The leverage a MIN_COLLATERAL_FACTOR value allows, or undefined for 0 (no factor = no cap read). */
+export function gmxMaxLeverageFromFactor(factor: bigint): number | undefined {
+  if (factor <= 0n) return undefined;
+  return Math.round((1e30 / Number(factor)) * 100) / 100;
+}

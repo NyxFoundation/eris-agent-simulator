@@ -47,6 +47,8 @@ import type {
 } from "@eris/sdk/protocols/types.js";
 import type { BalanceSnapshot, ProtocolId } from "@eris/sdk/types.js";
 import { firstBoundaryV0, type V0Rule } from "../scoring/endowmentV0.js";
+import type { GmxInsolvencyLedger } from "@eris/sdk/protocols/gmxInsolvency.js";
+import { GmxShortfallTracker } from "./gmxShortfall.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
 import { readRegistryEntries } from "@eris/sdk/marketRegistry.js";
 import {
@@ -200,6 +202,9 @@ export type AgentValueSnapshot = {
   // kept so the gap between the two can be reported. Equal for every venue that exits at par, which
   // is most of them most of the time.
   markedValueUsdc: number;
+  // Already deducted from the three values above: GMX liquidation shortfalls charged to the
+  // account's opposite-side PnL (sdk protocols/gmxInsolvency.ts). Absent when zero.
+  shortfallChargedUsd?: number;
 };
 
 // A holding excluded from an agent's value: the scorer cannot price it, nothing sums it (issue #41),
@@ -384,6 +389,9 @@ export async function readValueSnapshotAtBlock(opts: {
   // Rules §4.1: the earlier blocks of this boundary's median window (MarkMedian.window). Every venue
   // that marks a position off a market re-reads that price there; empty = mark live.
   medianWindow?: readonly number[];
+  // GMX insolvent closes, fed through blockNumber (GmxShortfallTracker.syncTo). Given, a straddle's
+  // liquidation shortfall is charged to its winning leg (sdk protocols/gmxInsolvency.ts).
+  gmxInsolvency?: GmxInsolvencyLedger;
 }): Promise<ValueSnapshot> {
   const { publicClient, agents, enabledIds, activeStables, priceFeed } = opts;
   let failedReads = 0;
@@ -492,6 +500,7 @@ export async function readValueSnapshotAtBlock(opts: {
     fairByBase: () => fairByBase,
     stablePrices: () => stablePrices,
     medianWindow: opts.medianWindow ?? [],
+    ...(opts.gmxInsolvency ? { gmxInsolvency: opts.gmxInsolvency } : {}),
     readAt: (reads, block) =>
       call(reads as MulticallContract[], BigInt(block)),
   };
@@ -697,9 +706,11 @@ export async function readValueSnapshotAtBlock(opts: {
             : "CurveStableSwapNG.get_dx",
       });
     }
+    let shortfallChargedUsd = 0;
     for (const [id, byAgent] of protocolValues) {
       const value = byAgent[agent.id];
       if (!value) continue;
+      shortfallChargedUsd += value.shortfallChargedUsd ?? 0;
       total += value.liquidatableValueUsdc;
       alphaTotal += value.liquidatableValueUsdc;
       markedTotal += value.valueUsdc;
@@ -716,6 +727,7 @@ export async function readValueSnapshotAtBlock(opts: {
       valueUsdc: total,
       alphaValueUsdc: alphaTotal,
       markedValueUsdc: markedTotal,
+      ...(shortfallChargedUsd > 0 ? { shortfallChargedUsd } : {}),
     });
   });
 
@@ -1216,6 +1228,20 @@ export async function reconstructValueSeries(opts: {
     );
   }
 
+  // GMX insolvent closes over the whole window, read once: the ledger answers each cross-section for
+  // the events at or before it, so the boundaries see what the live scorer saw there.
+  const gmxShortfall = enabledIds.includes("gmx")
+    ? new GmxShortfallTracker({
+        publicClient,
+        fromBlock,
+        accounts: agents.map((a) => a.address),
+      })
+    : undefined;
+  await gmxShortfall?.syncTo(toBlock);
+  const gmxInsolvency = gmxShortfall
+    ? { gmxInsolvency: gmxShortfall.ledger }
+    : {};
+
   // The fixed reference fair for α uses the fair at run end (toBlock) across all bases. Read toBlock first,
   // set that fairByBase as the reference, then evaluate fromBlock..toBlock (removing β across the whole run).
   const refSnapshot = await readValueSnapshotAtBlock({
@@ -1226,6 +1252,7 @@ export async function reconstructValueSeries(opts: {
     priceFeed,
     blockNumber: toBlock,
     horizonBlock: toBlock,
+    ...gmxInsolvency,
   });
   failedReads += refSnapshot.failedReads;
   mergeFailedReads(failedReadTargets, refSnapshot.failedReadTargets);
@@ -1304,6 +1331,7 @@ export async function reconstructValueSeries(opts: {
       blockNumber: b,
       horizonBlock: toBlock,
       refFairByBase,
+      ...gmxInsolvency,
       ...(boundaryIndex.has(b) ? { medianWindow: markMedian.window(b) } : {}),
       ...(stablePricesOverride ? { stablePricesOverride } : {}),
     });

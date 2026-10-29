@@ -34,8 +34,13 @@ import {
   gmxReserveFactorKey,
   gmxSavedFundingKey,
   gmxSideCapUsd,
+  gmxMaxLeverageFromFactor,
+  gmxMinCollateralFactorKey,
+  GMX_MAX_LEVERAGE,
+  GMX_MIN_COLLATERAL_FACTOR,
   type GmxFundingFields,
 } from "./gmxKeys.js";
+import type { GmxOpenPositionPnl } from "./gmxInsolvency.js";
 import {
   accountAddress,
   increaseTime,
@@ -1399,8 +1404,8 @@ async function resolveMarketProps(
 async function readMarketFunding(
   publicClient: PublicClient,
   markets: readonly Address[],
-): Promise<Map<string, GmxFundingFields>> {
-  const out = new Map<string, GmxFundingFields>();
+): Promise<Map<string, GmxFundingFields & { maxLeverage?: number }>> {
+  const out = new Map<string, GmxFundingFields & { maxLeverage?: number }>();
   let props: Map<string, MarketProps>;
   try {
     props = await resolveMarketProps(publicClient, markets);
@@ -1413,8 +1418,9 @@ async function readMarketFunding(
     if (p) layout.push({ market, props: p });
   }
   if (layout.length === 0) return out;
-  // Six reads per market, in this order: the four open-interest cells, the saved funding factor,
-  // and the increase factor that says whether the saved one is even written.
+  // Seven reads per market, in this order: the four open-interest cells, the saved funding factor,
+  // the increase factor that says whether the saved one is even written, and the min collateral
+  // factor that sets the leverage cap (gmxKeys.ts GMX_MIN_COLLATERAL_FACTOR).
   const contracts = layout.flatMap(({ props: p }) => [
     ...[
       gmxOpenInterestKey(p.marketToken, p.longToken, true),
@@ -1439,6 +1445,12 @@ async function readMarketFunding(
       functionName: "getUint",
       args: [gmxFundingIncreaseFactorKey(p.marketToken)],
     },
+    {
+      address: GMX.DataStore,
+      abi: gmxDataStoreReadAbi,
+      functionName: "getUint",
+      args: [gmxMinCollateralFactorKey(p.marketToken)],
+    },
   ]);
   let results: Array<{ status: "success" | "failure"; result?: unknown }>;
   try {
@@ -1456,19 +1468,22 @@ async function readMarketFunding(
       : undefined;
   };
   layout.forEach(({ market }, i) => {
-    const at = i * 6;
+    const at = i * 7;
     const saved = value(at + 4);
     const increase = value(at + 5);
-    out.set(
-      market.toLowerCase(),
-      gmxFundingFields({
+    const factor = value(at + 6);
+    const maxLeverage =
+      factor === undefined ? undefined : gmxMaxLeverageFromFactor(factor);
+    out.set(market.toLowerCase(), {
+      ...(maxLeverage !== undefined ? { maxLeverage } : {}),
+      ...gmxFundingFields({
         openInterest: [value(at), value(at + 1), value(at + 2), value(at + 3)],
         ...(saved !== undefined ? { savedFundingFactorPerSecond: saved } : {}),
         ...(increase !== undefined
           ? { fundingIncreaseFactorPerSecond: increase }
           : {}),
       }),
-    );
+    });
   });
   return out;
 }
@@ -2401,6 +2416,55 @@ export const gmxAdapter: ProtocolAdapter = {
       ),
     );
 
+    // Cross-margin per account and market (gmxInsolvency.ts): a liquidation's shortfall is charged
+    // to the account's opposite-side PnL. The open positions' base PnL at this block comes from the
+    // exit read where there is one (the same number the exit value used), and from the fair-price
+    // PnL otherwise.
+    const charges = ((): Map<string, { chargedUsd: number }> => {
+      if (!ctx.gmxInsolvency) return new Map();
+      const baseByMarket = new Map<string, TokenSymbol>();
+      for (const m of marketsFor("gmx"))
+        if (m.gmx) baseByMarket.set(m.gmx.market.toLowerCase(), m.base);
+      const open: GmxOpenPositionPnl[] = [];
+      ctx.agents.forEach((_agent, a) => {
+        const read = exitRead.get(a);
+        const infos =
+          read !== undefined
+            ? (stage2[read] as readonly PositionInfo[] | undefined)
+            : undefined;
+        if (infos) {
+          for (const info of infos) {
+            const p = info.position;
+            if (p.numbers.sizeInUsd === 0n) continue;
+            open.push({
+              account: p.addresses.account,
+              market: p.addresses.market,
+              collateralToken: p.addresses.collateralToken,
+              isLong: p.flags.isLong,
+              basePnlUsd: Number(info.basePnlUsd) / FLOAT_PRECISION_NUM,
+            });
+          }
+          return;
+        }
+        for (const p of (stage1[a] as readonly Position[] | undefined) ?? []) {
+          if (p.numbers.sizeInUsd === 0n) continue;
+          const base = baseByMarket.get(p.addresses.market.toLowerCase());
+          const mark = base === undefined ? undefined : fairByBase[base];
+          open.push({
+            account: p.addresses.account,
+            market: p.addresses.market,
+            collateralToken: p.addresses.collateralToken,
+            isLong: p.flags.isLong,
+            basePnlUsd:
+              base === undefined || mark === undefined
+                ? 0
+                : positionPnlUsd(p, mark, base),
+          });
+        }
+      });
+      return ctx.gmxInsolvency.chargesAt(ctx.blockNumber, open);
+    })();
+
     const out: Record<string, AgentProtocolValue> = {};
     ctx.agents.forEach((agent, a) => {
       const positions = stage1[a] as readonly Position[] | undefined;
@@ -2471,10 +2535,13 @@ export const gmxAdapter: ProtocolAdapter = {
         valueUsdc += gm;
         liquidatableValueUsdc += gm;
       });
+      const charged =
+        charges.get(agent.address.toLowerCase())?.chargedUsd ?? 0;
       out[agent.id] = {
-        valueUsdc,
-        liquidatableValueUsdc,
+        valueUsdc: valueUsdc - charged,
+        liquidatableValueUsdc: liquidatableValueUsdc - charged,
         unpriced,
+        ...(charged > 0 ? { shortfallChargedUsd: charged } : {}),
       };
     });
     return out;
@@ -2637,6 +2704,46 @@ export const gmxAdapter: ProtocolAdapter = {
         }),
       },
     );
+
+    // The leverage cap (gmxKeys.ts GMX_MIN_COLLATERAL_FACTOR): written straight to the DataStore,
+    // because Config refuses a factor above 5%. GMX then cancels and refunds an order that would
+    // leave a position over the cap, inside the keeper's executeOrder. Read back: a cap that did not
+    // land would be a rule the manifest states and the venue does not apply.
+    for (const { market } of layouts) {
+      const key = gmxMinCollateralFactorKey(market);
+      const current = (await ctx.publicClient.readContract({
+        address: GMX.DataStore,
+        abi: gmxDataStoreReadAbi,
+        functionName: "getUint",
+        args: [key],
+      })) as bigint;
+      if (current === GMX_MIN_COLLATERAL_FACTOR) continue;
+      await sendAndMine(
+        ctx.publicClient,
+        ctx.walletClient,
+        ctx.chain,
+        ctx.adminPk,
+        {
+          to: GMX.DataStore,
+          data: encodeFunctionData({
+            abi: dataStoreAbi,
+            functionName: "setUint",
+            args: [key, GMX_MIN_COLLATERAL_FACTOR],
+          }),
+        },
+      );
+      const written = (await ctx.publicClient.readContract({
+        address: GMX.DataStore,
+        abi: gmxDataStoreReadAbi,
+        functionName: "getUint",
+        args: [key],
+      })) as bigint;
+      if (written !== GMX_MIN_COLLATERAL_FACTOR)
+        throw new Error(
+          `gmx: MIN_COLLATERAL_FACTOR for ${market} reads ${written} after writing ` +
+            `${GMX_MIN_COLLATERAL_FACTOR}; the ${GMX_MAX_LEVERAGE.toFixed(2)}x leverage cap is not in force`,
+        );
+    }
 
     // Retire the providers replaced above (SPECA audit, ascon-ops#48). No token points at them any
     // more, so GMX would already refuse their prices; disabling them makes that hold even if a later
