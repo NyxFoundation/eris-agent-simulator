@@ -67,27 +67,30 @@ function knownTokens(): Set<string> {
 }
 
 /**
- * The registry pools that look like the environment's launches, oldest first.
+ * The registry pools that are the environment's launches, oldest first.
  *
  * Anyone can create a USDC pool for a token of their own, and the registry publishes it exactly as
  * it publishes the environment's (issue #216 (4)). The frozen reference agents in `full-field.yaml`
  * used to buy every such pool, so a participant could set one up and harvest them -- and through
  * them move the field's mean and spread. Nothing in the observation names the environment's launch
- * wallets (they are drawn from the hidden seed; publishing them would publish the count of launches
- * ahead of the windows), so the filter is on what the listing itself must look like:
+ * wallets (they are drawn from a secret; publishing them would not help anyway), so the filter is
+ * on the registry entries themselves:
  *
- *   1. the token has its own `erc20` entry, and the pool's creator deployed it (the environment
- *      deploys the token and creates the pool from one key in one block);
- *   2. the token's code is the environment's `AgentERC20` (fixed supply, no owner, no minter, no
- *      hook), when the caller could compute that hash (`launchTokenCodehash`);
- *   3. the code has not changed since registration.
+ *   1. the token's own `erc20` entry is `verified`. The environment lists through its TokenLauncher
+ *      (contracts/TokenLauncher.sol), which deploys the token, creates the pool and seeds it in one
+ *      transaction; the registry publishes the token from the launcher's event and marks it
+ *      verified. Only the launch wallets can call the launcher, and a token deployed any other way
+ *      is a top-level CREATE (published unverified) or an internal one (not published at all), so
+ *      no participant can produce this entry;
+ *   2. the pool's creator is the token entry's creator (the launch wallet that called the launcher
+ *      is the sender of the transaction that created the pool);
+ *   3. the token's code is the environment's `AgentERC20`, when the caller could compute that hash
+ *      (`launchTokenCodehash`), and it has not changed since registration.
  *
- * What this does not do: a participant who deploys that same bytecode from the key that creates the
- * pool passes, and that is accepted -- such a token is the same kind of thing as a launch, with the
- * same one risk (its price), so trading it is the strategy's call, not this module's. What it keeps
- * out is every token with other code (a transfer hook, a blacklist, a fee, a mint) and every pool
- * whose creator did not deploy the token. Until the token's entry is published (it can trail the
- * pool's by a block under the per-block registration cap) the pool is not a launch yet.
+ * 2 and 3 are belt and braces under 1. Before the launcher, a participant who deployed the same
+ * bytecode from the key that created the pool passed; now nothing a participant deploys does. Until
+ * the token's entry is published (it can trail the pool's by a block under the per-block
+ * registration cap) the pool is not a launch yet.
  */
 export function launchPools(
   obs: AgentObservation,
@@ -116,7 +119,7 @@ export function launchPools(
     }
     if (!token) continue;
     const tokenEntry = tokenEntries.get(token.toLowerCase());
-    if (!tokenEntry) continue;
+    if (!tokenEntry || !tokenEntry.verified) continue;
     if (tokenEntry.creator.toLowerCase() !== e.creator.toLowerCase()) continue;
     if (
       tokenEntry.codehashNow !== undefined &&
@@ -153,7 +156,8 @@ let launchTokenCodehashPromise: Promise<Hex | null> | undefined;
  *
  * Computed once per process from the repository's own `AgentERC20` artifact: the creation code is
  * run through `eth_call` with no `to`, which returns the code CREATE would have stored, immutables
- * filled in. The node that lists the environment's tokens is the node answering, so the hash is the
+ * filled in. The launcher deploys it with CREATE2 rather than CREATE; the runtime code, and so the
+ * hash, is the same either way (the only immutable is `decimals`). The node that lists the environment's tokens is the node answering, so the hash is the
  * registry's `codehashAtRegistration` for them, whatever the compiler did. `null` when the artifact
  * is not on disk (a bundle carries only the artifacts of the contracts its agent deploys) or the
  * call failed; a failure is retried on the next call rather than cached.

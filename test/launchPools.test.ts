@@ -25,6 +25,7 @@ type Listing = {
   token: string;
   poolCreator?: string;
   tokenCreator?: string | null; // null = no erc20 entry published (yet)
+  tokenVerified?: boolean; // the launcher's event publishes it verified; a top-level CREATE does not
   codehash?: string;
   codehashNow?: string;
   block?: number;
@@ -56,7 +57,7 @@ function entries(listings: Listing[]): RegistryEntryObservation[] {
       mine: false,
       codehashAtRegistration: l.codehash ?? ENV_CODEHASH,
       ...(l.codehashNow ? { codehashNow: l.codehashNow } : {}),
-      verified: false,
+      verified: l.tokenVerified ?? true,
       registeredAtBlock: String(l.block ?? 100),
     });
   }
@@ -93,6 +94,14 @@ test("a pool whose creator did not deploy the token is not a launch", () => {
   // The registry writes addresses in whatever case it got; the comparison does not care.
   const upper = obs([{ pool: addr(), token: addr(), poolCreator: LAUNCH_WALLET.toUpperCase().replace("0X", "0x"), tokenCreator: LAUNCH_WALLET }]);
   assert.equal(launchPools(upper).length, 1);
+});
+
+test("a token the launcher did not publish (unverified entry) is not a launch", () => {
+  // A participant deploying AgentERC20 itself and creating the pool from the same key: same
+  // creator, same code, but a top-level CREATE, which the registry publishes unverified.
+  const o = obs([{ pool: addr(), token: addr(), tokenVerified: false }]);
+  assert.deepEqual(launchPools(o), []);
+  assert.deepEqual(launchPools(o, { tokenCodehash: ENV_CODEHASH }), []);
 });
 
 test("a pool whose token has no entry yet is not a launch yet", () => {
@@ -134,7 +143,7 @@ test("pools between priced tokens, and entries of other kinds, are ignored", () 
       address: addr(),
       entries: [
         { market: addr(), kind: "uniswapV3Pool", creator: LAUNCH_WALLET, mine: false, codehashAtRegistration: ENV_CODEHASH, verified: true, registeredAtBlock: "1" },
-        { market: addr(), kind: "erc20", creator: LAUNCH_WALLET, mine: false, codehashAtRegistration: ENV_CODEHASH, verified: false, registeredAtBlock: "1" },
+        { market: addr(), kind: "erc20", creator: LAUNCH_WALLET, mine: false, codehashAtRegistration: ENV_CODEHASH, verified: true, registeredAtBlock: "1" },
       ],
       allowances: [],
     },

@@ -47,6 +47,14 @@ import { uniswapV3FactoryEventsAbi } from "@eris/sdk/abis.js";
 import type { RegistryKind } from "@eris/sdk/types.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
+import { TOKENS, UNISWAP } from "@eris/sdk/constants.js";
+import {
+  LAUNCH_POOL_FEE,
+  LAUNCH_TICK_LOWER,
+  LAUNCH_TICK_UPPER,
+  TOKEN_LAUNCHER_REQUIRED_FUNCTIONS,
+  tokenLauncherEventAbi,
+} from "./tokenLaunch.js";
 
 const ZERO_BYTES32 =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as Hex;
@@ -105,6 +113,13 @@ export type MarketRegistryRuntime = {
    */
   lending?: Address;
   uniswapFactory?: Address;
+  /**
+   * The environment's token launcher (contracts/TokenLauncher.sol, issue #29): deployed in every run
+   * that has the registry and a Uniswap factory, whatever the schedule lists, so its presence does
+   * not name the `launch` regime. Its `Launched` events are how a listed token reaches the registry
+   * (the token is a CREATE2 from inside the launcher, which the top-level CREATE scan cannot see).
+   */
+  tokenLauncher?: Address;
   registrarPk: Hex;
   registrarAddress: Address;
   // Discovered but not yet published. Factory-made kinds are drained first: a verified pool is more
@@ -190,6 +205,11 @@ export async function deployAgentMarketVenues(
   logger: RunLogger,
   /** Whether the run's protocols include `lending`; the singleton is deployed only then. */
   withLending: boolean,
+  /**
+   * The launch wallets allowed to call the token launcher. Every run has the same launch wallet
+   * slots (LAUNCH_WALLET_SLOTS), so the launcher goes up wherever there is a Uniswap factory.
+   */
+  launchCallers?: Address[],
 ): Promise<MarketRegistryRuntime> {
   const registrarAddress = privateKeyToAccount(registrarPk).address;
   // Owner-gated writes: the registry's owner is whoever deployed it, so the registrar must be the
@@ -208,13 +228,29 @@ export async function deployAgentMarketVenues(
     ]);
     lending = await deployFrom(ctx, registrarPk, "SimpleLending");
   }
-  const deployBlock = Number(await ctx.publicClient.getBlockNumber());
   const factory = await uniswapFactory(ctx.publicClient);
+  let tokenLauncher: Address | undefined;
+  if (factory && launchCallers && launchCallers.length > 0) {
+    // Same stale-`out/` concern as the lending singleton: an old artifact without the launcher
+    // would only fail on the window's block, in the one regime that lists.
+    assertArtifactHasFunctions("TokenLauncher", TOKEN_LAUNCHER_REQUIRED_FUNCTIONS);
+    tokenLauncher = await deployFrom(ctx, registrarPk, "TokenLauncher", [
+      factory,
+      UNISWAP.nonfungiblePositionManager,
+      TOKENS.USDC.address,
+      LAUNCH_POOL_FEE,
+      LAUNCH_TICK_LOWER,
+      LAUNCH_TICK_UPPER,
+      launchCallers,
+    ]);
+  }
+  const deployBlock = Number(await ctx.publicClient.getBlockNumber());
   logger.event({
     type: "market_registry_deployed",
     address,
     // null = this run has no lending venue, which is every run without `lending` in its protocols.
     lending: lending ?? null,
+    tokenLauncher: tokenLauncher ?? null,
     registrar: registrarAddress,
     uniswapFactory: factory ?? null,
     perBlockCap,
@@ -225,6 +261,7 @@ export async function deployAgentMarketVenues(
     deployBlock,
     lending,
     uniswapFactory: factory,
+    tokenLauncher,
     registrarPk,
     registrarAddress,
     pending: [],
@@ -364,6 +401,49 @@ export async function sweepMarkets(
       });
     }
   }
+  // ---- the environment's token launcher (issue #29) ----
+  //
+  // The launch token is a CREATE2 from inside the launcher, invisible to the CREATE scan below, so
+  // its `erc20` entry comes from the launcher's own event. The creator is the launch wallet that
+  // called it -- the same address the factory log above credits with the pool, as when the wallet
+  // deployed the token itself -- and the entry is `verified`: the launcher is environment code and
+  // the token is the repository's AgentERC20. No participant can produce a verified `erc20` entry
+  // (only the launch wallets can call the launcher), which is what `launchPools` keys on.
+  if (runtime.tokenLauncher) {
+    try {
+      const logs = await publicClient.getLogs({
+        address: runtime.tokenLauncher,
+        event: tokenLauncherEventAbi[0],
+        fromBlock: BigInt(fromBlock),
+        toBlock: BigInt(toBlock),
+      });
+      for (const log of logs) {
+        const args = log.args as { caller?: Address; token?: Address };
+        if (!args.token || !args.caller) continue;
+        found.push({
+          market: args.token,
+          kind: "erc20",
+          creator: args.caller,
+          token0: ZERO_ADDRESS,
+          token1: ZERO_ADDRESS,
+          oracle: ZERO_ADDRESS,
+          codehash: await codehash(args.token),
+          verified: true,
+          extra: ZERO_BYTES32,
+          seenAtBlock: toBlock,
+        });
+      }
+    } catch (error) {
+      logger.event({
+        type: "market_sweep_failed",
+        source: "tokenLauncher",
+        fromBlock,
+        toBlock,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   // ---- top-level CREATE: scan each block's transactions for `to === null` ----
   // No receipt fetch: the address is derived from (from, nonce), which the transaction itself
   // carries. CREATE / CREATE2 from inside a contract is invisible here, and is accepted.

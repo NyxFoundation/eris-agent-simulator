@@ -43,6 +43,7 @@ const {
   LAUNCH_WAVE_USDC_UNITS,
   launchWalletFunding,
   tokenLaunchCeiling,
+  tokenLauncherEnabled,
 } = await import("../core/src/realtime/tokenLaunch.js");
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -154,6 +155,12 @@ test("every official regime funds the same environment wallets with the same amo
     return {
       whale: whaleEndowment(schedule.events, OPENING_FAIR),
       launch: launchWalletFunding(schedule),
+      // The TokenLauncher and the launch wallets' approvals to it are setup transactions: deployed
+      // only in `launch`, they would name it at block 0.
+      tokenLauncher: tokenLauncherEnabled({
+        agentMarkets: config.agentMarkets,
+        uniswapEnabled: config.enabledProtocols.includes("uniswap"),
+      }),
       // What the flow wallets are funded with and how many Aave actors there are: the deposits and
       // the sender count of the setup blocks.
       flow: {
@@ -167,6 +174,8 @@ test("every official regime funds the same environment wallets with the same amo
     };
   };
   const reference = plan(OFFICIAL[0], 101);
+  // And `launch` needs it, so "the same" has to mean "everywhere", not "nowhere".
+  assert.equal(reference.tokenLauncher, true);
   for (const regime of OFFICIAL)
     for (const seed of [101, 102, 103, 104, 105, 7_001, 7_002, 7_003])
       assert.deepEqual(plan(regime, seed), reference, `${regime}#${seed} sets up a different world`);
