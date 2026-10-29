@@ -15,7 +15,7 @@ read it already, the [environment updates](updates/README.en.md) page carries th
 
 ---
 
-**Contents**: [1. The shape of the competition](#1-the-shape-of-the-competition) ([the blockchain minimum](#the-blockchain-minimum) / [the seven protocols](#the-seven-protocols) / [the 12 regimes](#the-12-regimes) / [timeline](#the-competition-timeline) / [what does not happen](#what-does-not-happen-here) / [what you can do](#what-you-can-do-here-examples)) · [2. Setup](#2-setup) · [3. The smallest agent](#3-the-smallest-submittable-agent) · [4. Observations and actions](#4-observations-and-actions) · [5. LLM strategy revision](#5-llm-strategy-revision) · [6. The development loop](#6-the-development-loop-run-read-fix) · [7. The dashboard](#7-reading-your-results-on-the-dashboard) · [8. Reference agents](#8-the-reference-agents) · [9. Practice devnet](#9-the-practice-devnet-optional) · [10. Submitting](#10-submitting) · [11. Ways people break this](#11-ways-people-actually-break-this) · [12. What to read next](#12-what-to-read-next)
+**Contents**: [1. The shape of the competition](#1-the-shape-of-the-competition) ([the blockchain minimum](#the-blockchain-minimum) / [the seven protocols](#the-seven-protocols) / [the 12 regimes](#the-12-regimes) / [timeline](#the-competition-timeline) / [what does not happen](#what-does-not-happen-here) / [what you can do](#what-you-can-do-here-examples)) · [2. Setup](#2-setup) · [3. The smallest agent](#3-the-smallest-submittable-agent) · [4. Observations and actions](#4-observations-and-actions) · [5. LLM strategy revision](#5-llm-strategy-revision) · [6. The development loop](#6-the-development-loop-run-read-fix) · [7. The dashboard](#7-reading-your-results-on-the-dashboard) · [8. Reference agents](#8-the-reference-agents) · [9. The trial environment](#9-the-trial-environment-optional) · [10. Submitting](#10-submitting) · [11. Ways people break this](#11-ways-people-actually-break-this) · [12. What to read next](#12-what-to-read-next)
 
 ## 1. The shape of the competition
 
@@ -309,16 +309,16 @@ Words the table uses:
 |---|---|---|---|
 | 0 | Calm `calm` | No events. The reference price is a random walk (nothing pulls it back to its opening level), the order flow neutral | `venue-arb` / `multi-arb` / `stat-arb`. The baseline for arbitrage: a strategy that loses here loses everywhere |
 | 1 | CEX drift `cex-drift` | While a window is open the reference price moves two to three times as far per block (±0.8–1.2% per block, no direction). Two to four windows of 30–54 blocks; pools fall behind it on either side. Pool prices keep diverging from the reference | The cross-venue arbitrageurs get work. A directional `levered-long` swings hard on β |
-| 2 | Informed flow `informed-flow` | The environment's order flow leans one way while a window is open (2–3× size, correlation 1.0, 12-block persistence; two windows). Hard to tell from calm | `stat-arb` / `multi-arb` |
-| 3 | Whale `whale` | A single 25–60 WETH order knocks a pool's mid. Four of them, two pinned to Balancer / Curve. The reference price does not move | `venue-arb` / `multi-arb` / `max-profit-arb`. Whoever takes the dislocation first wins it, so bidding priority fee matters |
+| 2 | Directional flow `informed-flow` | The environment's order flow leans one way while a window is open (2–3× size, correlation 1.0, 12-block persistence; two windows). Hard to tell from calm | `stat-arb` / `multi-arb` |
+| 3 | Large orders `whale` | A single 25–60 WETH order knocks a pool's mid. Four of them, two pinned to Balancer / Curve. The reference price does not move | `venue-arb` / `multi-arb` / `max-profit-arb`. Whoever takes the dislocation first wins it, so bidding priority fee matters |
 | 4 | Lending incident `lending-incident` | The reference price falls 12–16% and stays down (2–3 block ramp), in the same window every AMM loses 40–60% of its depth, and the two victim accounts every regime opens at HF 1.10 become liquidatable on Aave | `liquidator` (the one liquidating) / `levered-long` (managing not to be the one liquidated) |
 | 5 | Stablecoin depeg `depeg` | The environment sells DAI into the USDC/DAI pool (35–60% of its depth; ramp 12 / hold 36 / decay 45 blocks) and opens a discount. **No GMX (nor in `depeg-persist`)** | `peg-arb`. DAI has no redemption floor, so the question is whether you believe it comes back |
 | 6 | Crash `crash` | The reference price gaps 15–22% and stays there (1–2 gaps, each up or down with even odds, 2–3 block ramp); liquidity is pulled 40–60% in the same window. A downward gap breaches the victims every regime opens | Everyone. Arbitrage shrinks in a thin book and leverage crosses its HF. `trove-manager` / `sp-underwriter` handle the same moment on the Liquity side |
-| 7 | New pools `vuln` | Mid-epoch, 4–6 pools appear, twice; 50–70% of them skim assets from any trade above a size (4–8% of the USDC endowment). The bait is a 3–6% discount | `discovery-arb-verify` (dry-runs before taking) / `discovery-arb` (the unverified control) |
+| 7 | New pools appearing `vuln` | Mid-epoch, 4–6 pools appear, twice; 50–70% of them skim assets from any trade above a size (4–8% of the USDC endowment). The bait is a 3–6% discount | `discovery-arb-verify` (dry-runs before taking) / `discovery-arb` (the unverified control) |
 | 8 | Spike `spike` | The reference price gaps 24–32% **up** once and stays there (2–3 block ramp); liquidity is pulled 40–60% in the same window (upward, so the victims hold). Sized against the downward-only lending-incident / cdp-incident, so across the twelve regimes the expected gap is about 0 | Everyone. The one regime where merely holding the basket is rewarded and a hedge or a short pays; the arbitrage runs the other way round from crash, so it needs USDC inventory |
 | 9 | Persistent depeg `depeg-persist` | The environment sells DAI as in `depeg` (35–60% of depth; ramp 12 / hold 36) and then **does not buy it back**: the discount stands through the last scored block, the buy-back comes after scoring | `peg-arb`. In `depeg` waiting for par was right by construction; here whatever was bought on the belief that par returns is valued at the discount at the end. The one regime that separates judging the return from assuming it |
 | 10 | CDP incident `cdp-incident` | Against the two ICR 1.20 Troves every regime opens, the reference price falls 12–16% and stays down (depth pulled 40–60% in the same window), and in the same window it sells eUSD into its pool. The Troves cross MCR 1.10 and eUSD trades below par | `sp-underwriter` (absorbs through the Stability Pool and liquidates), `redemption-arb` (buys cheap eUSD and redeems against the victims), `trove-manager` (keeps its own Trove out of the redemption path and above MCR) |
-| 11 | New listings `launch` | Mid-epoch (0.2–0.5) the environment lists 2–3 new tokens at 1.00 USDC in USDC pools (20k–100k USDC a side); they appear in the list of new markets (the registry, `obs.registry`) as `uniswapV3Pool` + `erc20` a block later. Per token, independently, a demand wave follows (starting two blocks after the listing, 0.25–1× the pool's USDC bought over a 20-block ramp, held 30, 50–100% sold back over a 30-block decay) or, with 30–50% probability, does not (a dud). Nothing is announced; the ramp's first blocks are the only signal. **Listed tokens still held when the epoch ends are valued at zero** (rules §4.1) | `launch-confirm` (enters after several blocks in a row where buying outweighs selling, exits once selling outweighs buying) / `launch-sniper` (buys at first sight and sells after a fixed hold — the control) |
+| 11 | New token listings `launch` | Mid-epoch (0.2–0.5) the environment lists 2–3 new tokens at 1.00 USDC in USDC pools (20k–100k USDC a side); they appear in the list of new markets (the registry, `obs.registry`) as `uniswapV3Pool` + `erc20` a block later. Per token, independently, a demand wave follows (starting two blocks after the listing, 0.25–1× the pool's USDC bought over a 20-block ramp, held 30, 50–100% sold back over a 30-block decay) or, with 30–50% probability, does not (a dud). Nothing is announced; the ramp's first blocks are the only signal. **Listed tokens still held when the epoch ends are valued at zero** (rules §4.1) | `launch-confirm` (enters after several blocks in a row where buying outweighs selling, exits once selling outweighs buying) / `launch-sniper` (buys at first sight and sells after a fixed hold — the control) |
 
 Three notes.
 
@@ -869,7 +869,7 @@ days to the next deadline — Japan time, judged by your browser's clock), **how
 from registering to the freeze, and which of them are open today), three cards for **scoring, prizes and
 submission & limits** (the gist on the card, the full statement behind the ?, and a link to the
 authoritative rules on ascon.dev), the **top 5** of the selected competition (with how many days or
-epochs each was scored on), and the **links** (this guide, the rules, Discord, and the practice
+epochs each was scored on), and the **links** (this guide, the rules, Discord, and the trial
 environment's RPC, explorer and environment manifest). **Register** at the top right opens the
 registration form, and disappears when registration closes (Nov 23). **Submit**, right of it, opens the
 submission form, and is there only during the submission period (Sep 23 – Nov 30).
@@ -988,17 +988,17 @@ it works" is the regime whose environment gives the strategy something to do (§
 
 ---
 
-## 9. The practice devnet (optional)
+## 9. The trial environment (optional)
 
 A chain that does not stop, which you can point your own agent at from your own machine. **It is not
-official scoring** — nothing from the practice period counts toward the standings.
+official scoring** — nothing from the trial environment counts toward the standings (rules §2.7).
 
 You need the `manifest.json` the operator publishes (RPC, chain id, every venue address, evaluation-interval
 length, action vocabulary, fee defaults, and an explicit statement that **there is no order-size
 cap**) and your own wallet. Your decision log stays **on your machine and
 nowhere else**. Steps are in [practice-devnet.md](guide/practice-devnet.md).
 
-Practice teaches you execution and how to read observations. **Epoch resets and deviation scoring do not
+The trial environment teaches you execution and how to read observations. **Epoch resets and deviation scoring do not
 exist there** — that structure only exists in the real thing.
 
 ---
