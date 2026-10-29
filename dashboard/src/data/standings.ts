@@ -602,6 +602,50 @@ export function standingsThroughEpoch(
 }
 
 /**
+ * One epoch on its own: the field ranked on that epoch's T alone, which is the number it contributes
+ * to the Score. A practice period reads it as "the standings for one day". Same buildStandings over
+ * a one-scenario competition, so the day's T is the period score's T for that day by construction
+ * (T depends only on its own epoch's field), not a second computation of it.
+ */
+export function standingsForEpoch(
+  competition: Competition,
+  rounds: Map<string, ScenarioRounds>,
+  s: number,
+  throughRound: number | null = null,
+): Standings {
+  const scenarios = competition.file.scenarios.filter(
+    (sc, i) => ordinalOf(sc, i) === s,
+  );
+  return buildStandings(
+    { ...competition, file: { ...competition.file, scenarios } },
+    rounds,
+    throughRound,
+  );
+}
+
+/**
+ * The days of a practice period that have something to rank, newest first. `live` is the day still
+ * running: a live series and no closed record yet, so its ranking is provisional.
+ */
+export function practiceDays(
+  competition: Competition,
+  rounds: Map<string, ScenarioRounds>,
+): { s: number; label: string; live: boolean }[] {
+  if (competition.fromSingleRun || !isPracticePeriod(competition.file)) return [];
+  const scenarios = competition.file.scenarios;
+  return completedOrdinals(competition, rounds)
+    .map((s) => {
+      const scenario = scenarios.find((sc, i) => ordinalOf(sc, i) === s);
+      return {
+        s,
+        label: scenario ? scenarioLabel(scenario) : `#${s}`,
+        live: scenario !== undefined && scenarioAgents(scenario).length === 0,
+      };
+    })
+    .reverse();
+}
+
+/**
  * Rank change since the previous completed epoch (positive = moved up). Null when there is no
  * previous epoch, or the agent was not ranked in it. This is the standings' default Δ; the
  * round-cursor Δ (`rankMoves`) takes over while the cursor is scrubbing.

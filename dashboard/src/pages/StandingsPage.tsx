@@ -31,8 +31,10 @@ import {
   completedOrdinals,
   epochRankMoves,
   participantStandings,
+  practiceDays,
   rankMoves,
   scoreRace,
+  standingsForEpoch,
 } from "@/data/standings";
 import { useMode } from "@/data/mode";
 import { setPinnedAgent, usePinnedAgent } from "@/data/pinnedAgent";
@@ -43,7 +45,12 @@ import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
 import { InfoTip, TipText } from "@/design-system/InfoTip";
 import { useLocale } from "@/i18n/locale";
 import { t } from "@/i18n/messages";
-import { formatClock, formatPnlUsdc, formatScore } from "@/lib/format";
+import {
+  formatClock,
+  formatPnlUsdc,
+  formatReturnPct,
+  formatScore,
+} from "@/lib/format";
 import { useMediaQuery } from "@/lib/useMediaQuery";
 import { MOBILE } from "@/lib/breakpoints";
 import { navigate } from "@/navigation";
@@ -93,10 +100,12 @@ const VIEW_BUTTON: React.CSSProperties = {
   color: "var(--text-secondary)",
   cursor: "pointer",
 };
+// The whole `border`, not `borderColor`: VIEW_BUTTON sets the shorthand, and toggling a longhand
+// over it on rerender is the mix React warns can leave the wrong border behind.
 const VIEW_BUTTON_ACTIVE: React.CSSProperties = {
   background: "var(--bg-surface)",
   color: "var(--text-primary)",
-  borderColor: "var(--text-tertiary)",
+  border: "1px solid var(--text-tertiary)",
 };
 const SHOW_MORE_BUTTON: React.CSSProperties = {
   ...VIEW_BUTTON,
@@ -300,10 +309,12 @@ function ScenarioRow({
             style={{
               marginLeft: "6px",
               font: "var(--text-xs) var(--font-mono)",
-              color: toneColor(row.leader.pnlUsdc),
+              color: toneColor(row.leader.returnFrac ?? row.leader.pnlUsdc),
             }}
           >
-            {formatPnlUsdc(row.leader.pnlUsdc)}
+            {row.leader.returnFrac !== undefined
+              ? formatReturnPct(row.leader.returnFrac)
+              : formatPnlUsdc(row.leader.pnlUsdc)}
           </span>
         </span>
       ) : (
@@ -402,6 +413,9 @@ export function StandingsPage() {
   const [showAll, setShowAll] = useState(false);
   const [view, setView] = useState<"agents" | "participants">("agents");
   const [details, setDetails] = useState(false);
+  // A practice period's table can also be read one day at a time: that day's T and return, the
+  // number the day adds to the period score. null = the period (the Score).
+  const [day, setDay] = useState<number | null>(null);
 
   // The cursor's range is the longest scenario in the competition. Shorter scenarios end early
   // rather than being excluded — see buildStandings.
@@ -423,14 +437,30 @@ export function StandingsPage() {
     return buildStandings(data.competition, data.rounds, cursor.round);
   }, [data, cursor.round]);
 
+  const days = useMemo(
+    () => (data ? practiceDays(data.competition, data.rounds) : []),
+    [data],
+  );
+  // A day that is no longer in the list (another competition picked) falls back to the period.
+  const dayShown = day !== null && days.some((d) => d.s === day) ? day : null;
+
+  // What the table shows: the period, or the one day picked.
+  const table = useMemo(() => {
+    if (!data || !standings) return null;
+    if (dayShown === null) return standings;
+    return standingsForEpoch(data.competition, data.rounds, dayShown, cursor.round);
+  }, [data, standings, dayShown, cursor.round]);
+
   // Δ: since the previous round while the cursor scrubs; since the previous completed epoch
   // otherwise (rules §4.7.1 — the live week moves one epoch at a time).
   const moves = useMemo(() => {
     if (!data || !standings) return new Map<string, number | null>();
+    // A single day has no previous epoch to have moved from.
+    if (dayShown !== null) return new Map<string, number | null>();
     return cursor.round === null
       ? epochRankMoves(data.competition, data.rounds, standings)
       : rankMoves(data.competition, data.rounds, standings);
-  }, [data, standings, cursor.round]);
+  }, [data, standings, cursor.round, dayShown]);
 
   const race = useMemo(() => {
     if (!data || !standings || data.competition.fromSingleRun) return null;
@@ -517,10 +547,13 @@ export function StandingsPage() {
   // exists but has scored nothing yet keeps its landing — the rules, the scenario list and the
   // participant lookup are what a reader needs most before the first result, and dropping the
   // whole page took them away exactly then (issue #84 T).
-  if (error || !data || !standings) return <ScenarioPage withCompetitionPicker />;
+  if (error || !data || !standings || !table)
+    return <ScenarioPage withCompetitionPicker />;
 
   const file = data.competition.file;
   const at = standings.throughRound;
+  const dayDetail =
+    dayShown === null ? null : (days.find((d) => d.s === dayShown) ?? null);
   // ADR 0021 §1: a continuous competition is not the official scoring. ADR 0020 §2 puts the official
   // competition in `scenario` mode, so a continuous one -- the practice devnet, or a local
   // sim:realtime -- is by construction something else, and says so on the standings rather than only
@@ -532,7 +565,9 @@ export function StandingsPage() {
   const practice = data.competition.file.resetUnit === "continuous";
   // A single run has one scenario labelled "run": its regime column would repeat the total.
   const regimes =
-    narrow || standings.regimes.length <= 1 ? [] : standings.regimes;
+    narrow || dayShown !== null || standings.regimes.length <= 1
+      ? []
+      : standings.regimes;
   const scrubbing = at !== null;
   const recordedAt =
     file.createdAt && !Number.isNaN(new Date(file.createdAt).getTime())
@@ -543,17 +578,17 @@ export function StandingsPage() {
       : null;
   // Facts recorded beside an agent's numbers (rules §4.4.2) get a column only when there are any;
   // the participant fold (rules §2.2) a toggle only when the roster names participants.
-  const hasFlags = Object.keys(standings.flagsByAgent).length > 0;
-  const hasParticipants = Object.keys(standings.participantOf).length > 0;
-  const hasActivity = Object.keys(standings.txCountByAgent).length > 0;
+  const hasFlags = Object.keys(table.flagsByAgent).length > 0;
+  const hasParticipants = Object.keys(table.participantOf).length > 0;
+  const hasActivity = Object.keys(table.txCountByAgent).length > 0;
   const q = query.trim().toLowerCase();
   const matches = (id: string) =>
     !q ||
     id.toLowerCase().includes(q) ||
-    (standings.participantOf[id] ?? "").toLowerCase().includes(q);
-  const filteredRows = standings.rows.filter((r) => matches(r.id));
+    (table.participantOf[id] ?? "").toLowerCase().includes(q);
+  const filteredRows = table.rows.filter((r) => matches(r.id));
   const participantRows = hasParticipants
-    ? participantStandings(standings).filter(
+    ? participantStandings(table).filter(
         (p) =>
           p.participant.toLowerCase().includes(q) ||
           p.agents.some((a) => matches(a.id)),
@@ -636,7 +671,7 @@ export function StandingsPage() {
     "44px",
     "minmax(140px, 1fr)",
     "96px",
-    ...(narrow ? [] : ["92px"]),
+    ...(narrow || dayShown !== null ? [] : ["92px"]),
     ...regimes.map(() => "minmax(66px, 92px)"),
     ...(hasFlags ? ["56px"] : []),
     ...(details && hasActivity ? ["64px", "64px"] : []),
@@ -810,7 +845,7 @@ export function StandingsPage() {
               {t("home.standingsOff")}
             </p>
           </Panel>
-        ) : standings.rows.length === 0 ? (
+        ) : table.rows.length === 0 ? (
           // A competition with nothing scored yet, or one every epoch of which failed. Which of
           // the two it is decides what to say (issue #84 L); either way the page stays.
           <Panel title={t("home.noStandings.title")}>
@@ -838,7 +873,7 @@ export function StandingsPage() {
           </Panel>
         ) : (
           <>
-            {race && (
+            {race && dayShown === null && (
               <Panel
                 title={t("home.chart.title")}
                 info={
@@ -861,15 +896,22 @@ export function StandingsPage() {
 
             <Panel
               title={
-                at !== null
-                  ? t("home.standingsThrough", { at })
-                  : inProgress
-                    ? t("home.standingsSoFar")
-                    : t("home.standingsFinal")
+                dayDetail
+                  ? at !== null
+                    ? t("home.standingsDayThrough", { day: dayDetail.label, at })
+                    : dayDetail.live
+                      ? t("home.standingsDayLive", { day: dayDetail.label })
+                      : t("home.standingsDay", { day: dayDetail.label })
+                  : at !== null
+                    ? t("home.standingsThrough", { at })
+                    : inProgress
+                      ? t("home.standingsSoFar")
+                      : t("home.standingsFinal")
               }
               info={
                 <>
                   {practice && <TipText>{t("home.practiceNote")}</TipText>}
+                  {days.length > 0 && <TipText>{t("home.scope.note")}</TipText>}
                   <TipText>
                     {standings.pnlUnit === "return"
                       ? t("home.subtitlePractice")
@@ -896,6 +938,43 @@ export function StandingsPage() {
                   borderBottom: "1px solid var(--border-subtle)",
                 }}
               >
+                {days.length > 0 && (
+                  <div
+                    style={{ display: "flex", gap: "4px", alignItems: "center" }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setDay(null)}
+                      aria-pressed={dayShown === null}
+                      style={{
+                        ...VIEW_BUTTON,
+                        ...(dayShown === null ? VIEW_BUTTON_ACTIVE : {}),
+                      }}
+                    >
+                      {t("home.scope.period")}
+                    </button>
+                    <select
+                      value={dayShown === null ? "" : String(dayShown)}
+                      onChange={(e) =>
+                        setDay(e.target.value === "" ? null : Number(e.target.value))
+                      }
+                      aria-label={t("home.scope.day")}
+                      style={{
+                        ...VIEW_BUTTON,
+                        ...(dayShown !== null ? VIEW_BUTTON_ACTIVE : {}),
+                      }}
+                    >
+                      <option value="">{t("home.scope.day")}</option>
+                      {days.map((d) => (
+                        <option key={d.s} value={String(d.s)}>
+                          {d.live
+                            ? t("home.scope.dayLive", { day: d.label })
+                            : d.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <input
                   value={query}
                   onChange={(e) => {
@@ -1081,9 +1160,13 @@ export function StandingsPage() {
                       </span>
                       <span>{t("home.col.agent")}</span>
                       <span style={{ textAlign: "right" }}>
-                        {t("home.col.score")}
+                        {dayShown !== null
+                          ? t("home.col.dayScore")
+                          : t("home.col.score")}
                       </span>
-                      {!narrow && <span>{t("home.col.form")}</span>}
+                      {!narrow && dayShown === null && (
+                        <span>{t("home.col.form")}</span>
+                      )}
                       {regimes.map((r) => (
                         <span
                           key={r}
@@ -1114,15 +1197,17 @@ export function StandingsPage() {
                       )}
                       {!narrow && (
                         <span style={{ textAlign: "right" }}>
-                          {t("home.col.netPnl")}
+                          {dayShown !== null
+                            ? t("home.col.dayReturn")
+                            : t("home.col.netPnl")}
                         </span>
                       )}
                       <span />
                     </div>
 
                     {visibleRows.map((row) => {
-                      const byRegime = standings.tByRegime[row.id] ?? {};
-                      const flags = standings.flagsByAgent[row.id] ?? [];
+                      const byRegime = table.tByRegime[row.id] ?? {};
+                      const flags = table.flagsByAgent[row.id] ?? [];
                       const isPinned = row.id === pinned;
                       return (
                         <div
@@ -1155,8 +1240,8 @@ export function StandingsPage() {
                               textOverflow: "ellipsis",
                             }}
                             title={
-                              standings.participantOf[row.id]
-                                ? `${row.id} · ${standings.participantOf[row.id]}`
+                              table.participantOf[row.id]
+                                ? `${row.id} · ${table.participantOf[row.id]}`
                                 : row.id
                             }
                           >
@@ -1177,7 +1262,9 @@ export function StandingsPage() {
                           >
                             {formatScore(row.score)}
                           </span>
-                          {!narrow && <FormCell epochs={row.epochs} />}
+                          {!narrow && dayShown === null && (
+                            <FormCell epochs={row.epochs} />
+                          )}
                           {regimes.map((r) => {
                             const v = byRegime[r];
                             return (
@@ -1228,7 +1315,7 @@ export function StandingsPage() {
                                 }}
                               >
                                 {(
-                                  standings.txCountByAgent[row.id] ?? 0
+                                  table.txCountByAgent[row.id] ?? 0
                                 ).toLocaleString("en-US")}
                               </span>
                               <span
@@ -1236,14 +1323,14 @@ export function StandingsPage() {
                                   textAlign: "right",
                                   font: "var(--text-xs) var(--font-mono)",
                                   color:
-                                    (standings.revertCountByAgent[row.id] ??
+                                    (table.revertCountByAgent[row.id] ??
                                       0) > 0
                                       ? "var(--danger)"
                                       : "var(--text-disabled)",
                                 }}
                               >
                                 {(
-                                  standings.revertCountByAgent[row.id] ?? 0
+                                  table.revertCountByAgent[row.id] ?? 0
                                 ).toLocaleString("en-US")}
                               </span>
                             </>
@@ -1251,7 +1338,25 @@ export function StandingsPage() {
                           {/* Net PnL prices both ends at the run's final marks, so it has no value
                               "at round k" — while the cursor is mid-competition the finished number
                               is shown dimmed rather than under a round label. */}
-                          {!narrow && (
+                          {/* The day's return is the P its T was formed from, through the cursor's
+                              round like the T beside it -- so it is not dimmed. */}
+                          {!narrow && dayShown !== null && (
+                            <span
+                              style={{
+                                textAlign: "right",
+                                font: "var(--text-xs) var(--font-mono)",
+                                color:
+                                  row.epochs[0] === undefined
+                                    ? "var(--text-disabled)"
+                                    : toneColor(row.epochs[0].pnl),
+                              }}
+                            >
+                              {row.epochs[0] === undefined
+                                ? "—"
+                                : formatReturnPct(row.epochs[0].pnl)}
+                            </span>
+                          )}
+                          {!narrow && dayShown === null && (
                             <span
                               style={{
                                 textAlign: "right",
@@ -1259,12 +1364,12 @@ export function StandingsPage() {
                                 color: scrubbing
                                   ? "var(--text-disabled)"
                                   : toneColor(
-                                      standings.netPnlByAgent[row.id] ?? 0,
+                                      table.netPnlByAgent[row.id] ?? 0,
                                     ),
                               }}
                             >
                               {formatPnlUsdc(
-                                standings.netPnlByAgent[row.id] ?? 0,
+                                table.netPnlByAgent[row.id] ?? 0,
                               )}
                             </span>
                           )}

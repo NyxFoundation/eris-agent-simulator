@@ -11,11 +11,15 @@
 // hiding the later windows would not be showing less of the future, it would be misdescribing the
 // scenario.
 
+import {
+  practiceReturns,
+  type PracticeEnds,
+} from "@core/scoring/practiceReturn";
 import type { Competition } from "./competition";
 import { scenarioAgents, scenarioLabel, scenarioRunId } from "./competition";
-import { scenarioAgentP } from "./scenarioP";
+import { scenarioAgentEnds, scenarioAgentP } from "./scenarioP";
 import type { ScenarioSchedule } from "./schedule";
-import type { ScenarioRounds } from "./standings";
+import { isPracticePeriod, type ScenarioRounds } from "./standings";
 
 export interface ScenarioListRow {
   /** Unique per scenario: a matrix may repeat (regime, seed) under --repeat. */
@@ -34,9 +38,11 @@ export interface ScenarioListRow {
   roundsSoFar: number;
   /** True once the cursor has passed this scenario's last round: its world has ended. */
   ended: boolean;
-  /** Who leads it through the cursor's round, and by what P (USDC). Within one scenario the
-   * deviation score is monotone in P, so the leader by P is the leader by T. */
-  leader: { id: string; pnlUsdc: number } | null;
+  /** Who leads it through the cursor's round, and by what P. Within one scenario the deviation
+   * score is monotone in P, so the leader by P is the leader by T. `returnFrac` is set on a
+   * practice period's day, which is ranked on the return rather than on `pnlUsdc`
+   * (practiceReturn.ts): its leader is who leads on that. */
+  leader: { id: string; pnlUsdc: number; returnFrac?: number } | null;
   /** Distinct environment episode types scheduled in this world, in the order they open. */
   events: string[];
   /** No round series was collected for this scenario. */
@@ -58,6 +64,7 @@ export function buildScenarioList(
   schedules: Map<string, ScenarioSchedule>,
   throughRound: number | null,
 ): ScenarioListRow[] {
+  const practice = isPracticePeriod(competition.file);
   return competition.file.scenarios.map((s, i) => {
     const key = s.runDir ?? `#${s.s ?? i + 1}`;
     const series = rounds.get(key);
@@ -78,6 +85,7 @@ export function buildScenarioList(
     const benchmarks = new Set(series?.baselineIds ?? []);
     for (const a of agents) if (a.baseline) benchmarks.add(a.id);
     let leader: ScenarioListRow["leader"] = null;
+    const ends: Record<string, PracticeEnds> = {};
     if (series && roundsSoFar > 0) {
       for (const [id, values] of Object.entries(series.valuesByAgent)) {
         if (benchmarks.has(id)) continue;
@@ -86,6 +94,7 @@ export function buildScenarioList(
         const start = values[0];
         const now = values[upTo];
         if (start === null || now === null) continue;
+        ends[id] = { initialValueUsdc: start, finalValueUsdc: now };
         const pnlUsdc = now - start;
         if (!leader || pnlUsdc > leader.pnlUsdc) leader = { id, pnlUsdc };
       }
@@ -94,10 +103,24 @@ export function buildScenarioList(
       // final-marks net PnL, a per-run constant away from it).
       for (const agent of agents) {
         if (benchmarks.has(agent.id)) continue;
+        const e = scenarioAgentEnds(agent, undefined);
+        if (e !== undefined) ends[agent.id] = e;
         const p = scenarioAgentP(agent, undefined);
         if (p === undefined) continue;
         if (!leader || p > leader.pnlUsdc) leader = { id: agent.id, pnlUsdc: p };
       }
+    }
+    if (practice) {
+      // The benchmark never reached `ends`; the capital floor is the field's, as in the standings.
+      leader = null;
+      const { returnByAgent } = practiceReturns(ends);
+      for (const [id, r] of Object.entries(returnByAgent))
+        if (!leader || r > (leader.returnFrac as number))
+          leader = {
+            id,
+            pnlUsdc: ends[id].finalValueUsdc - ends[id].initialValueUsdc,
+            returnFrac: r,
+          };
     }
 
     const events: string[] = [];

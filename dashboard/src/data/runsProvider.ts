@@ -17,6 +17,7 @@
 //                events.jsonl (lst_block / liquity_block) and are read from there.
 
 import { scoreEpoch } from "@core/scoring/deviationScore";
+import { practiceReturns, type PracticeEnds } from "@core/scoring/practiceReturn";
 import { intervalBoundaryBlocks } from "@core/epochExtent";
 import {
   intervalBlocksOf,
@@ -26,7 +27,7 @@ import {
 import { coversWindow } from "./liveBlocks";
 import { liveAgentLog, loadLiveRun } from "./liveRun";
 import { getMode, loadMode } from "./mode";
-import { scenarioAgentP } from "./scenarioP";
+import { scenarioAgentEnds, scenarioAgentP } from "./scenarioP";
 import {
   loadAllAgentLogs,
   loadRun,
@@ -537,6 +538,19 @@ function categorize(id: string, description: string): StrategyCategory {
   return "dir";
 }
 
+/**
+ * One day of a practice period (ADR 0021 §6): a closed segment says so in its summary, a later
+ * segment still running in the header it reopened with. The first segment while it runs says
+ * neither, and needs neither: on the period's first day every agent starts from the same funding,
+ * where returns and USDC rank identically (practiceReturn.ts).
+ */
+function isPracticeSegment(run: LoadedRun): boolean {
+  if (typeof run.summary.segment === "number") return true;
+  return run.events.some(
+    (e) => e.type === "run_started_realtime" && typeof e.segment === "number",
+  );
+}
+
 function buildStandings(
   run: LoadedRun,
   intervals: RoundInterval[],
@@ -561,7 +575,13 @@ function buildStandings(
   // P for this epoch (rules §4.4.1): the summary's own figure for the whole run, or V_closed − V_0
   // while replaying. An agent the run did not place -- no V_0, a mid-segment registration -- has
   // no P and no net PnL to show, and is not in the population (issue #84 X2).
+  //
+  // A practice period's day is ranked on returns instead (practiceReturn.ts), the same T the
+  // standings average: on USDC this table disagreed with the day's own entry in the period score as
+  // soon as the agents' capital had drifted apart.
+  const practice = isPracticeSegment(run);
   const pnlByAgent: Record<string, number> = {};
+  const ends: Record<string, PracticeEnds> = {};
   const netPnl = new Map<string, number | null>();
   const drawdown = new Map<string, Array<number | null>>();
   for (const agent of agents) {
@@ -576,18 +596,27 @@ function buildStandings(
       if (start != null && now != null) {
         p = now - start;
         net = p;
+        ends[agent.id] = { initialValueUsdc: start, finalValueUsdc: now };
       } else if (closed === 0) net = start == null ? null : 0;
       else net = null;
       dd = values.slice(0, closed + 1);
     } else {
-      p = scenarioAgentP(agent, values.length >= 2 ? values : undefined);
+      const series = values.length >= 2 ? values : undefined;
+      p = scenarioAgentP(agent, series);
       if (p === undefined) net = null;
+      const e = scenarioAgentEnds(agent, series);
+      if (e !== undefined && p !== undefined) ends[agent.id] = e;
     }
     if (p !== undefined && Number.isFinite(p)) pnlByAgent[agent.id] = p;
     netPnl.set(agent.id, net);
     drawdown.set(agent.id, dd);
   }
   const benchmarkIds = agents.filter((a) => a.baseline).map((a) => a.id);
+  if (practice) {
+    const { returnByAgent } = practiceReturns(ends, benchmarkIds);
+    for (const id of Object.keys(pnlByAgent)) delete pnlByAgent[id];
+    Object.assign(pnlByAgent, returnByAgent);
+  }
   // One run is one epoch, so T over its own field is exactly the rules' figure for it (§4.4.1).
   // The benchmark is valued and shown but not in the population (§4.3): its T is null.
   const epoch = scoreEpoch({ s: 1, pnlByAgent, benchmarkIds }, 1);

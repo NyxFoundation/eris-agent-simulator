@@ -112,3 +112,34 @@ test("the manifest's participants are the roster, including agents registered mi
   assert.equal(parseManifestParticipants("{not json"), null);
   assert.equal(parseManifestParticipants(JSON.stringify({ chain: {} })), null);
 });
+
+test("a day ranked on its own has the T it adds to the period score", () => {
+  // The dashboard's by-day table scores one day as a competition of one epoch
+  // (standingsForEpoch); that is only the period's figure if T depends on its own day alone.
+  const d1 = day({ a: [100_000, 110_000], b: [100_000, 95_000], c: [100_000, 100_000] });
+  const d2 = day({ a: [110_000, 108_000], b: [95_000, 99_750], c: [100_000, 101_000] });
+  const period = scoreCompetition({
+    k: 2,
+    weighting: "equal",
+    epochs: [
+      { s: 1, pnlByAgent: d1.returnByAgent },
+      { s: 2, pnlByAgent: d2.returnByAgent },
+    ],
+  });
+  const alone = scoreCompetition({
+    k: 2,
+    weighting: "equal",
+    epochs: [{ s: 2, pnlByAgent: d2.returnByAgent }],
+  });
+  for (const id of ["a", "b", "c"]) {
+    const row = alone.agents.find((r) => r.id === id)!;
+    assert.ok(
+      Math.abs((row.scoreRaw as number) - period.epochs[1].tByAgent[id]) < 1e-9,
+    );
+  }
+  assert.deepEqual(
+    alone.agents.map((r) => r.id),
+    ["b", "c", "a"],
+    "ranked on the day's return, not on the period",
+  );
+});
