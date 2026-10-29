@@ -14,6 +14,13 @@ import {
   v0GapBeyondTolerance,
   type V0Source,
 } from "../scoring/endowmentV0.js";
+import { epochPnlFromSeries } from "../scoring/epochPnl.js";
+import { epochEndBlock } from "../epochExtent.js";
+import {
+  INTERVALS_FILENAME,
+  LEGACY_INTERVALS_FILENAME,
+} from "../intervalSeries.js";
+import { readRunStart } from "@eris/sdk/runStart.js";
 
 export type AgentSummary = {
   id: string;
@@ -210,6 +217,207 @@ export function scoresFromSummary(
     };
   });
 }
+
+// ---- scoring an epoch whose run wrote no summary.json ----
+//
+// A missing summary.json made the epoch invalid for everyone (standings.ts), whatever the reason the
+// summary was not written. One reason was agent-made: a post-bell read that one agent's on-chain
+// state could make throw (realtime/postRunValues.ts has the measured LST-vault case), so an agent
+// that crossed the threshold only in epochs it was losing could cancel exactly those. The read is
+// guarded now, but the rule it exposed stands on its own: P never came from the summary's post-run
+// reads. It is the two ends of the boundary series the live scorer appends to intervals.jsonl as it
+// goes, V_0 already put through the endowment rule of the run's resetUnit (the line *is* the value
+// the summary's pnlUsdc is computed from). So when that series reaches the epoch's end block, P is
+// read off it -- the same epochPnlFromSeries the coordinator calls -- and the epoch stays in S.
+//
+// Only then. A series that stops short of the end block is an epoch that did not finish, and the
+// last boundary that happened to be written is not V_K: that stays the exclusion it always was
+// (§4.4.2's remedy is re-execution, the operator's call), as does a run with no series at all.
+
+// The roster's own facts, which summary.json would have carried and intervals.jsonl does not.
+export type RosterIdentity = {
+  id: string;
+  baseline?: boolean;
+  participant?: string;
+};
+
+type IntervalLine = {
+  blockNumber: number;
+  values: Record<string, number | null | undefined>;
+  v0SourceByAgent?: Record<string, V0Source>;
+  v0MeasuredByAgent?: Record<string, number | null>;
+  v0EndowmentByAgent?: Record<string, number>;
+};
+
+function readIntervalLines(runDir: string): IntervalLine[] | undefined {
+  const path = [INTERVALS_FILENAME, LEGACY_INTERVALS_FILENAME]
+    .map((name) => join(runDir, name))
+    .find((p) => existsSync(p));
+  if (!path) return undefined;
+  const seen = new Set<number>();
+  const lines: IntervalLine[] = [];
+  for (const raw of readFileSync(path, "utf8").split("\n")) {
+    if (raw.trim() === "") continue;
+    let parsed: Partial<IntervalLine>;
+    try {
+      parsed = JSON.parse(raw) as Partial<IntervalLine>;
+    } catch {
+      // A process killed mid-append leaves a torn last line. Skipping it can only shorten the
+      // series, and a series short of the end block is refused below.
+      continue;
+    }
+    if (
+      typeof parsed.blockNumber !== "number" ||
+      !parsed.values ||
+      typeof parsed.values !== "object"
+    )
+      continue;
+    // The scorer reads each boundary once; a repeat would shift every later index.
+    if (seen.has(parsed.blockNumber)) continue;
+    seen.add(parsed.blockNumber);
+    lines.push(parsed as IntervalLine);
+  }
+  return lines;
+}
+
+// Reasons the coordinator recorded for an agent process that went away (the summary's
+// processExitedEarly), so the epoch-level "uncontested" flag still reads the same facts.
+function exitedEarlyFromEvents(runDir: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const path = join(runDir, "events.jsonl");
+  if (!existsSync(path)) return out;
+  for (const raw of readFileSync(path, "utf8").split("\n")) {
+    if (!raw.includes('"agent_process_exited"')) continue;
+    try {
+      const e = JSON.parse(raw) as {
+        type?: string;
+        agentId?: unknown;
+        reason?: unknown;
+      };
+      if (e.type !== "agent_process_exited" || typeof e.agentId !== "string")
+        continue;
+      if (!out.has(e.agentId))
+        out.set(e.agentId, typeof e.reason === "string" ? e.reason : "exited");
+    } catch {
+      // torn line: see readIntervalLines
+    }
+  }
+  return out;
+}
+
+export type IntervalsFallback =
+  | { ok: true; scores: AgentScore[]; endBlock: number }
+  | { ok: false; reason: string };
+
+export function scoresFromIntervals(
+  runDir: string,
+  roster: readonly RosterIdentity[],
+  // Why there is no summary, for the flag the operator reads.
+  missingBecause: string,
+): IntervalsFallback {
+  const start = readRunStart(runDir);
+  if (!start)
+    return { ok: false, reason: "no run-start.json (the epoch never started)" };
+  const endBlock = epochEndBlock(start.runStartBlock, start.runBlocks);
+  if (endBlock === null)
+    return {
+      ok: false,
+      reason: "the run has no block budget, so there is no end block to check the series against",
+    };
+  const lines = readIntervalLines(runDir);
+  if (!lines || lines.length < 2)
+    return { ok: false, reason: "no interval series in the run directory" };
+  const last = lines[lines.length - 1];
+  if (last.blockNumber !== endBlock)
+    return {
+      ok: false,
+      reason:
+        `the interval series ends at block ${last.blockNumber}, the epoch at ${endBlock}: ` +
+        "the epoch did not finish, so there is no V_K",
+    };
+
+  const first = lines[0];
+  // The coordinator's v0FieldsFor, off the file: the floor's own record when the first boundary is
+  // the run's first block (only that line carries v0SourceByAgent), a measured V_0 otherwise.
+  const floored = first.blockNumber === start.runStartBlock;
+  const exited = exitedEarlyFromEvents(runDir);
+  const ids: readonly RosterIdentity[] =
+    roster.length > 0
+      ? roster
+      : [...new Set(lines.flatMap((l) => Object.keys(l.values)))].map((id) => ({
+          id,
+        }));
+  const agents: AgentSummary[] = ids.map((a) => {
+    const values = lines.map((l) => {
+      const v = l.values[a.id];
+      return typeof v === "number" ? v : null;
+    });
+    const pnl = epochPnlFromSeries(values);
+    const v0 = values[0];
+    const source = floored ? first.v0SourceByAgent?.[a.id] : undefined;
+    const measured = floored ? first.v0MeasuredByAgent?.[a.id] : undefined;
+    const endowment = floored ? first.v0EndowmentByAgent?.[a.id] : undefined;
+    return {
+      id: a.id,
+      ...(a.baseline !== undefined ? { baseline: a.baseline } : {}),
+      ...(a.participant !== undefined ? { participant: a.participant } : {}),
+      ...(pnl ? { pnlUsdc: pnl.pnlUsdc } : {}),
+      ...(typeof v0 === "number"
+        ? {
+            v0Source: source ?? "measured",
+            v0Usdc: v0,
+            ...(source !== undefined
+              ? {
+                  ...(typeof measured === "number"
+                    ? { v0MeasuredUsdc: measured }
+                    : {}),
+                  ...(typeof endowment === "number"
+                    ? { v0EndowmentUsdc: endowment }
+                    : {}),
+                }
+              : { v0MeasuredUsdc: v0 }),
+          }
+        : {}),
+      ...(exited.has(a.id) ? { processExitedEarly: exited.get(a.id) } : {}),
+    };
+  });
+  const scores = scoresFromSummary(
+    {
+      runDir,
+      agents,
+      // Not known without the summary: the fee and gas checks run after the bell. Said in the flag
+      // below rather than reported as "no violations".
+      violations: [],
+      ...(floored
+        ? {}
+        : {
+            v0FloorSkipped: {
+              boundaryBlock: first.blockNumber,
+              runStartBlock: start.runStartBlock,
+            },
+          }),
+    },
+    roster.map((a) => a.id),
+  );
+  const note =
+    `scored from intervals.jsonl: summary.json was not written (${missingBecause}). P is the same ` +
+    "two boundaries the summary reads; netPnlUsdc, alpha and the post-run rule checks (fee cap, gas " +
+    "budget, unlogged txs, roster transfers) did not run for this epoch";
+  return {
+    ok: true,
+    endBlock,
+    scores: scores.map((s) => ({
+      ...s,
+      ...(s.pnlUsdc !== undefined ? { pnlSource: "intervals-fallback" as const } : {}),
+      flags: [...(s.flags ?? []), note],
+    })),
+  };
+}
+
+// The epoch-level line for matrix.json when its P came from the fallback.
+export const INTERVALS_FALLBACK_EPOCH_FLAG =
+  "scored from intervals.jsonl (no summary.json): P read off the live boundary series, which " +
+  "reached the end block; the post-run checks did not run";
 
 export const EXITED_EARLY_FLAG = /^process exited early:/;
 

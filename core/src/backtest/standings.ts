@@ -16,7 +16,10 @@ import {
   type EpochResult,
 } from "../scoring/deviationScore.js";
 
-export type PnlSource = "epoch-boundaries" | "endpoints";
+// "intervals-fallback": the same two boundaries, read off the run's intervals.jsonl because the run
+// wrote no summary.json (scenarioScores.ts scoresFromIntervals). Same number; said apart so an
+// operator sees the epoch's post-run checks did not run.
+export type PnlSource = "epoch-boundaries" | "endpoints" | "intervals-fallback";
 
 export type AgentScore = {
   id: string;

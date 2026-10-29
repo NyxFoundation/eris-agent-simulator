@@ -561,6 +561,18 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     `matrix.json` / `standings.json` を**同じディレクトリに**回次順で書き直す（`createdAt` は初回のまま、`resumedAt` を追加）。
     `scenarioSet` / `k` / `resetUnit` / `repeat` が違えば fail-fast、同じパスで中身が変わったセットも回次単位で拒否
     （`core/src/backtest/resume.ts`）。summary.json → AgentScore の変換は `core/src/backtest/scenarioScores.ts` に分離
+  - **summary.json が無くてもエポックを全員から外さない**（境界系列が終了ブロックまで届いていれば）。以前は鐘の後の
+    netPnl ループ（各アダプタの live `valueUsdc`）が例外を投げると summary を書かずに落ち、そのエポックは `invalid` で
+    全員の S から消えた。**agent が意図的に起こせた**: LST vault へ `requestWithdraw(1 wei)` を ~3,250 本（各 ~25 万 gas、
+    tip 0 で無料）積むと `accountSummaryAt` が 30M の block gas limit を超えて revert する（anvil 1.5.1 実測）。閾値の手前に
+    居て負けているエポックでだけ越えれば、負けたエポックだけを消せた。今は 2 層: (1) 鐘から `logger.summary` までの読取
+    （財布の `getBalances` と各アダプタ）は失敗しても投げず、その分を netPnl で 0 と数えて agent レコードの
+    `unpricedHoldings`（`read-failed`、source `summary-value:<adapter>`）と `summary_value_read_failed` イベントに出す
+    （`core/src/realtime/postRunValues.ts`）。P は live の境界系列なのでこの読取に依存しない。(2) run が投げた・summary が
+    無いとき、backtest は run ディレクトリ（例外に `runDir` を載せて運ぶ）の `intervals.jsonl` から P を読み直す
+    （`scoresFromIntervals`。`run-start.json` の終了ブロックに最後の境界が一致するときだけ。値は V_0 規則適用済みで
+    `epochPnlFromSeries` も同じなので summary と同じ数）。そのエポックは `pnlSource: "intervals-fallback"`・agent と
+    エポックの `flags` に出る（netPnl・alpha・事後の規則検査は走っていない）。系列が終了ブロックに届いていなければ従来どおり除外
   - **agent にはエポック番号を渡す**（issue #167）。env `ERIS_EPOCH_INDEX`（プラン上の s）/ `ERIS_EPOCH_COUNT`（k）と
     `obs.epoch = {index, count}`（`sdk/src/epoch.ts`）。重み w_s が s で変わるのに、毎エポック同じ初期状態から再起動される
     agent には今が何本目か知る手段が無かった。s は**この起動で何本目かではなくプランの値**なので `--resume`・再実行・
