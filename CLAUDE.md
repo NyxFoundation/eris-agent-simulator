@@ -539,7 +539,12 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   `docker inspect` し `agent_network_measured` を記録、自分の `ag-<id>` に居ない / 他ネットワークにも居る /
   `ERIS_AGENT_INTERNAL=1` 宣言なのに internal でない agent は**止める**（`agent_network_mismatch`。
   `core/src/realtime/agentNetwork.ts`）。`infra/devnet/docker-compose.sim.yml` に `ERIS_AGENT_INTERNAL=1` と
-  `ERIS_INFERENCE_HUB` / `ERIS_INFERENCE_BASE_URL` を追加（repo 唯一の live 設定なのに egress が開いていた）
+  `ERIS_INFERENCE_HUB` / `ERIS_INFERENCE_BASE_URL` を追加（repo 唯一の live 設定なのに egress が開いていた）。
+  **`--internal` だけではホストに届く**（2026-10-29 実測、Docker 29.8.1）: ブリッジにホストのアドレスが残り、
+  0.0.0.0 のサービスには普通の connect で、docker0 上の anvil（チートコード有効）には CAP_NET_RAW の自前 TCP
+  ハンドシェイクで `eth_chainId` が返った。internal な `ag-<id>` は `gateway_mode_ipv4=isolated`（ホストのアドレス
+  無し）で作って読み戻し、守られない engine は exit 3。全コンテナ `--cap-drop NET_RAW`。coordinator は両方を
+  `docker inspect` で読み、外れたコンテナを止める（`host-reachable` / `raw-socket`。`infra/docker-agent/ISOLATION.md`）
 
 ## 実行コマンド
 

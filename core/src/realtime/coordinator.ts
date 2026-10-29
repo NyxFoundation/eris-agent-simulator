@@ -3135,8 +3135,9 @@ export async function runRealtimeSimulation(
           kind: m.kind,
           detail: m.detail,
           note:
-            "the container is not on the network its launch declared; it is stopped rather than " +
-            "run where it can reach what the posture says it cannot (infra/docker-agent/ISOLATION.md)",
+            "the container is not isolated the way its launch declared (its network, or the host " +
+            "address or raw sockets that reach past it); it is stopped rather than run where it can " +
+            "reach what the posture says it cannot (infra/docker-agent/ISOLATION.md)",
         });
         console.error(`[agent] ${m.id} ${reason}`);
         // Through stopAgent, so the container goes too: a container on the wrong network that is

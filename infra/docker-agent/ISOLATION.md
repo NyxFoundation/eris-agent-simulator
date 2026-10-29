@@ -72,6 +72,35 @@ anvil; the **per-agent-network approach is preferred because it needs no firewal
   the periodic tick for late ones), records `agent_network_measured`, and **stops** a container that
   is not on its own network, is on a second one, or whose network has a route out while
   `ERIS_AGENT_INTERNAL=1` was declared (`agent_network_mismatch`; `summary.json` carries the reason).
+  Under `ERIS_AGENT_INTERNAL=1` it also stops one whose network gives the host an address
+  (`host-reachable`) or that kept CAP_NET_RAW (`raw-socket`) -- the next section.
+
+## `--internal` does not keep the host out (measured 2026-10-29)
+
+An `--internal` network has no route out, but the host still holds an address on its bridge, and
+Linux accepts a packet for any of the host's addresses on any interface. Measured on Docker Engine
+29.8.1 with the agent base image, from a container on an `--internal` network:
+
+| from the agent container | before | after |
+|---|---|---|
+| a host service on `0.0.0.0`, plain `connect()` to the bridge address | **answered** | no host address on the network |
+| a service on docker0's address (where the live week's anvil listens, `anvil_*` / `evm_*` open), plain `connect()` | `ENETUNREACH` | `ENETUNREACH` |
+| the same service, a TCP handshake built in userspace over an `AF_PACKET` socket | **answered `eth_chainId`** | socket refused (no CAP_NET_RAW); with CAP_NET_RAW kept, no SYN-ACK on the isolated network |
+| the hub container, by name | reachable | reachable |
+
+Two independent fixes, both in `run-agent.sh` and both read back:
+
+- an internal `ag-<id>` is created with `-o com.docker.network.bridge.gateway_mode_ipv4=isolated`
+  (no host address on the bridge). The script reads the gateway mode and the IPAM gateway back and
+  exits 3 if either says the host is on the network -- an engine that ignores the option is refused,
+  not run with the host in reach. An `ag-<id>` left by an earlier run without the mode is recreated.
+- every container runs with `--cap-drop NET_RAW` (both modes; nothing in the runtime uses raw
+  sockets -- node's fetch, Python's urllib and tsx were checked under the flags).
+
+The coordinator's measurement (`agentNetwork.ts`) reads both back from docker (`HostConfig.CapDrop`
+/ `CapAdd` / `Privileged`, the network's gateway mode and IPAM gateway) and stops a container that
+does not match. Still open, as defence in depth: a host firewall rule letting only the gateway reach
+anvil's port, and a non-root `USER` in the agent image.
 - `reap.sh`: after a run, removes `ag-*` networks that have no agent container left (disconnects anvil,
   removes the network). Idempotent.
 

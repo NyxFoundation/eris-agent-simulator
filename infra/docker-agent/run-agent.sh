@@ -63,28 +63,45 @@ NAME="eris-${ERIS_AGENT_ID:?ERIS_AGENT_ID is required (set by the coordinator)}"
 # not what this run asks for; a create that fails is an exit, and the coordinator records it as
 # an early exit with this script's stderr. The coordinator then inspects the running container
 # (core/src/realtime/agentNetwork.ts) and stops one that is not where its posture says.
+#
+# The host is not behind --internal (measured 2026-10-29, Docker Engine 29.8.1). An internal network
+# still puts the host's address on its bridge, and the host accepts a packet for any of its addresses
+# arriving there: a service on 0.0.0.0 answered a plain connect() to the bridge address, and anvil --
+# which the live week binds to docker0's address with anvil_* / evm_* open -- answered eth_chainId to
+# a TCP handshake the container built itself over an AF_PACKET socket, past a kernel that had said
+# "Network is unreachable". So an internal network is created in docker's `isolated` gateway mode (no
+# host address on the bridge: the same probe got no SYN-ACK, and the hubs, being containers on the
+# network, stay reachable by name), and read back like the Internal flag. An engine that does not
+# honour the mode is an exit, not a fallback. CAP_NET_RAW is dropped below as well.
 if [ "${ERIS_AGENT_ISOLATE:-0}" = "1" ]; then
   HUB_CT="${ERIS_AGENT_HUB:-ascon-rpc-gateway-live}"
   ISONET="ag-${ERIS_AGENT_ID}"
   if [ "${ERIS_AGENT_INTERNAL:-0}" = "1" ]; then WANT_INTERNAL=true; else WANT_INTERNAL=false; fi
+  if [ "$WANT_INTERNAL" = true ]; then WANT_GW_MODE=isolated; else WANT_GW_MODE=""; fi
   net_internal() { docker network inspect -f '{{.Internal}}' "$ISONET" 2>/dev/null; }
+  net_gw_mode() { docker network inspect -f '{{index .Options "com.docker.network.bridge.gateway_mode_ipv4"}}' "$ISONET" 2>/dev/null; }
+  # The host's address on the network's bridge, if it has one (the IPAM gateway).
+  net_host_addr() { docker network inspect -f '{{json .IPAM.Config}}' "$ISONET" 2>/dev/null | grep -o '"Gateway":"[^"]*"' | head -1 | sed 's/^"Gateway":"\(.*\)"$/\1/' || true; }
   net_members() { docker network inspect -f '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}' "$ISONET" 2>/dev/null; }
   create_net() {
     local flags=() out
-    [ "$WANT_INTERNAL" = true ] && flags+=( --internal )
-    if ! out=$(docker network create "${flags[@]}" "$ISONET" 2>&1); then
+    [ "$WANT_INTERNAL" = true ] && flags+=( --internal -o "com.docker.network.bridge.gateway_mode_ipv4=$WANT_GW_MODE" )
+    # ${flags[@]+...}: macOS's bash 3.2 calls an empty array unbound under `set -u`.
+    if ! out=$(docker network create ${flags[@]+"${flags[@]}"} "$ISONET" 2>&1); then
       echo "run-agent: could not create network $ISONET (internal=$WANT_INTERNAL): $out" >&2
       echo "run-agent: if this is 'could not find an available, non-overlapping IPv4 address pool', widen default-address-pools (ISOLATION.md)" >&2
       exit 3
     fi
   }
   have=$(net_internal) || have=""
+  have_gw=$(net_gw_mode) || have_gw=""
   if [ -z "$have" ]; then
     create_net
-  elif [ "$have" != "$WANT_INTERNAL" ]; then
-    # Left by a run with the other setting. Detach whatever is still on it (the hub, a survivor
-    # reap.sh has not swept) and recreate it as asked, rather than run this agent on it.
-    echo "run-agent: network $ISONET exists with internal=$have, this run wants $WANT_INTERNAL; recreating" >&2
+  elif [ "$have" != "$WANT_INTERNAL" ] || [ "$have_gw" != "$WANT_GW_MODE" ]; then
+    # Left by a run with the other setting (or by one from before the gateway mode). Detach whatever
+    # is still on it (the hub, a survivor reap.sh has not swept) and recreate it as asked, rather than
+    # run this agent on it.
+    echo "run-agent: network $ISONET exists with internal=$have gateway_mode=${have_gw:-default}, this run wants internal=$WANT_INTERNAL gateway_mode=${WANT_GW_MODE:-default}; recreating" >&2
     while IFS= read -r member; do
       [ -n "$member" ] || continue
       docker network disconnect -f "$ISONET" "$member" >/dev/null 2>&1 || true
@@ -101,6 +118,14 @@ if [ "${ERIS_AGENT_ISOLATE:-0}" = "1" ]; then
   if [ "$have" != "$WANT_INTERNAL" ]; then
     echo "run-agent: network $ISONET reads internal=${have:-missing} after setup, wanted $WANT_INTERNAL" >&2
     exit 3
+  fi
+  if [ "$WANT_INTERNAL" = true ]; then
+    have_gw=$(net_gw_mode) || have_gw=""
+    host_addr=$(net_host_addr)
+    if [ "$have_gw" != "$WANT_GW_MODE" ] || [ -n "$host_addr" ]; then
+      echo "run-agent: network $ISONET reads gateway_mode=${have_gw:-default}${host_addr:+ with host address $host_addr} after setup, wanted $WANT_GW_MODE and no host address: the host's services (anvil on docker0 included) would be reachable from the agent. This docker engine may not support gateway_mode_ipv4=isolated" >&2
+      exit 3
+    fi
   fi
   # The hub(s) multi-home into every agent network. `connect` fails when already connected (fine)
   # and when the hub container is not running (not fine): the agent would start with no way to the
@@ -121,8 +146,11 @@ fi
 # Hardening (verified not to break the agent): fork-bomb (pids), fd cap (ulimit), no privilege
 # escalation, read-only rootfs + a size-capped tmpfs /tmp for scratch. NOTE: --cap-drop=ALL was
 # tried and SILENTLY breaks the agent (reads/tx fail -> all noop, container looks healthy), so it
-# is intentionally omitted; a targeted cap-drop is a follow-up. Egress is still open (host net) --
-# agent<->agent isolation is a separate network stage.
+# is intentionally omitted. NET_RAW is the one cap dropped: with it a container builds its own
+# packets (AF_PACKET) and reaches addresses it has no route to -- measured 2026-10-29, a TCP
+# handshake from an --internal network to a service on docker0's address completed with it and the
+# socket was refused without it (see the isolation note above). Nothing the runtime does uses raw
+# sockets. Egress is still open (host net) -- agent<->agent isolation is a separate network stage.
 # `--label eris.role=agent` is what the sweepers match on. Matching on the `eris-` name prefix looked
 # equivalent and is not: `eris-explorer-*` is the local Blockscout stack, so a bench reset on a box
 # that had the explorer running tore it down as collateral.
@@ -151,7 +179,7 @@ record_image() {
 CAPS=( --rm --init --network "${ERIS_AGENT_NET:-host}" --name "$NAME" --label eris.role=agent
   --memory="$MEM" --memory-swap="$MEM" --cpus="$CPUS"
   --pids-limit="${ERIS_DOCKER_PIDS:-256}" --ulimit nofile=2048:2048 --security-opt=no-new-privileges
-  --read-only --tmpfs /tmp:rw,size=512m,mode=1777 )
+  --cap-drop NET_RAW --read-only --tmpfs /tmp:rw,size=512m,mode=1777 )
 
 # Env forwarded by name. Two are silent if lost under command-override:
 #   ERIS_AGENT_DIR    -- command-override skips the directory convention; set it in the roster env:.
