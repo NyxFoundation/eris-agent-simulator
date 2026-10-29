@@ -293,6 +293,11 @@ services:
       # Change it together with the config: a gateway at 5 gwei on an uncapped chain refuses bids
       # the rules allow.
       - RPC_MAX_PRIORITY_FEE_WEI=0
+      # The four role keys' addresses (admin, keeper, setup, deployer): their pending nonce is
+      # answered as of "latest", because the deployer's named the block a gap opened. Required, so a
+      # gateway brought up without it does not run open: `npx tsx scripts/liveWeek.ts sealed-senders`
+      # with the practice period's role keys in the environment prints the value.
+      - RPC_PENDING_SEALED_SENDERS=${ASCON_PENDING_SEALED_SENDERS:?set ASCON_PENDING_SEALED_SENDERS in infra/monitoring/.env}
     volumes:
       - ../rpc-gateway:/app:ro
       # The DIRECTORY, not the file. A single-file bind mount pins the inode it was created with,

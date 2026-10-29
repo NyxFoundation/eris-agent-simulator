@@ -158,3 +158,20 @@ test("voidEpoch drops a completed epoch's result so --resume re-runs it, keeping
   assert.throws(() => voidEpoch(matrix, 1, " "), /needs a reason/);
   assert.throws(() => voidEpoch(JSON.stringify({ schema: 1 }), 1, "x"), /schema-2/);
 });
+
+test("sealed-senders lists the four role keys' addresses, and refuses a missing one", async () => {
+  const { generatePrivateKey, privateKeyToAccount } = await import("viem/accounts");
+  const { sealedSenders } = await import("../scripts/liveWeek.js");
+  const env = {
+    ADMIN_PRIVATE_KEY: generatePrivateKey(),
+    KEEPER_PRIVATE_KEY: generatePrivateKey(),
+    SETUP_PRIVATE_KEY: generatePrivateKey(),
+    DEPLOYER_PRIVATE_KEY: generatePrivateKey(),
+  };
+  const listed = sealedSenders(env).split(",");
+  assert.deepEqual(
+    new Set(listed),
+    new Set(Object.values(env).map((k) => privateKeyToAccount(k).address.toLowerCase())),
+  );
+  assert.throws(() => sealedSenders({ ...env, DEPLOYER_PRIVATE_KEY: "" }), /DEPLOYER_PRIVATE_KEY/);
+});

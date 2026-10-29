@@ -117,6 +117,55 @@ test(
 // gas limit, so such a transaction passed it.
 
 const GWEI = 1_000_000_000n;
+// The deployer's pending nonce named the moment a price gap opened (it sends the liquidity pull in
+// that block) and, in cdp-incident, the direction. Listed environment signers are answered as of
+// "latest"; every other address keeps the exemption it needs to allocate a nonce.
+test(
+  "gateway answers the environment's signers' pending nonce as of latest, and nobody else's",
+  { timeout: 20_000 },
+  async (t) => {
+    const upstream = await startAnvil(t);
+    const accounts = (await rpc(upstream, "eth_accounts")).body
+      .result as string[];
+    const [environment, participant] = accounts;
+    const gateway = await startGateway(t, upstream, {
+      // Mixed case and a stray space: the list is matched case-insensitively.
+      RPC_PENDING_SEALED_SENDERS: ` ${environment.toUpperCase().replace("0X", "0x")}`,
+    });
+    for (const from of [environment, participant]) {
+      const sent = await rpc(upstream, "eth_sendTransaction", [
+        { from, to: accounts[2], value: "0x1", gas: "0x5208" },
+      ]);
+      assert.equal(typeof sent.body.result, "string");
+    }
+    assert.equal((await rpc(upstream, "eth_blockNumber")).body.result, "0x0");
+    const count = async (address: string, tag: string) =>
+      (await rpc(gateway, "eth_getTransactionCount", [address, tag])).body
+        .result;
+    assert.equal(await count(environment, "pending"), "0x0");
+    assert.equal(await count(environment, "PENDING"), "0x0");
+    assert.equal(await count(participant, "pending"), "0x1");
+    assert.equal(await count(participant, "latest"), "0x0");
+
+    // A batch is rewritten member by member.
+    const batch = await fetch(gateway, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify([
+        { jsonrpc: "2.0", id: 1, method: "eth_getTransactionCount", params: [environment, "pending"] },
+        { jsonrpc: "2.0", id: 2, method: "eth_getTransactionCount", params: [participant, "pending"] },
+      ]),
+    });
+    const replies = (await batch.json()) as { id: number; result: string }[];
+    const byId = new Map(replies.map((r) => [r.id, r.result]));
+    assert.equal(byId.get(1), "0x0");
+    assert.equal(byId.get(2), "0x1");
+
+    const metrics = await (await fetch(`${gateway}/metrics`)).text();
+    assert.match(metrics, /rpc_pending_sender_sealed_total\{[^}]*\} 3/);
+  },
+);
+
 const KEY =
   "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
 
