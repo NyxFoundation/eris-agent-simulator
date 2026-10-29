@@ -171,3 +171,24 @@ test("every official regime funds the same environment wallets with the same amo
     for (const seed of [101, 102, 103, 104, 105, 7_001, 7_002, 7_003])
       assert.deepEqual(plan(regime, seed), reference, `${regime}#${seed} sets up a different world`);
 });
+
+test("every official regime runs the same background flow on the same walk", () => {
+  // The background flow is visible from the first blocks: its arrival rate and size distribution
+  // are what an agent sees in every venue's swaps. issue #79 recalibrated it in eleven official
+  // regimes and missed `launch`, which kept twice the arrivals (0.9 vs 0.45 per block per base) and
+  // the old size sigma and clamp -- a regime readable within ~20 blocks, and easier to arbitrage.
+  // Held on the resolved config: a regime that leaves a key unset gets the sdk default, so the
+  // YAML text alone does not say what runs (depeg and depeg-persist omit the GMX / Aave sigmas).
+  const calibration = (regime: string) => {
+    const config = load(regime) as unknown as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(config)
+        .filter((key) => /flow/i.test(key) || key === "informedArbFeeBps" || key === "ou")
+        .map((key) => [key, config[key]]),
+    );
+  };
+  const reference = calibration(OFFICIAL[0]);
+  assert.ok("uninformedFlowArrivalRate" in reference && "ou" in reference);
+  for (const regime of OFFICIAL)
+    assert.deepEqual(calibration(regime), reference, `${regime} calibrates flow or the walk differently`);
+});
