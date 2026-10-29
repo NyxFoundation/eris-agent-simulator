@@ -10,6 +10,7 @@
  *   tsx scripts/liveWeek.ts pools <daemon.json>                     networks docker's address pools yield
  *   tsx scripts/liveWeek.ts restamp <plan> <start ISO> <minutes> <out>   rehearsal only: re-time a plan
  *   tsx scripts/liveWeek.ts void <matrix dir> <s> <reason>         mark a completed epoch for re-execution
+ *   tsx scripts/liveWeek.ts sealed-senders                          the role keys' addresses (env), for the gateway
  *
  * The fingerprint is the runner's own (core/src/backtest/resume.ts rosterFingerprint over the
  * roster's `agents`, parsed the way `backtest --agents` parses it), so the value printed on the night
@@ -20,6 +21,8 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { rosterFingerprint } from "../core/src/backtest/resume.js";
+import { environmentSignerOwners } from "../core/src/realtime/environmentSigners.js";
+import type { RoleKeys } from "../core/src/realtime/roleKeyGuard.js";
 
 /** The baseline every live-week field carries (excluded from the field's mean and spread). */
 export const BASELINE_ID = "noop";
@@ -206,6 +209,28 @@ export function voidEpoch(
   return `${JSON.stringify(m, null, 2)}\n`;
 }
 
+/**
+ * The addresses whose pending nonce the gateway answers as of "latest" (RPC_PENDING_SEALED_SENDERS):
+ * the four role keys the week runs with. The deployer sends the liquidity pull in the block a gap
+ * opens, so its pending nonce named the moment one block early. All four are required: a key left
+ * out would fall back to a default inside the coordinator and leave the real signer unlisted.
+ */
+export function sealedSenders(env: NodeJS.ProcessEnv): string {
+  const names = {
+    admin: "ADMIN_PRIVATE_KEY",
+    keeper: "KEEPER_PRIVATE_KEY",
+    setup: "SETUP_PRIVATE_KEY",
+    deployer: "DEPLOYER_PRIVATE_KEY",
+  } as const;
+  const keys = {} as RoleKeys;
+  for (const [role, name] of Object.entries(names)) {
+    const v = env[name]?.trim();
+    if (!v || !/^0x[0-9a-fA-F]{64}$/.test(v)) throw new Error(`${name} is not set to a private key`);
+    keys[role as keyof RoleKeys] = v as RoleKeys[keyof RoleKeys];
+  }
+  return [...environmentSignerOwners(keys).keys()].join(",");
+}
+
 function main(argv: string[]): void {
   const [cmd, ...a] = argv;
   const read = (p: string | undefined): string => {
@@ -252,9 +277,12 @@ function main(argv: string[]): void {
       console.log(`s=${sRaw} voided; the previous matrix.json is ${backup}`);
       return;
     }
+    case "sealed-senders":
+      console.log(sealedSenders(process.env));
+      return;
     default:
       throw new Error(
-        "usage: liveWeek.ts field|fingerprint|images|keys-missing|pools|restamp|void ...",
+        "usage: liveWeek.ts field|fingerprint|images|keys-missing|pools|restamp|void|sealed-senders ...",
       );
   }
 }

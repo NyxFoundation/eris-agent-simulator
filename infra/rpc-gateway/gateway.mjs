@@ -196,6 +196,31 @@ function defaultBlockTag(c) {
   c.params[i] = "latest";
   return true;
 }
+// The exemption above answers for any address, so it also told everyone when the environment had
+// something unmined: the deployer sends the liquidity pull (and in cdp-incident the eUSD sale) in the
+// block a price gap opens, so its pending nonce jumping 3 or 4 named the moment -- and for
+// cdp-incident the direction -- one block before the price moved. For the environment's own signers
+// the pending count is answered as of "latest". Rewritten, not refused, like the tag above: a client
+// asking about an address it does not own has no nonce to allocate, and refusing would only tell it
+// which addresses are on the list (they are public anyway: every venue names its admin).
+// RPC_PENDING_SEALED_SENDERS: comma-separated addresses, case-insensitive.
+const PENDING_SEALED_SENDERS = new Set(
+  (process.env.RPC_PENDING_SEALED_SENDERS ?? "")
+    .split(",").map((a) => a.trim().toLowerCase()).filter(Boolean),
+);
+for (const a of PENDING_SEALED_SENDERS) {
+  if (!/^0x[0-9a-f]{40}$/.test(a)) throw new Error(`RPC_PENDING_SEALED_SENDERS: not an address: ${a}`);
+}
+let pendingSenderSealed = 0;
+function sealSenderPending(c) {
+  if (c?.method !== "eth_getTransactionCount" || !Array.isArray(c.params)) return false;
+  const [address, tag] = c.params;
+  if (typeof address !== "string" || !PENDING_SEALED_SENDERS.has(address.toLowerCase())) return false;
+  if (typeof tag !== "string" || !isPending(tag)) return false;
+  c.params[1] = "latest";
+  pendingSenderSealed++;
+  return true;
+}
 // Every method that submits a signed transaction. The gas cap and the fee rule read all of them, so a
 // variant admitted later (or through RPC_METHOD_ALLOW) cannot skip both checks.
 const RAW_SEND_METHODS = new Set(["eth_sendRawTransaction", "eth_sendRawTransactionSync"]);
@@ -443,6 +468,7 @@ function metricsText() {
   o += `# TYPE rpc_body_denied_total counter\nrpc_body_denied_total{${L}} ${bodyDenied}\n`;
   o += `# TYPE rpc_pending_sealed_total counter\nrpc_pending_sealed_total{${L}} ${pendingSealed}\n`;
   o += `# TYPE rpc_call_gas_capped_total counter\nrpc_call_gas_capped_total{${L}} ${callGasCapped}\n`;
+  o += `# TYPE rpc_pending_sender_sealed_total counter\nrpc_pending_sender_sealed_total{${L}} ${pendingSenderSealed}\n`;
   o += `# TYPE rpc_upstream_timeout_total counter\nrpc_upstream_timeout_total{${L}} ${upstreamTimeouts}\n`;
   o += `# TYPE rpc_in_flight_denied_total counter\nrpc_in_flight_denied_total{${L}} ${inFlightDenied}\n`;
   o += `# TYPE rpc_dup_id_denied_total counter\nrpc_dup_id_denied_total{${L}} ${dupIdDenied}\n`;
@@ -578,7 +604,8 @@ function handle(req, res, chunks) {
     }
     // An omitted block parameter that the node would read as pending becomes "latest" (above).
     // Re-serialized only when something changed, so every other body is forwarded byte for byte.
-    if (calls.map(defaultBlockTag).some(Boolean)) bodyBuf = Buffer.from(JSON.stringify(parsed));
+    const rewritten = calls.map((c) => [defaultBlockTag(c), sealSenderPending(c)].some(Boolean));
+    if (rewritten.some(Boolean)) bodyBuf = Buffer.from(JSON.stringify(parsed));
   }
 
   // a read by hash sharing its id within a batch -> refuse; the seal could not tell its reply apart

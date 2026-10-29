@@ -138,6 +138,8 @@ for ct in "$GATEWAY_CT" "$PROXY_CT"; do
   [ -z "$proj" ] || die "$ct belongs to the compose project '$proj' (the practice stack): stop it there first (cutover.sh preflight)"
 done
 docker network inspect "$CHAIN_NET" >/dev/null 2>&1 || docker network create "$CHAIN_NET" >/dev/null
+# The role keys' pending nonce is answered as of "latest" (the deployer's would name a gap's block).
+SEALED=$(node --import tsx scripts/liveWeek.ts sealed-senders) || die "cannot list the role keys' addresses for the gateway (live-week.env)"
 docker rm -f "$GATEWAY_CT" "$PROXY_CT" >/dev/null 2>&1 || true
 mkdir -p "runs/rpc-gateway-$MODE" "runs/inference-$MODE"
 LOGOPTS=(--log-opt max-size=100m --log-opt max-file=5)
@@ -145,6 +147,7 @@ docker run -d --name "$GATEWAY_CT" --network "$CHAIN_NET" "${LOGOPTS[@]}" \
   -p "127.0.0.1:$GATEWAY_HOST_PORT:8546" \
   -v "$REPO/infra/rpc-gateway:/app:ro" -v "$REPO/runs/rpc-gateway-$MODE:/var/log/ascon" \
   -e PORT=8546 -e UPSTREAM="http://$DOCKER0:$ANVIL_PORT" -e ENV_NAME=live -e RPC_MAX_PRIORITY_FEE_WEI=0 \
+  -e RPC_PENDING_SEALED_SENDERS="$SEALED" \
   -e LOG_FILE=/var/log/ascon/rpc-gateway-live.log \
   node:24.22.1-bookworm-slim node /app/gateway.mjs >/dev/null
 ok "gateway $GATEWAY_CT -> http://$DOCKER0:$ANVIL_PORT (host 127.0.0.1:$GATEWAY_HOST_PORT)"

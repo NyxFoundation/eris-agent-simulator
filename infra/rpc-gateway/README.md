@@ -160,6 +160,18 @@ has transactions of its own pending, and drops it as before when it has none. Mi
 `Sender` seeds its nonce with the latter and must account for already pending submissions.
 `eth_sendRawTransaction` remains available subject to the gas cap and the fee rule (below).
 
+**Except for the environment's own signers** (`RPC_PENDING_SEALED_SENDERS`, comma-separated: the four
+role keys' addresses). The exemption answered for any address, so the deployer's pending nonce told
+everyone when the environment had something unmined -- it sends the liquidity pull in the block a price
+gap opens, and in cdp-incident the eUSD sale too (4 transactions against 3 in the other gap regimes,
+measured in blocks.csv), which named the gap's moment and, for cdp-incident, its direction a block
+early. For a listed address `"pending"` is rewritten to `"latest"` before forwarding (counted in
+`rpc_pending_sender_sealed_total`); every other address keeps the exemption. The live week's
+`run-week.sh` derives the list from `live-week.env` (`scripts/liveWeek.ts sealed-senders`); the
+practice stack reads `ASCON_PENDING_SEALED_SENDERS` from `infra/monitoring/.env`. The flow, whale and
+launch wallets are not on it: their addresses come from the wallet secret, and what they leak is a
+moment without a direction.
+
 **Reads by hash** (`eth_getTransactionByHash`, `eth_getRawTransactionByHash`) stay on the allowlist — the
 receipt poll, explorers and replay tooling read mined transactions through them — but a transaction
 that has no block yet is answered as `null`, the same reply as for a hash the node never saw (issue
