@@ -289,7 +289,7 @@ valuation block (rules §4.1). Rows the rules do not spell out say so.
 
 ### The 12 regimes
 
-These are the eight kinds rules §3.2 publishes plus `spike` (issue #105), `depeg-persist` (issue #106), `cdp-incident` (issue #107) and `launch` (issue #29); the rules' list needs all four additions. Which epoch is which regime is never announced, but
+These are the twelve kinds rules §3.2 publishes. Which epoch is which regime is never announced, but
 **the kinds themselves and their generators are public**: `config/regimes/<name>.yaml`. The public set
 `config/scenarios/public.yaml` is 12 regimes × 5 seeds = 60 scenarios; the non-public set is drawn from
 the same family, of which only the perturbation ranges are published (rules §3.3). The numbers in the
