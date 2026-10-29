@@ -772,6 +772,17 @@ const en = {
   "home.status.epochsAllOne": "1 epoch scored",
   "home.roundsSoFar": "{n} · so far",
   "home.standingsSoFar": "Standings · so far",
+  // A practice period's table read one day at a time (the period Score is the default).
+  "home.scope.period": "period",
+  "home.scope.day": "by day…",
+  "home.scope.dayLive": "{day} · in progress",
+  "home.scope.note":
+    "Period / by day: the period ranks on the score, the average of each day's T. Pick a day to rank on that day alone — its T and its return, the same figures the day adds to the period score. The day still running is provisional: its return is as of the last interval boundary read.",
+  "home.standingsDay": "Standings · {day}",
+  "home.standingsDayLive": "Standings · {day} · provisional",
+  "home.standingsDayThrough": "Standings · {day} · through interval {at}",
+  "home.col.dayScore": "score",
+  "home.col.dayReturn": "return",
   "cursor.soFar": "So far · {n} intervals",
   "home.unscoredTitle":
     "In the record for {n} epoch(s) that did not score it: it had no starting value there (it registered part-way through). Rules §4.4.2 leaves such an epoch out of its score rather than counting it as zero.",
@@ -1917,6 +1928,16 @@ const ja: Record<MessageKey, string> = {
   "home.status.epochsAllOne": "1 エポックを採点済み",
   "home.roundsSoFar": "{n} · ここまで",
   "home.standingsSoFar": "順位表 · ここまで",
+  "home.scope.period": "通算",
+  "home.scope.day": "日別…",
+  "home.scope.dayLive": "{day} · 進行中",
+  "home.scope.note":
+    "通算 / 日別: 通算は平均得点（日ごとの得点の平均）で並べます。日付を選ぶと、その日だけの得点とリターンで並べます。通算の平均得点に入っているのと同じ数字です。進行中の日は暫定で、リターンは直近に読んだ評価区間の境界時点の値です。",
+  "home.standingsDay": "順位表 · {day}",
+  "home.standingsDayLive": "順位表 · {day} · 暫定",
+  "home.standingsDayThrough": "順位表 · {day} · 評価区間 {at} 時点",
+  "home.col.dayScore": "得点",
+  "home.col.dayReturn": "リターン",
   "cursor.soFar": "ここまで · {n} 評価区間",
   "home.unscoredTitle":
     "{n} 個のエポックに記録はありますが、そこでは採点されていません。開始時点の資産価値が無いためです（途中から登録された場合にこうなります）。規約 §4.4.2 では、そのエポックは 0 として数えるのではなく平均得点から外します。",

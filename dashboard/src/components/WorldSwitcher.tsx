@@ -30,7 +30,7 @@ import { buildScenarioList } from "@/data/scenarioList";
 import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
 import { useRunIndex } from "@/data/useRunIndex";
 import { t } from "@/i18n/messages";
-import { formatPnlUsdc } from "@/lib/format";
+import { formatPnlUsdc, formatReturnPct } from "@/lib/format";
 
 export function WorldSwitcher() {
   const entries = useRunIndex();
@@ -245,8 +245,16 @@ export function WorldSwitcher() {
               {mode.standings && current.leader && (
                 <span style={line}>
                   {t("picker.worldLeader", { id: current.leader.id })}{" "}
-                  <span style={{ color: toneColor(current.leader.pnlUsdc) }}>
-                    {formatPnlUsdc(current.leader.pnlUsdc)}
+                  <span
+                    style={{
+                      color: toneColor(
+                        current.leader.returnFrac ?? current.leader.pnlUsdc,
+                      ),
+                    }}
+                  >
+                    {current.leader.returnFrac !== undefined
+                      ? formatReturnPct(current.leader.returnFrac)
+                      : formatPnlUsdc(current.leader.pnlUsdc)}
                   </span>
                 </span>
               )}

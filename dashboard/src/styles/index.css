@@ -1,3 +1,6 @@
+/* The web fonts come first: an @import must precede every other statement, and once the token
+   files are inlined, one placed in typography.css lands after colors.css's rules. */
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 @import 'tailwindcss';
 @import './tokens/colors.css';
 @import './tokens/typography.css';
