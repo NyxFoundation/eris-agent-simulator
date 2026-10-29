@@ -389,8 +389,8 @@ export const SUBMISSION_STEPS: SubmissionStep[] = [
     optional: true,
     window: "submission",
     guide: {
-      ja: "9-練習-devnet任意",
-      en: "9-the-practice-devnet-optional",
+      ja: "9-試行環境任意",
+      en: "9-the-trial-environment-optional",
       section: "9",
     },
   },
