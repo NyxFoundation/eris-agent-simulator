@@ -10,7 +10,7 @@ Each adapter (`sdk/src/protocols/<name>.ts`) implements parse/validate, calldata
 | Balancer v2 | `balancerSwap` | 50/50 weighted WETH/USDC and WBTC/USDC, 0.3% fee, same starting depth |
 | Curve | `curveSwap`, `stableSwap` | twocrypto-ng WETH/USDC and WBTC/USDC (dynamic fee 0.26–0.45%, same starting depth), plus the stableswap-ng pools that quote each market-priced stable (USDC/DAI 100k/100k) |
 | Aave v3 | `aaveSupply`, `aaveWithdraw`, `aaveBorrow`, `aaveRepay` | WETH / USDC / WBTC reserves; the LST as a collateral-only reserve (LTV 70% / LT 75%), named `asset: "LST"` (not `"ERLST"`) |
-| GMX v2 | `gmxIncrease`, `gmxDecrease` | ETH/USD perp (default; WETH or USDC collateral) and BTC/USD perp (`base: "WBTC"`; WBTC or USDC collateral). WETH collateral is sent from the native ETH balance |
+| GMX v2 | `gmxIncrease`, `gmxDecrease`, `gmxCancelOrder` | ETH/USD perp (default; WETH or USDC collateral) and BTC/USD perp (`base: "WBTC"`; WBTC or USDC collateral). WETH collateral is sent from the native ETH balance |
 | LST | `lstDeposit`, `lstSwap`, `lstRequestWithdraw`, `lstClaimWithdraw` | a wstETH-style vault (ERLST) plus its LST/WETH stableswap-ng market |
 | Liquity (eUSD) | `liquityOpenTrove`, `liquityAdjustTrove`, `liquityCloseTrove`, `liquityRedeem`, `liquityProvideToSP`, `liquityWithdrawFromSP`, `liquityLiquidate`, `liquitySwapEusd` | a Liquity V1 fork issuing eUSD, plus its eUSD/USDC stableswap-ng market (100k/100k) |
 | Permissionless lending (`lending`; deployed only when the run's protocols include it, which no official regime does) | `createLendingMarket`, `lendingSupply`, `lendingWithdraw`, `lendingSupplyCollateral`, `lendingWithdrawCollateral`, `lendingBorrow`, `lendingRepay`, `lendingLiquidate` | the `SimpleLending` singleton (issue #40). Not in the official regimes; only the verification regime `config/regimes/agent-markets.yaml` enables it |
@@ -84,7 +84,7 @@ Mock oracles (`contracts/MockAggregator.sol` / `contracts/MockOracleProvider.sol
 
 GMX is async (order creation → keeper execution). In realtime, each block advances via interval mining, and after each block (`afterMine`) the coordinator reads the `OrderCreated` logs of the latest block and executes each order as the keeper. Intra-block ordering is determined by anvil's `--order fees` (descending priority fee). GMX position changes become visible to agents about one block late. GMX actions can only be sent alone (no bundling).
 
-The keeper executes **market orders only** (`MarketSwap` / `MarketIncrease` / `MarketDecrease`, what `gmxIncrease` / `gmxDecrease` create). It also does not execute an order that sets a `callbackContract`, or one that would leave a position over the leverage line ([below](#gmx-leverage-cap-and-liquidation-shortfalls)). A limit, stop or stop-loss order sent with `rawTx` is read, refused and recorded as a `keeper_order_refused` event. It is never executed or retried, even after its trigger price is reached. Its collateral and execution fee stay in GMX's OrderVault, count for nothing while they sit there, and come back only when you cancel the order yourself (`ExchangeRouter.cancelOrder`; GMX allows a non-market order to be cancelled at any time). Why: the keeper tries each order once, in the next block, at a price written before that block is mined, so a stop re-armed every block would fill at the first price of a move that every other order sees a block late.
+The keeper executes **market orders only** (`MarketSwap` / `MarketIncrease` / `MarketDecrease`, what `gmxIncrease` / `gmxDecrease` create). It also does not execute an order that sets a `callbackContract`, or one that would leave a position over the leverage line ([below](#gmx-leverage-cap-and-liquidation-shortfalls)). A limit, stop or stop-loss order sent with `rawTx` is read, refused and recorded as a `keeper_order_refused` event. It is never executed or retried, even after its trigger price is reached. Its collateral and execution fee stay in GMX's OrderVault, count for nothing while they sit there, and come back only when you cancel the order yourself (`gmxCancelOrder` or `ExchangeRouter.cancelOrder`; GMX allows a non-market order to be cancelled at any time). Why: the keeper tries each order once, in the next block, at a price written before that block is mined, so a stop re-armed every block would fill at the first price of a move that every other order sees a block late.
 
 ```mermaid
 sequenceDiagram
@@ -113,13 +113,22 @@ the order would leave at the execution price, fees on both ends included. It doe
 - an increase (either collateral) that would leave the position above that line;
 - a decrease that withdraws collateral and would leave the rest above it (collateral alone is
   counted, so being in profit does not help a withdrawal);
-- a partial decrease that would leave the rest above it.
+- a partial decrease that would leave the rest above it;
+- an increase whose **own collateral** does not carry its own size under that line, whatever the
+  position it joins. GMX accepts an increase with size and no collateral; refused, such an add-on
+  would lock nothing, so it is refused at every price, and every refused increase locks at least its
+  size / ~4.95.
+
+If the keeper cannot read an order or the inputs of its check (a node hiccup), it does not refuse
+it: it tries again on the next pass, and refuses only after 3 passes in a row
+(`keeper_order_read_retry`).
 
 **An order the keeper does not execute is not refunded.** Like a refused limit order (above), it
 stays in GMX's OrderVault, counts for nothing while it sits there, and is recorded as a
 `keeper_order_refused` event. A market order can only be cancelled after `requestExpirationTime`
-(**300 s = 150 blocks**): call `ExchangeRouter.cancelOrder` then to get the collateral and the
-execution fee back. For example, a WETH-collateral long sized near the cap at the price you observed
+(**300 s = 150 blocks**): send `{ type: "gmxCancelOrder", key }` then (or `ExchangeRouter.cancelOrder`)
+to get the collateral and the execution fee back. Your orders still in the OrderVault are in
+`obs.protocols.gmx.orders`, each with `cancellable` / `cancellableAtTime`. For example, a WETH-collateral long sized near the cap at the price you observed
 is refused if a down gap hits before it executes: the collateral is worth less and the position is
 already losing, so the same order is well over the line, and your WETH is locked for 300 s.
 

@@ -289,6 +289,14 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   2% は keeper が厳しい側に丸めた項を吸収して GMX 自身の上限判定（バックストップとして残す）を cancel・返金に届かせないための幅で、
   上限での必要証拠金の 2% = サイズの ~40bps（手数料 6bps、この深さの impact は 1bp 未満）。**同じ建玉への注文は 1 パス 1 本**
   （2 本目は次のパスに回し、1 本目が残した建玉で判定する。同じパスで通すと 1 本目を無視して判定した 2 本目を GMX が 1 本目の後で判定する）。
+  **増し玉は自分のサイズの証拠金を自分で持ってくる**（`gmxOwnCapUse`。注文の担保だけで自分のサイズを ~4.95 倍以内に。建玉全体の判定に加えて）。
+  GMX は証拠金 0・サイズ > 0 の increase を受け付けるので、上限に張り付いた建玉への証拠金 0 の増し玉は、拒否されてもロックされるものが無い
+  タダの条件付き注文のままだった。この規則で証拠金 0 の増し玉はどの価格でも拒否され（オプションにならない）、拒否された increase は
+  必ずサイズの ~1/4.95 を 300 秒止める。理由は注文自身の証拠金が先に名指される。**読取の失敗は拒否しない**: 注文や判定の入力が読めなかった
+  パスは次のパスへ回し（`keeper_order_read_retry`）、`GMX_KEEPER_READ_ATTEMPTS`（3）回続けて読めなかったときだけ拒否する
+  （RPC の一時障害で証拠金を 150 ブロック止めると、環境の故障で P を失う）。拒否された注文は観測 `protocols.gmx.orders`
+  （OrderVault に残る自分の注文と `cancellable`）に出て、`gmxCancelOrder` アクションで取り消せる。市場ごとの全建玉は
+  `protocols.gmx.positions`（`position` は従来どおり最初の 1 つ）で、参照ランタイムの事前判定は注文と同じ (担保, 向き) の建玉で行う。
   swapPath 付きの increase は担保額が swap まで決まらないので拒否。**対象外**: 担保の追加（サイズ 0 の increase。GMX は清算閾値で判定）、
   全決済（常に通る）、MIN_COLLATERAL_USD / MIN_POSITION_SIZE_USD（$1）、reserve / OI 上限（[base-base-USDC] では価格に依らない）、
   acceptablePrice / minOutputAmount（逆張りの指値にしかならない）。**残る穴**: keeper の tx が次のブロックに入らないと（gated miner の

@@ -189,6 +189,25 @@ class AmmObservation(BaseModel):
     )
 
 
+class GmxOrderObservation(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+        populate_by_name=True,
+    )
+    key: str
+    order_type: float = Field(..., alias='orderType')
+    market: str
+    base: str | None = None
+    is_long: bool = Field(..., alias='isLong')
+    size_delta_usd: str = Field(..., alias='sizeDeltaUsd')
+    collateral: str
+    collateral_amount: str = Field(..., alias='collateralAmount')
+    execution_fee_wei: str = Field(..., alias='executionFeeWei')
+    updated_at_time: float = Field(..., alias='updatedAtTime')
+    cancellable_at_time: float = Field(..., alias='cancellableAtTime')
+    cancellable: bool
+
+
 class AaveObservation(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -476,6 +495,7 @@ class GmxMarketObservation(BaseModel):
     )
     market_price_usd: float = Field(..., alias='marketPriceUsd')
     position: GmxPositionObservation | None = None
+    positions: list[GmxPositionObservation] | None = None
     long_oi_usd: float | None = Field(None, alias='longOiUsd')
     short_oi_usd: float | None = Field(None, alias='shortOiUsd')
     funding_per_hour_bps: float | None = Field(None, alias='fundingPerHourBps')
@@ -505,8 +525,10 @@ class GmxObservation(BaseModel):
     )
     stale: StaleMark | None = None
     markets: dict[str, GmxMarketObservation] | None = None
+    orders: list[GmxOrderObservation] | None = None
     market_price_usd: float = Field(..., alias='marketPriceUsd')
     position: GmxPositionObservation | None = None
+    positions: list[GmxPositionObservation] | None = None
     long_oi_usd: float | None = Field(None, alias='longOiUsd')
     short_oi_usd: float | None = Field(None, alias='shortOiUsd')
     funding_per_hour_bps: float | None = Field(None, alias='fundingPerHourBps')

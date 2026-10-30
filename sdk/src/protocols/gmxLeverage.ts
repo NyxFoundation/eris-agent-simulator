@@ -23,6 +23,15 @@
 // cap, against fees of 6bps and impacts under 1bp at this deploy's depths. GMX's check stays as the
 // backstop.
 //
+// A refusal only costs what the order carries, so every increase must also carry collateral for its
+// own size at no more than the keeper's line (gmxOwnCapUse): GMX accepts an increase with size and
+// no collateral, and an empty add-on to a position standing at the cap would otherwise be the same
+// free conditional order, refused at no cost. Refused, an increase now locks at least size / ~4.95.
+// A decrease locks only its execution fee when refused, but one the cap conditions on the price goes
+// through only after a move in the position's favour (it must leave the rest under the line): a
+// withdrawal changes no exposure, and a partial close after a favourable move is a contrarian order,
+// which takes nothing from a gap that does not come back.
+//
 // What GMX checks, and which of it this covers (gmx-synthetics contracts/position):
 //   - increase (IncreasePositionUtils): willPositionCollateralBeSufficient -- collateral after the
 //     opening fee and the pending borrowing/funding, at the collateral's price, against size x
@@ -214,6 +223,25 @@ export function gmxCapUse(
   );
 }
 
+/**
+ * The share of the cap an increase's own collateral carries its own size at, as if the order opened a
+ * position alone (fees on both ends), or null for anything that is not an increase with size.
+ *
+ * The keeper and the runtime hold every increase to this as well as to the whole-position check
+ * (gmxCapUse). The point of refusing instead of letting GMX cancel is that a refusal locks what the
+ * order carries; GMX accepts an increase with size and no collateral, so an add-on with nothing
+ * posted, to a position standing at the cap, was still a free conditional order -- refused, it
+ * locked nothing. With this rule such an add-on is refused at every price, so it carries no option,
+ * and any refused increase locks at least its size / ~4.95 for 300 s.
+ */
+export function gmxOwnCapUse(
+  order: GmxCapOrder,
+  market: GmxCapMarket,
+): GmxCapUse | null {
+  if (order.kind !== "increase") return null;
+  return gmxCapUse(order, undefined, market);
+}
+
 function capResult(
   sizeAfterUsd: bigint,
   factor: bigint,
@@ -242,16 +270,28 @@ function times(value: number): string {
 
 /**
  * Why this order must not go ahead, or null if it may: over `maxUse` of a cap of `maxLeverage`.
- * `where` names the price ("the execution price" for the keeper, "the observed price" for the runtime).
+ * `where` names the price ("the execution price" for the keeper, "the observed price" for the
+ * runtime); `own` says the use is the order's own collateral against its own size (gmxOwnCapUse)
+ * rather than the position it would leave.
  */
 export function gmxCapRefusal(
   use: GmxCapUse | null,
-  opts: { maxUse: number; maxLeverage: number; where: string },
+  opts: { maxUse: number; maxLeverage: number; where: string; own?: boolean },
 ): string | null {
   if (use === null || use.capUse <= opts.maxUse) return null;
   const limit = `${times(opts.maxUse * opts.maxLeverage)} (${Math.round(
     opts.maxUse * 100,
   )}% of the ${times(opts.maxLeverage)} cap)`;
+  if (opts.own) {
+    const rule = "an increase must bring the collateral for its own size";
+    if (!Number.isFinite(use.capUse))
+      // No collateral, or none left after the fees on both ends: "collateral" either way to the agent.
+      return `brings no collateral for its own size at ${opts.where}, over ${limit}: ${rule}`;
+    return (
+      `would carry its own size at ${times(use.leverage)} on its own collateral ` +
+      `(size / ${use.binding}) at ${opts.where}, over ${limit}: ${rule}`
+    );
+  }
   if (!Number.isFinite(use.capUse))
     return `would leave the position with no ${use.binding} at ${opts.where}, over ${limit}`;
   return (

@@ -258,6 +258,22 @@ class GmxDecreaseAction(BaseModel):
     )
 
 
+class GmxCancelOrderAction(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+        populate_by_name=True,
+    )
+    type: Literal['gmxCancelOrder'] = 'gmxCancelOrder'
+    key: str = Field(
+        ...,
+        description='The order to cancel, as obs.protocols.gmx.orders[].key. A market order can be cancelled 300 s after it was created; GMX returns its collateral and execution fee.',
+        pattern='^0x[0-9a-fA-F]{64}$',
+    )
+    max_priority_fee_per_gas_wei: str | None = Field(
+        None, alias='maxPriorityFeePerGasWei', pattern='^[0-9]+$'
+    )
+
+
 class AaveSupplyAction(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -809,6 +825,7 @@ class Action(
         | StableSwapAction
         | GmxIncreaseAction
         | GmxDecreaseAction
+        | GmxCancelOrderAction
         | AaveSupplyAction
         | AaveWithdrawAction
         | AaveBorrowAction
@@ -853,6 +870,7 @@ class Action(
         | StableSwapAction
         | GmxIncreaseAction
         | GmxDecreaseAction
+        | GmxCancelOrderAction
         | AaveSupplyAction
         | AaveWithdrawAction
         | AaveBorrowAction

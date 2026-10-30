@@ -29,6 +29,7 @@ const { gmxAdapter, GMX_ORDER_TYPE, resetKeeperOrderQueue, toGmxPrice } = gmx;
 const {
   gmxCapRefusal,
   gmxCapUse,
+  gmxOwnCapUse,
   GMX_KEEPER_CAP_USE,
   GMX_RUNTIME_CAP_USE,
 } = await import("@eris/sdk/protocols/gmxLeverage.js");
@@ -109,14 +110,18 @@ test("USDC collateral at the same size does not move with the price", () => {
 });
 
 test("an add-on to a standing short counts the short's PnL, so the price decides", () => {
-  // $10,000 short on 2,500 USDC; the add-on brings $5,000 more on 600 USDC (collateral test 0.96).
+  // A $10,000 short standing at the cap on 2,000 USDC; the add-on brings $5,000 more on 1,100 USDC,
+  // enough for its own size (~4.5x), so the whole position is what decides (collateral test 0.96).
   const position = (pnl: number): GmxCapPosition => ({
     sizeInUsd: usd(10_000),
-    collateralAmount: 2500n * 10n ** 6n,
+    collateralAmount: 2000n * 10n ** 6n,
     pnlUsd: usd(pnl),
     pendingFeeAmount: 0n,
   });
-  const order = { kind: "increase" as const, sizeDeltaUsd: usd(5000), collateralDeltaAmount: 600n * 10n ** 6n };
+  const order = { kind: "increase" as const, sizeDeltaUsd: usd(5000), collateralDeltaAmount: 1100n * 10n ** 6n };
+  const own = gmxOwnCapUse(order, usdcCollateral)!;
+  assert.ok(own.capUse < GMX_KEEPER_CAP_USE, String(own.capUse));
+  assert.ok(gmxCapUse({ ...order, sizeDeltaUsd: 1n, collateralDeltaAmount: 0n }, position(0), usdcCollateral)!.capUse > 0.99, "at the cap");
   // Back at the short's entry (it rose 5% and fell back): PnL 0, under the line.
   const atEntry = gmxCapUse(order, position(0), usdcCollateral)!;
   // +1% from entry: PnL -100. GMX's equity 3,097 - 100 - 9 = 2,988 covers 15,000 x 0.198 = 2,970, so
@@ -133,6 +138,44 @@ test("an add-on to a standing short counts the short's PnL, so the price decides
   // What the position owes in borrowing and funding comes out of the collateral first.
   const owing = gmxCapUse(order, { ...position(0), pendingFeeAmount: 50n * 10n ** 6n }, usdcCollateral)!;
   assert.ok(owing.capUse > atEntry.capUse);
+});
+
+test("an increase must bring collateral for its own size, whatever the position it joins", () => {
+  // GMX accepts an increase with size and no collateral. Against a well-collateralized position the
+  // whole stays under the line, but the order itself posts nothing: it is refused at every price, so
+  // re-sending it every block buys no option, and a refused increase always locks its own margin.
+  const roomy: GmxCapPosition = {
+    sizeInUsd: usd(2000),
+    collateralAmount: 5000n * 10n ** 6n,
+    pnlUsd: usd(0),
+    pendingFeeAmount: 0n,
+  };
+  const empty = { kind: "increase" as const, sizeDeltaUsd: usd(5000), collateralDeltaAmount: 0n };
+  assert.ok(gmxCapUse(empty, roomy, usdcCollateral)!.capUse < 0.5);
+  const own = gmxOwnCapUse(empty, usdcCollateral)!;
+  assert.equal(own.capUse, Infinity);
+  const ownRefusal = (use: ReturnType<typeof gmxOwnCapUse>) =>
+    gmxCapRefusal(use, {
+      maxUse: GMX_KEEPER_CAP_USE,
+      maxLeverage: GMX_MAX_LEVERAGE,
+      where: "the execution price",
+      own: true,
+    });
+  assert.match(
+    String(ownRefusal(own)),
+    /^brings no collateral for its own size at the execution price, over 4\.95x \(98% of the 5\.05x cap\): an increase must bring the collateral for its own size$/,
+  );
+  // WETH collateral: the same add-on with 0.2 WETH ($600 at $3,000) is ~8.4x on its own, refused at
+  // $3,000 and still at +20%; with ~1,040 USDC-worth it passes. Its own lockup is at least size / 4.95.
+  const thin = { kind: "increase" as const, sizeDeltaUsd: usd(5000), collateralDeltaAmount: 2n * 10n ** 17n };
+  assert.notEqual(ownRefusal(gmxOwnCapUse(thin, wethAt(3000))), null);
+  assert.notEqual(ownRefusal(gmxOwnCapUse(thin, wethAt(3600))), null);
+  assert.equal(
+    ownRefusal(gmxOwnCapUse({ ...thin, collateralDeltaAmount: 35n * 10n ** 16n }, wethAt(3000))),
+    null,
+  );
+  // Decreases have no own-collateral test.
+  assert.equal(gmxOwnCapUse({ kind: "decrease", sizeDeltaUsd: usd(1), collateralDeltaAmount: 0n }, usdcCollateral), null);
 });
 
 test("a withdrawal is checked on collateral alone, a partial rest with its PnL", () => {
@@ -383,14 +426,16 @@ type Refusal = { key: string; reason: string; capUse?: number; leverage?: number
 async function pass(ctx: SimContext, block: bigint) {
   const refused: Refusal[] = [];
   const deferred: Array<{ sent: number; deferred: number; samePosition?: number }> = [];
+  const retried: Array<{ key: string; attempt: number; maxAttempts: number; reason: string }> = [];
   await gmxAdapter.afterMine!(ctx, {
     noMine: true,
     fromBlock: block,
     toBlock: block,
     onOrderRefused: (r) => refused.push(r),
     onOrdersDeferred: (r) => deferred.push(r),
+    onOrderReadRetry: (r) => retried.push(r),
   });
-  return { refused, deferred };
+  return { refused, deferred, retried };
 }
 
 test("the keeper refuses an over-cap long at a price where GMX would fill it, and fills it under its line", async () => {
@@ -428,20 +473,31 @@ test("the keeper refuses an over-cap long at a price where GMX would fill it, an
 
 test("an add-on is judged with the position it joins, priced at the execution price", async () => {
   resetKeeperOrderQueue();
-  // A $10,000 short on 2,500 USDC, $100 down at the execution price; the add-on takes it over 98%.
+  // A $10,000 short standing at the cap on 2,000 USDC, $100 down at the execution price; the add-on
+  // carries its own size (~4.5x on 1,100 USDC) but takes the whole over 98%.
   const positionKey = gmxPositionKey(ACCOUNT, MARKETS.WETH, USDC, false);
-  const orders = new Map([
-    [key(1), { collateralToken: USDC, isLong: false, sizeDeltaUsd: usd(5000), collateralDeltaAmount: 600n * 10n ** 6n }],
-  ]);
+  const addOn = (collateral: bigint) =>
+    new Map([
+      [key(1), { collateralToken: USDC, isLong: false, sizeDeltaUsd: usd(5000), collateralDeltaAmount: collateral }],
+    ]);
   const short = (pnl: number) =>
-    new Map([[positionKey, { sizeInUsd: usd(10_000), collateralAmount: 2500n * 10n ** 6n, basePnlUsd: usd(pnl) }]]);
-  const down = keeperCtx(orders, { wethPrice: 3030, positions: short(-100) });
-  assert.equal((await pass(down.ctx, 10n)).refused.length, 1);
+    new Map([[positionKey, { sizeInUsd: usd(10_000), collateralAmount: 2000n * 10n ** 6n, basePnlUsd: usd(pnl) }]]);
+  const down = keeperCtx(addOn(1100n * 10n ** 6n), { wethPrice: 3030, positions: short(-100) });
+  const refusedDown = (await pass(down.ctx, 10n)).refused;
+  assert.equal(refusedDown.length, 1);
+  assert.match(refusedDown[0].reason, /^would leave the position at/);
   assert.deepEqual(down.executed, []);
   resetKeeperOrderQueue();
-  const flat = keeperCtx(orders, { wethPrice: 3000, positions: short(0) });
+  const flat = keeperCtx(addOn(1100n * 10n ** 6n), { wethPrice: 3000, positions: short(0) });
   assert.deepEqual((await pass(flat.ctx, 10n)).refused, []);
   assert.deepEqual(flat.executed, [key(1)]);
+  resetKeeperOrderQueue();
+  // The same add-on posting nothing is refused at every price -- here, after a drop that puts the
+  // short $1,000 up, where the whole position would be well under the line.
+  const empty = keeperCtx(addOn(0n), { wethPrice: 2700, positions: short(1000) });
+  const refusedEmpty = (await pass(empty.ctx, 10n)).refused;
+  assert.deepEqual(empty.executed, []);
+  assert.match(refusedEmpty[0].reason, /^brings no collateral for its own size at the execution price/);
   resetKeeperOrderQueue();
 });
 
@@ -466,7 +522,7 @@ test("a second order on the same position waits a block; other positions and swa
   resetKeeperOrderQueue();
 });
 
-test("an increase that swaps its collateral is refused; one whose position cannot be read is not executed", async () => {
+test("an increase that swaps its collateral is refused; one whose position cannot be read waits, then is refused", async () => {
   resetKeeperOrderQueue();
   const swapped = keeperCtx(
     new Map([[key(1), { swapPath: [MARKETS.WETH], collateralToken: USDC, sizeDeltaUsd: usd(1000), collateralDeltaAmount: 10n ** 9n }]]),
@@ -480,9 +536,27 @@ test("an increase that swaps its collateral is refused; one whose position canno
     new Map([[key(1), { sizeDeltaUsd: usd(1000), collateralDeltaAmount: ONE_WETH }]]),
     { wethPrice: 3000, failPositionReads: true },
   );
-  const b = await pass(unread.ctx, 10n);
+  // A failed read is the environment's fault: the order is not executed and waits for the next pass.
+  const first = await pass(unread.ctx, 10n);
   assert.deepEqual(unread.executed, []);
-  assert.match(b.refused[0].reason, /leverage could not be checked.*the position could not be read/);
+  assert.deepEqual(first.refused, []);
+  assert.deepEqual(first.retried, [
+    {
+      key: key(1),
+      attempt: 1,
+      maxAttempts: 3,
+      reason: "the order's leverage inputs could not be read: the position could not be read",
+    },
+  ]);
+  // Unreadable for GMX_KEEPER_READ_ATTEMPTS passes in a row: refused, never executed unchecked.
+  (unread.ctx.publicClient as unknown as { getLogs: () => Promise<unknown[]> }).getLogs = async () => [];
+  assert.equal((await pass(unread.ctx, 11n)).retried.length, 1);
+  const third = await pass(unread.ctx, 12n);
+  assert.deepEqual(unread.executed, []);
+  assert.match(
+    third.refused[0].reason,
+    /^the order's leverage inputs could not be read in 3 passes in a row, so the order is not executed: the position could not be read$/,
+  );
   resetKeeperOrderQueue();
 });
 
@@ -538,7 +612,9 @@ test("the reference runtime does not send an increase over 90% of the cap at the
   assert.equal(over.ok, false);
   assert.match(
     (over as { reason: string }).reason,
-    /^gmx increase would leave the position at 4\.\d\dx \(size \/ equity\) at the observed price, over 4\.5\dx \(90% of the 5\.05x cap\)\. The keeper does not execute an order over 98% of the cap/,
+    // A fresh position: its own margin and the position it opens are the same numbers, and the
+    // order's own margin is named first.
+    /^gmx increase would carry its own size at 4\.\d\dx on its own collateral \(size \/ equity\) at the observed price, over 4\.5\dx \(90% of the 5\.05x cap\): an increase must bring the collateral for its own size\. The keeper does not execute an order over 98% of the cap/,
   );
   assert.equal(GMX_RUNTIME_CAP_USE, 0.9);
   // No observation of the market: nothing to judge by, the keeper decides.

@@ -179,6 +179,14 @@ export type GmxDecreaseAction = {
   acceptablePrice?: string;
   maxPriorityFeePerGasWei?: string;
 };
+// Cancel one of your orders still in GMX's OrderVault (obs.protocols.gmx.orders): one the keeper
+// refused, or any limit/stop order. GMX hands back its collateral and execution fee. A market order
+// can be cancelled only after requestExpirationTime (300 s) from when it was created.
+export type GmxCancelOrderAction = {
+  type: "gmxCancelOrder";
+  key: string; // the order key (bytes32 hex), as in obs.protocols.gmx.orders[].key
+  maxPriorityFeePerGasWei?: string;
+};
 
 // LST venue (issue #38). The market is LST/WETH -- adapter-private, not a base/USDC market -- so
 // these actions carry no `base` selector.
@@ -420,7 +428,10 @@ export type BundleActionItem =
 
 // All leaf actions (including GMX. The unit of intent / buildTxs)
 export type LeafAction =
-  BundleActionItem | GmxIncreaseAction | GmxDecreaseAction;
+  | BundleActionItem
+  | GmxIncreaseAction
+  | GmxDecreaseAction
+  | GmxCancelOrderAction;
 
 export type RawTx = {
   // Omitted is a contract deployment (issue #40 T5): `data` is then the creation bytecode. The
@@ -561,7 +572,11 @@ export type GmxPositionObservation = {
 // decides who pays whom (issue #78).
 export type GmxMarketObservation = {
   marketPriceUsd: number;
+  // The first of `positions`, kept for strategies that hold one position per market.
   position?: GmxPositionObservation;
+  // Every position the account holds in this market: GMX keeps one per (collateral token, side), so
+  // a long on WETH, a long on USDC and a short are three. Absent when there are none.
+  positions?: GmxPositionObservation[];
   // Open interest on each side, USD. The skew between them is what sets the funding rate's sign
   // and size, and it is public state no agent could see before.
   longOiUsd?: number;
@@ -590,11 +605,42 @@ export type GmxMarketObservation = {
   maxLeverage?: number;
 };
 
+// An order of yours still in GMX's OrderVault, any market. A market order normally leaves it in the
+// block after it was created (the keeper executes it); one still here a few blocks later was refused
+// by the keeper -- a limit/stop order, a callback, or over the leverage line at the execution price
+// (sdk protocols/gmxLeverage.ts) -- and its collateral and execution fee count for nothing until you
+// cancel it (`gmxCancelOrder`). The refusal itself is not in the observation.
+export type GmxOrderObservation = {
+  key: string;
+  // GMX Order.OrderType: 0 MarketSwap, 2 MarketIncrease, 4 MarketDecrease (the only ones the keeper
+  // executes); anything else is a limit or stop order.
+  orderType: number;
+  market: string;
+  // The market's base (WETH = ETH/USD, WBTC = BTC/USD); absent for a market the run does not know.
+  base?: TokenSymbol;
+  isLong: boolean;
+  sizeDeltaUsd: string; // GMX 1e30-scale USD
+  // The collateral token's symbol (its address when the registry does not know it), and the amount
+  // posted (increase) or to withdraw (decrease), in its units.
+  collateral: TokenSymbol;
+  collateralAmount: string;
+  executionFeeWei: string;
+  // Unix seconds: when the order was created or last updated, and from when ExchangeRouter.cancelOrder
+  // accepts it (a market order after requestExpirationTime, 300 s; anything else at once).
+  updatedAtTime: number;
+  cancellableAtTime: number;
+  // Whether it can be cancelled at the block this was read at.
+  cancellable: boolean;
+};
+
 export type GmxObservation = GmxMarketObservation & {
   // Present only when this block's read of the venue failed (StaleMark).
   stale?: StaleMark;
   // ADR 0013: non-WETH index markets (BTC/USD etc.).
   markets?: Record<string, GmxMarketObservation>;
+  // Your orders in the OrderVault, every market. Empty when there are none; absent when the read
+  // failed (it is not part of the mark, so a failed read does not make the venue stale).
+  orders?: GmxOrderObservation[];
 };
 
 export type AaveObservation = {

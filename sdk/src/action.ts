@@ -51,7 +51,9 @@ export const ACTION_TYPES_BY_PROTOCOL: Record<ProtocolId, readonly string[]> = {
   ],
   balancer: ["balancerSwap"],
   curve: ["curveSwap", "stableSwap"],
-  gmx: ["gmxIncrease", "gmxDecrease"],
+  // gmxCancelOrder: an order the keeper refused (or any limit/stop order) stays in the OrderVault
+  // until its account cancels it (sdk protocols/gmxLeverage.ts).
+  gmx: ["gmxIncrease", "gmxDecrease", "gmxCancelOrder"],
   aave: ["aaveSupply", "aaveWithdraw", "aaveBorrow", "aaveRepay"],
   lst: ["lstDeposit", "lstSwap", "lstRequestWithdraw", "lstClaimWithdraw"],
   liquity: [

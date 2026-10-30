@@ -205,26 +205,79 @@ test("the keeper executes only the orders without a callback, and reports the re
   // key(4): created and already gone (executed or cancelled) -- Reader returns an empty order.
   const withGone = new Map(orders);
   withGone.set(key(4), undefined as never);
+  resetKeeperOrderQueue();
   const { ctx, executed } = stubCtx(withGone);
   const refused: Array<{
     key: string;
     reason: string;
     callbackContract: string;
   }> = [];
-  await gmxAdapter.afterMine!(ctx, {
-    noMine: true,
-    fromBlock: 10n,
-    toBlock: 10n,
-    onOrderRefused: (r) => refused.push(r),
-  });
+  const retried: Array<{ key: string; attempt: number; reason: string }> = [];
+  const pass = (block: bigint) =>
+    gmxAdapter.afterMine!(ctx, {
+      noMine: true,
+      fromBlock: block,
+      toBlock: block,
+      onOrderRefused: (r) => refused.push(r),
+      onOrderReadRetry: (r) => retried.push(r),
+    });
+  await pass(10n);
   assert.deepEqual(executed, [key(1), key(5)]);
+  assert.deepEqual(
+    refused.map((r) => r.key),
+    [key(2)],
+  );
+  assert.equal(refused[0].callbackContract, CALLBACK);
+  // An order that could not be read is not executed, and not refused either: a failed read is the
+  // environment's fault, so it is read again next pass (the reason is one line).
+  assert.deepEqual(retried.map((r) => [r.key, r.attempt]), [[key(3), 1]]);
+  assert.match(retried[0].reason, /could not be read: rpc timeout$/);
+  // Still unreadable: refused (fail closed) on the GMX_KEEPER_READ_ATTEMPTS-th pass in a row.
+  (ctx.publicClient as unknown as { getLogs: () => Promise<unknown[]> }).getLogs = async () => [];
+  await pass(11n);
+  await pass(12n);
+  assert.deepEqual(
+    retried.map((r) => [r.key, r.attempt]),
+    [
+      [key(3), 1],
+      [key(3), 2],
+    ],
+  );
   assert.deepEqual(
     refused.map((r) => r.key),
     [key(2), key(3)],
   );
-  assert.equal(refused[0].callbackContract, CALLBACK);
-  // An order that could not be read is not executed (fail closed), and the reason is one line.
-  assert.match(refused[1].reason, /could not be read: rpc timeout$/);
+  assert.match(
+    refused[1].reason,
+    /could not be read in 3 passes in a row, so the order is not executed: rpc timeout$/,
+  );
+  assert.deepEqual(executed, [key(1), key(5)]);
+  resetKeeperOrderQueue();
+});
+
+test("an order whose read fails once is executed when the next pass reads it", async () => {
+  resetKeeperOrderQueue();
+  const orders = new Map<Hex, StubOrder | Error>([
+    [key(1), new Error("rpc timeout")],
+  ]);
+  const { ctx, executed } = stubCtx(orders);
+  const refused: string[] = [];
+  const pass = (block: bigint) =>
+    gmxAdapter.afterMine!(ctx, {
+      noMine: true,
+      fromBlock: block,
+      toBlock: block,
+      onOrderRefused: (r) => refused.push(r.key),
+      onOrderReadRetry: () => {},
+    });
+  await pass(10n);
+  assert.deepEqual(executed, []);
+  orders.set(key(1), { callbackContract: zeroAddress, callbackGasLimit: 0n });
+  (ctx.publicClient as unknown as { getLogs: () => Promise<unknown[]> }).getLogs = async () => [];
+  await pass(11n);
+  assert.deepEqual(executed, [key(1)]);
+  assert.deepEqual(refused, []);
+  resetKeeperOrderQueue();
 });
 
 // ---- market orders only ----
