@@ -220,6 +220,14 @@ export type StressEventConfig = {
   // length a mixture of geometrics, whose stopping rate falls with age (a wave that has run long is
   // more likely the slow-stopping kind), and age would tell how much is left again.
   waveStopProb?: number;
+  // tokenLaunch only: each token's demand has a price it will not pay past, drawn per token from
+  // this range (multiples of the 1.00 USDC listing price) on a keyed stream of its own and never
+  // published. The wave ends for good the first block it finds the pool above it -- the same stop
+  // as the 10x cap (WAVE_PRICE_CAP_MULT), at a level nobody is told. Without it the wave bought the
+  // same amount whatever the price, so the field could buy ahead of it as hard as it liked and sell
+  // into it; now the harder a front-runner buys ahead, the sooner it ends the demand it meant to
+  // sell into, and a probe that crosses the level costs it the round trip.
+  wavePriceCeiling?: [number, number];
   // Fraction of run length for the event start position [min,max]. The seed picks.
   windowFrac: [number, number];
   // Start where the first event of this type starts, instead of drawing an independent position.
@@ -317,6 +325,9 @@ export type ResolvedTokenLaunch = {
   dud: boolean;
   // Share of the tokens the wave bought that it sells back during the decay.
   sellBackFrac: number;
+  // wavePriceCeiling only: the pool price (multiple of the listing price) above which this token's
+  // wave stops for good. Drawn for a dud as well, and unused.
+  priceCeilingMult?: number;
   // waveStopProb only: the blocks this token's wave buys for, drawn memoryless (geometric, at most
   // the event's configured rampBlocks). Its hold and sell-back start from its own last buy. Absent
   // = the window's rampBlocks, as before the stop existed. Drawn for a dud as well, and unused.
@@ -485,6 +496,16 @@ export class EventSchedule {
         windows.forEach((w, k) =>
           drawWaveLengths(w, stopProb, (j) =>
             Rng.fromSeed(seed, `launch-length:${salt}:${i}:${k}:${j}`).next(),
+          ),
+        );
+      }
+      // The price ceiling likewise: a stream per token, so it is independent of everything the field
+      // can see before the wave meets it (the pool, the per-block size, the length).
+      if (c.type === "tokenLaunch" && c.wavePriceCeiling !== undefined) {
+        const range = c.wavePriceCeiling;
+        windows.forEach((w, k) =>
+          drawPriceCeilings(w, range, (j) =>
+            Rng.fromSeed(seed, `launch-ceiling:${salt}:${i}:${k}:${j}`).next(),
           ),
         );
       }
@@ -889,7 +910,8 @@ function usesVariation(c: StressEventConfig): boolean {
     c.recoverFrac !== undefined ||
     c.venue === "random" ||
     c.repriceAnchorProb !== undefined ||
-    c.waveStopProb !== undefined
+    c.waveStopProb !== undefined ||
+    c.wavePriceCeiling !== undefined
   );
 }
 
@@ -1268,6 +1290,18 @@ function drawWaveLengths(
   w.rampBlocks = longest;
 }
 
+// Give each token of a window its secret price ceiling, uniform on the configured range.
+function drawPriceCeilings(
+  w: DrawnWindow,
+  [lo, hi]: [number, number],
+  uniform: (token: number) => number,
+): void {
+  w.launches = (w.launches ?? []).map((l, j) => ({
+    ...l,
+    priceCeilingMult: lerp(lo, hi, uniform(j)),
+  }));
+}
+
 // Apply a cexDrift or volBurst episode to one base's OU parameters. Kept here next to the envelope
 // rather than in the coordinator so that "what an episode does to the walk" has one definition, and
 // so a unit test can pin it without a chain. A burst moves the volatility from the run's own toward
@@ -1418,6 +1452,16 @@ function parseOne(
         `${label}.rampBlocks must be one integer >= 1 with waveStopProb: it is the most blocks a ` +
           "wave can buy for, and each token draws its own length below it",
       );
+  }
+  let wavePriceCeiling: [number, number] | undefined;
+  if (o.wavePriceCeiling !== undefined) {
+    if (o.type !== "tokenLaunch")
+      throw new Error(`${label}.wavePriceCeiling only applies to type "tokenLaunch"`);
+    // Above the listing price: a ceiling at or under it would stop every wave before its first buy.
+    wavePriceCeiling = parseRange(o.wavePriceCeiling, `${label}.wavePriceCeiling`, {
+      min: 1,
+      exclusiveMin: true,
+    });
   }
   if (o.type === "depeg") {
     // Which stable is not a default anyone could guess: a run can have several, and picking one
@@ -1678,6 +1722,7 @@ function parseOne(
     ...(o.waveStopProb !== undefined
       ? { waveStopProb: o.waveStopProb as number }
       : {}),
+    ...(wavePriceCeiling !== undefined ? { wavePriceCeiling } : {}),
     magnitudeRange,
     windowFrac,
     rampBlocks,

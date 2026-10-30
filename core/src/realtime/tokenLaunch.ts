@@ -269,9 +269,22 @@ export function launchPriceUsdcPerToken(
   return tokenIsToken0 ? raw * 10 ** gap : 1 / (raw * 10 ** -gap);
 }
 
-/** True when the wave should refuse to buy at this price. */
-export function waveBuyCapped(priceUsdcPerToken: number): boolean {
-  return !(priceUsdcPerToken <= WAVE_PRICE_CAP_MULT * LAUNCH_LISTING_PRICE_USDC);
+/** The price above which this token's wave stops: its secret ceiling if it has one, never past the cap. */
+export function waveCapUsdcPerToken(
+  launch: Pick<ResolvedTokenLaunch, "priceCeilingMult">,
+): number {
+  return (
+    Math.min(WAVE_PRICE_CAP_MULT, launch.priceCeilingMult ?? Infinity) *
+    LAUNCH_LISTING_PRICE_USDC
+  );
+}
+
+/** True when the wave should refuse to buy at this price (and so stop: waveTargets). */
+export function waveBuyCapped(
+  priceUsdcPerToken: number,
+  launch: Pick<ResolvedTokenLaunch, "priceCeilingMult"> = {},
+): boolean {
+  return !(priceUsdcPerToken <= waveCapUsdcPerToken(launch));
 }
 
 /** Whether this run deploys the token launcher: wherever there is a registry and a Uniswap venue.
@@ -655,7 +668,7 @@ export async function stepTokenLaunch(
       if (buyDelta > 0n && buyDelta >= minDelta) {
         const amountIn = buyDelta > usdcNow ? usdcNow : buyDelta;
         const price = await poolPrice(ctx, runtime, state);
-        if (amountIn > 0n && waveBuyCapped(price)) {
+        if (amountIn > 0n && waveBuyCapped(price, state.launch)) {
           // The wave stops here for good, as if its stop had been drawn at this block: what it has
           // not bought is dropped and its hold and sell-back run from here. It used to wait out the
           // cap with the unbought target accumulating, which kept it from ever reaching the
@@ -672,7 +685,9 @@ export async function stepTokenLaunch(
             blockNumber,
             pool: state.pool,
             priceUsdcPerToken: price,
-            capUsdcPerToken: WAVE_PRICE_CAP_MULT * LAUNCH_LISTING_PRICE_USDC,
+            capUsdcPerToken: waveCapUsdcPerToken(state.launch),
+            secretCeiling: state.launch.priceCeilingMult !== undefined &&
+              state.launch.priceCeilingMult < WAVE_PRICE_CAP_MULT,
             stoppedAfterBlocks: state.capStoppedAfter,
             unboughtUsdcUnits: (state.waveUsdcUnits > state.grossBuyUsdc
               ? state.waveUsdcUnits - state.grossBuyUsdc

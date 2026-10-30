@@ -140,8 +140,8 @@ stress:
     # buying has the same ~24 blocks expected ahead of it (1 in 25 stops each block); 4.7% run to the
     # cap of 75 = 3x the mean. Those spend up to 75 / 23.8 = 3.15x the drawn multiple, which is what
     # the wave wallets are funded for (core LAUNCH_WAVE_USDC_UNITS, the same in every regime), and
-    # the largest of them reach the 10x price cap on their own (2.9% of waves), which ends a wave
-    # where it stands (its sell-back runs from there).
+    # the largest of them reach the 10x price cap on their own (2.9% of waves without the ceiling
+    # below), which ends a wave where it stands (its sell-back runs from there).
     #
     # What it does and does not change, per epoch (npx tsx scripts/measureLaunchFrontRun.ts, 2,000
     # seeds of this file; --fixed-ramp 20,26 for the left column. Constant-product pools at 0.3%, an
@@ -166,6 +166,29 @@ stress:
     # the start of the sell-back are not readable from the first block, a fixed hold (launch-sniper)
     # now sometimes meets the sell-back, and an exit has to be read from the tape (launch-confirm).
     #
+    # Each token's demand also has a secret price ceiling (2026-10-31, `wavePriceCeiling`): a level
+    # drawn per token, uniform on [1.5, 4] times the listing price, on a keyed stream of its own and
+    # never published. The first block the wave finds the pool above it, the wave ends for good (its
+    # sell-back runs from there) -- the same stop as the 10x cap. Without it the wave bought the same
+    # whatever the price, so the field could buy ahead of it as hard as it liked and sell into it;
+    # now a front-runner's own buying pushes the pool toward a level it cannot see, and the harder it
+    # buys the sooner it ends the demand it meant to sell into. A probe costs the round trip, and a
+    # probe that crosses the level ends the wave it was probing. Measured the same way (the
+    # front-runner sizes against the published range; "known" knows each wave's length and ceiling):
+    #
+    #                              no ceiling   [3, 8]   [2, 6]   [2, 4]   [1.5, 4]   [1.5, 3]
+    #   front-run, best size          29,742   21,133   15,021   10,494      8,443      5,960
+    #     with both known             30,181   22,337   16,466   11,592      9,710      6,854
+    #   one block ahead (best k)      28,925   18,944   12,192    6,923      5,540      3,440
+    #   launch-sniper                  5,778    5,674    4,925    4,250      3,694      2,973
+    #   launch-confirm                 6,508    5,240    4,135    3,127      2,630      1,948
+    #   the wave's gross buying       54,971   49,537   43,524   37,889     34,302     30,609
+    #   waves its ceiling stops         2.9%    14.2%    23.9%    31.6%      36.6%      44.0%
+    #
+    # [1.5, 4] takes ~72% off the front-run for ~38% off the gross: a wave that alone would take the
+    # pool to 4x (the top of waveUsdcMult) usually meets a ceiling under that, so the demand itself is
+    # smaller too, and the reference agents lose 36% / 60%.
+    #
     # The longest window is 2 + 75 + 36 + 36 = 149 blocks: from the latest start (block 180) the last
     # wave stops by block 257 and its sell-back cannot begin before 281, ~80 blocks before the bell.
     - {
@@ -177,6 +200,7 @@ stress:
         dudProb: [0.3, 0.5],
         sellBackFrac: [0.5, 1.0],
         waveStopProb: 0.04,
+        wavePriceCeiling: [1.5, 4],
         rampBlocks: 75,
         holdBlocks: [24, 36],
         decayBlocks: [28, 36],
@@ -211,7 +235,7 @@ agents:
   # block (the automine backlog flushes while the agents boot: on launch#404 the agents observed
   # blocks 933-1443 before the run's first block 1444, so blocksRemaining hit 0 before the window
   # and neither agent traded all run). Issue #117 moves the count to the coordinator's declared
-  # first block; until it lands, the guard is off here. The window closes by block 262 and both
+  # first block; until it lands, the guard is off here. The window closes by block 329 and both
   # agents exit on their own rules (fixed hold / net selling / max hold) long before block 360.
   - id: launch-sniper
     wallet: AGENT2_PRIVATE_KEY

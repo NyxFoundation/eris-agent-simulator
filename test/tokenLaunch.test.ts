@@ -20,6 +20,8 @@ import {
   tokenLaunchCeiling,
   tokenLaunchEndowments,
   capStopRamp,
+  waveBuyCapped,
+  waveCapUsdcPerToken,
   waveBlockUsdcUnits,
   waveBuyTargetUnits,
   waveTargets,
@@ -437,6 +439,114 @@ test("the price cap ends the wave: nothing more to buy, and the sell-back runs f
   assert.ok(checked >= 20, `${checked} waves`);
 });
 
+// ---- the secret price ceiling (wavePriceCeiling) ----
+
+test("price ceiling: per token, inside its range, deterministic, and unrelated to anything the field sees first", () => {
+  const cfg = MEMORYLESS({ wavePriceCeiling: [1.5, 4] });
+  const rows: Array<{ ceiling: number; liquidity: number; block: number; length: number }> = [];
+  let differ = 0;
+  for (let seed = 1; seed <= 1500; seed++) {
+    const a = new EventSchedule([cfg], seed, 360).events[0].launches!;
+    const b = new EventSchedule([cfg], seed, 360).events[0].launches!;
+    assert.deepEqual(a, b, `seed ${seed}`);
+    if (new Set(a.map((l) => l.priceCeilingMult)).size === a.length) differ++;
+    for (const l of a) {
+      assert.ok(l.priceCeilingMult! >= 1.5 && l.priceCeilingMult! <= 4, `seed ${seed}: ${l.priceCeilingMult}`);
+      if (!l.dud)
+        rows.push({ ceiling: l.priceCeilingMult!, liquidity: l.liquidityUsdc, block: l.waveBlockUsdcMult!, length: l.rampBlocks! });
+    }
+  }
+  assert.equal(differ, 1500, "two tokens of a window shared a ceiling");
+  // Uniform on the range: the mean is its middle (sd of U[1.5, 4] is ~0.72).
+  const mean = rows.reduce((x, r) => x + r.ceiling, 0) / rows.length;
+  assert.ok(Math.abs(mean - 2.75) < (4 * 0.72) / Math.sqrt(rows.length), `mean ${mean}`);
+  // Nothing visible before the wave meets the ceiling says where it is: the pool, the per-block
+  // size and the length are drawn on other streams.
+  const corr = (xs: number[], ys: number[]) => {
+    const n = xs.length;
+    const mx = xs.reduce((a, b) => a + b, 0) / n;
+    const my = ys.reduce((a, b) => a + b, 0) / n;
+    let sxy = 0, sxx = 0, syy = 0;
+    for (let k = 0; k < n; k++) {
+      sxy += (xs[k] - mx) * (ys[k] - my);
+      sxx += (xs[k] - mx) ** 2;
+      syy += (ys[k] - my) ** 2;
+    }
+    return sxy / Math.sqrt(sxx * syy);
+  };
+  const c = rows.map((r) => r.ceiling);
+  for (const key of ["liquidity", "block", "length"] as const)
+    assert.ok(Math.abs(corr(c, rows.map((r) => r[key]))) < 0.06, `ceiling correlates with ${key}`);
+});
+
+test("price ceiling has a stream of its own: the window's other draws, the lengths and later events do not move", () => {
+  const crash: StressEventConfig = {
+    type: "crash",
+    magnitudeRange: [0.1, 0.2],
+    windowFrac: [0.2, 0.8],
+    rampBlocks: 3,
+    holdBlocks: 6,
+    decayBlocks: 8,
+  };
+  const opts = { saltWithEventList: false };
+  for (let seed = 1; seed <= 30; seed++) {
+    const without = new EventSchedule([MEMORYLESS(), crash], seed, 360, 360, opts);
+    const withCeiling = new EventSchedule([MEMORYLESS({ wavePriceCeiling: [1.5, 4] }), crash], seed, 360, 360, opts);
+    const strip = (ls: typeof without.events[0]["launches"]) =>
+      ls!.map(({ priceCeilingMult: _drop, ...rest }) => rest);
+    assert.deepEqual(strip(withCeiling.events[0].launches), strip(without.events[0].launches), `seed ${seed}`);
+    assert.equal(withCeiling.events[0].startBlock, without.events[0].startBlock);
+    assert.deepEqual(withCeiling.events[1], without.events[1], `seed ${seed}: the crash moved`);
+    assert.ok(without.events[0].launches!.every((l) => l.priceCeilingMult === undefined));
+  }
+});
+
+test("the wave stops above its own ceiling, never above the 10x cap, and without one only at the cap", () => {
+  assert.equal(waveBuyCapped(1.79, { priceCeilingMult: 1.8 }), false);
+  assert.equal(waveBuyCapped(1.81, { priceCeilingMult: 1.8 }), true);
+  assert.equal(waveCapUsdcPerToken({ priceCeilingMult: 1.8 }), 1.8);
+  // A ceiling above the cap is the cap.
+  assert.equal(waveBuyCapped(9.99, { priceCeilingMult: 20 }), false);
+  assert.equal(waveBuyCapped(10.01, { priceCeilingMult: 20 }), true);
+  assert.equal(waveCapUsdcPerToken({ priceCeilingMult: 20 }), 10);
+  // No ceiling drawn: the 10x cap alone, as before.
+  assert.equal(waveBuyCapped(9.99), false);
+  assert.equal(waveBuyCapped(10.01), true);
+  assert.equal(waveCapUsdcPerToken({}), 10);
+});
+
+test("parser: wavePriceCeiling is a range above the listing price, on a tokenLaunch only", () => {
+  const base = {
+    type: "tokenLaunch",
+    windowFrac: [0.2, 0.5],
+    tokenCount: [2, 3],
+    liquidityUsdc: [20000, 100000],
+    waveUsdcMult: [0.25, 1],
+    dudProb: [0.3, 0.5],
+    sellBackFrac: [0.5, 1],
+    waveStopProb: 0.04,
+    rampBlocks: 75,
+    holdBlocks: [24, 36],
+    decayBlocks: [28, 36],
+    wavePriceCeiling: [1.5, 4],
+  };
+  assert.deepEqual(parseStressEvents(JSON.stringify([base]))[0].wavePriceCeiling, [1.5, 4]);
+  const refuse = (over: Record<string, unknown>, pattern: RegExp) =>
+    assert.throws(() => parseStressEvents(JSON.stringify([{ ...base, ...over }])), pattern);
+  refuse({ wavePriceCeiling: [1, 4] }, /wavePriceCeiling min must be >= 1/);
+  refuse({ wavePriceCeiling: [4, 1.5] }, /min <= max/);
+  refuse({ wavePriceCeiling: 2 }, /\[min, max\] pair/);
+  assert.throws(
+    () =>
+      parseStressEvents(
+        JSON.stringify([
+          { type: "crash", magnitudeRange: [0.1, 0.2], windowFrac: [0.2, 0.5], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8, wavePriceCeiling: [1.5, 4] },
+        ]),
+      ),
+    /wavePriceCeiling only applies/,
+  );
+});
+
 test("parser: waveStopProb is one probability on a tokenLaunch with a single rampBlocks cap", () => {
   const base = {
     type: "tokenLaunch",
@@ -635,11 +745,16 @@ test("config/regimes/launch.yaml: a tokenLaunch window on a registry-enabled, al
   const parsed = parseStressEvents(JSON.stringify(doc.stress.events));
   const tl = parsed.find((e) => e.type === "tokenLaunch")!;
   assert.equal(typeof tl.waveStopProb, "number");
+  assert.ok(tl.wavePriceCeiling, "launch.yaml has no secret price ceiling");
   for (let seed = 1; seed <= 200; seed++) {
     const s = new EventSchedule(parsed, seed, doc.run.blocks);
     const ev = s.events.find((e) => e.type === "tokenLaunch")!;
     assert.ok(ev.endBlock <= doc.run.blocks, `seed ${seed}: window ends at ${ev.endBlock}`);
     for (const l of ev.launches!) {
+      assert.ok(
+        l.priceCeilingMult! >= tl.wavePriceCeiling![0] && l.priceCeilingMult! <= tl.wavePriceCeiling![1],
+        `seed ${seed}: ceiling ${l.priceCeilingMult}`,
+      );
       const sellBack =
         ev.startBlock + TOKEN_LAUNCH_LEAD_BLOCKS + l.rampBlocks! + ev.holdBlocks;
       assert.ok(sellBack <= doc.run.blocks - 60, `seed ${seed}: a sell-back starts at ${sellBack}`);

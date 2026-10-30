@@ -232,7 +232,7 @@ price stayed up, and the first block back under the cap bought the whole backlog
 release any holder could time by selling the pool just under the cap.) The largest official expected wave on its
 own takes a full-range pool to 4×, so the cap binds once the field has bought ahead of it by more than
 about 1.16× the pool's seeded USDC — or, on its own, at the end of the longest memoryless waves (below;
-2.9% of waves).
+2.9% of waves without the price ceiling below).
 
 Then, **per token and independently**, a demand wave: a dedicated wave wallet buys the token over the
 ramp, holds, and sells `sellBackFrac` of what it bought back during the decay. With probability
@@ -265,6 +265,18 @@ launch-confirm +5,276 → +6,508). A front-run collects a near-fixed share of th
 the expected remainder at confirmation is unchanged when the expected total is, and a wave that stops
 right after the front-run costs it only the pool fee both ways — knowing every length in advance would
 add only ~$450.
+
+**What does shrink it is a price the demand will not pay past** (`wavePriceCeiling`; the `launch`
+regime draws it per token, uniform on [1.5, 4] times the listing price). Each token's level comes
+from a keyed stream of its own and is never published, so neither the pool, the per-block size nor
+the length says where it is; the first block the wave finds the pool above it, the wave ends exactly
+as at the 10× cap. A front-runner's own buying now pushes the pool toward a level it cannot see: the
+harder it buys ahead, the sooner it ends the demand it meant to sell into, and a probe that crosses
+the level ends the wave it was probing. With the front-runner sizing against the published range,
+[1.5, 4] takes it from +29,742 to +8,443 per epoch (one block ahead +28,925 → +5,540; +9,710 if every
+wave's ceiling were known in advance), at the price of a smaller regime: the wave's gross buying falls
+from 54,971 to 34,302, 36.6% of waves meet their ceiling on their own, and launch-sniper / launch-confirm
+fall to +3,694 / +2,630. `config/regimes/launch.yaml` has the table for other ranges ([2, 6]: +15,021).
 
 Both targets are cumulative and reconciled every block like a `state` event: the buy fraction rises
 over the ramp and stays at 1 (a wave does not un-buy), the sell-back fraction rises over the decay

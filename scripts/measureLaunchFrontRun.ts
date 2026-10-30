@@ -3,13 +3,15 @@
 //
 //   npx tsx scripts/measureLaunchFrontRun.ts [--seeds 2000] [--budget 60000]
 //                                            [--fixed-ramp 20,26 | --stop-prob 0.04 --ramp-cap 75]
+//                                            [--ceiling 1.5,4 | --no-ceiling]
 //
 // The schedule is the regime's own (config/regimes/launch.yaml through EventSchedule: the tokens,
 // their pools, waves, duds, lengths, holds and sell-backs as the coordinator would run them). Each
 // launch pool is a full-range Uniswap V3 position = a constant-product pool with the 0.3% fee on the
 // way in, and the wave does what tokenLaunch.ts does: per block it buys toward its cumulative target
-// until it stops -- at its drawn length, or for good the first block it finds the pool above
-// WAVE_PRICE_CAP_MULT -- then holds, then sells back toward its target.
+// until it stops -- at its drawn length, or for good the first block it finds the pool above its
+// secret price ceiling (wavePriceCeiling; never past WAVE_PRICE_CAP_MULT) -- then holds, then sells
+// back toward its target.
 //
 // Timing, measured on a launch run (runs/2026-10-09T14-10-43-459Z): the wave's k-th buy lands in
 // ramp block k, and an agent that has seen block t-1 lands in block t -- in front of the wave's buy of
@@ -17,9 +19,10 @@
 // (the reference agents). One strategy at a time; tokens still held at the bell are worth 0.
 //
 //   front-run   confirm on the first wave buy, buy at the best size for what it has seen (the
-//               per-block size, the pool, and the length distribution the config publishes) up to
-//               its budget split over the confirmed waves, sell the block after the tape shows the
-//               wave stopped. "length known" is the same with each wave's length known in advance.
+//               per-block size, the pool, and the length and ceiling distributions the config
+//               publishes) up to its budget split over the confirmed waves, sell the block after the
+//               tape shows the wave stopped. "length and ceiling known" is the same with each wave's
+//               length and ceiling known in advance.
 //   one-ahead   while the wave bought last block, buy k times its per-block size in front of this
 //               block's buy; sell once a block passes without one. The best k is reported.
 //   sniper /    example/agents/launch-sniper and launch-confirm with their default settings.
@@ -27,7 +30,8 @@
 //
 // --fixed-ramp a,b replays the regime as it was before the ramp was memoryless (2026-10-30): every
 // token of a window buys over the window's ramp drawn from [a, b] (it was [20, 26]). --stop-prob /
-// --ramp-cap try another memoryless ramp in place of the regime's.
+// --ramp-cap try another memoryless ramp in place of the regime's. --ceiling lo,hi tries another
+// price-ceiling range, --no-ceiling drops it (only the 10x cap stops a wave).
 process.env.ERIS_LOCAL_DEPLOY = "1";
 
 const { loadRunConfig } = await import("../core/src/runConfig.js");
@@ -47,6 +51,10 @@ const BUDGET = Number(arg("budget") ?? 60_000);
 const FIXED_RAMP = arg("fixed-ramp")?.split(",").map(Number) as [number, number] | undefined;
 const STOP_PROB = arg("stop-prob") === undefined ? undefined : Number(arg("stop-prob"));
 const RAMP_CAP = arg("ramp-cap") === undefined ? undefined : Number(arg("ramp-cap"));
+const CEILING = arg("ceiling")?.split(",").map(Number) as [number, number] | undefined;
+const NO_CEILING = process.argv.includes("--no-ceiling");
+// Points the front-runner integrates its unknown ceiling over (midpoints of the published range).
+const CEILING_POINTS = 12;
 const FEE = 0.003;
 const SIZE_STEP = 1_000;
 const ONE_AHEAD_K = [2, 4, 8, 16, 32];
@@ -90,7 +98,11 @@ type Wave = {
   sellBack: number;
   dud: boolean;
   bought: number;
-  // The ramp block at which the price cap stopped the wave (it bought the blocks before it).
+  // The pool price above which the wave stops (its secret ceiling, never past the 10x cap).
+  ceiling: number;
+  // The range the ceiling is drawn from, as the config publishes it.
+  ceilingRange?: [number, number];
+  // The ramp block at which the ceiling stopped the wave (it bought the blocks before it).
   cappedAt?: number;
   tokens: number;
   sold: number;
@@ -113,7 +125,7 @@ function waveStep(w: Wave, t: number): void {
   if (w.dud || t < 0) return;
   const delta = w.b * Math.min(t + 1, rampOf(w)) - w.bought;
   if (delta > 1e-9) {
-    if (w.pool.price() <= WAVE_PRICE_CAP_MULT) {
+    if (w.pool.price() <= w.ceiling) {
       w.tokens += w.pool.buy(delta);
       w.bought += delta;
       note(w, t, delta);
@@ -243,8 +255,24 @@ function lengthWeights(w: Wave): number[] {
   return Array.from({ length: hi }, (_, k) => (k + 1 >= lo ? 1 / (hi - lo + 1) : 0));
 }
 
+/** The ceiling as the front-runner sees it: [value, weight] over the published range, or the cap. */
+function ceilingWeights(w: Wave): Array<[number, number]> {
+  if (!w.ceilingRange) return [[WAVE_PRICE_CAP_MULT, 1]];
+  const [lo, hi] = w.ceilingRange;
+  return Array.from({ length: CEILING_POINTS }, (_, k) => [
+    Math.min(WAVE_PRICE_CAP_MULT, lo + ((hi - lo) * (k + 0.5)) / CEILING_POINTS),
+    1 / CEILING_POINTS,
+  ]);
+}
+
 /** Profit of buying `size` after the wave's first buy, for every length 1..weights.length. */
-function frontRunProfits(S: number, b: number, size: number, maxLen: number): number[] {
+function frontRunProfits(
+  S: number,
+  b: number,
+  size: number,
+  maxLen: number,
+  ceiling: number,
+): number[] {
   const p = new Pool(S, S);
   p.buy(b);
   let bought = b;
@@ -252,8 +280,8 @@ function frontRunProfits(S: number, b: number, size: number, maxLen: number): nu
   const out = [p.quoteSell(tokens) - size];
   let capped = false;
   for (let k = 1; k < maxLen; k++) {
-    // The first block above the cap ends the wave (tokenLaunch.ts).
-    if (!capped && p.price() > WAVE_PRICE_CAP_MULT) capped = true;
+    // The first block above the ceiling ends the wave (tokenLaunch.ts).
+    if (!capped && p.price() > ceiling) capped = true;
     if (!capped) {
       p.buy(b * (k + 1) - bought);
       bought = b * (k + 1);
@@ -263,12 +291,21 @@ function frontRunProfits(S: number, b: number, size: number, maxLen: number): nu
   return out;
 }
 
-function bestSize(S: number, b: number, cap: number, weights: number[]): number {
+function bestSize(
+  S: number,
+  b: number,
+  cap: number,
+  weights: number[],
+  ceilings: Array<[number, number]>,
+): number {
   let best = 0;
   let bestValue = 0;
   for (let size = SIZE_STEP; size <= cap + 1e-9; size += SIZE_STEP) {
-    const profits = frontRunProfits(S, b, size, weights.length);
-    const value = weights.reduce((a, wt, k) => a + wt * profits[k], 0);
+    let value = 0;
+    for (const [ceiling, cw] of ceilings) {
+      const profits = frontRunProfits(S, b, size, weights.length, ceiling);
+      value += cw * weights.reduce((a, wt, k) => a + wt * profits[k], 0);
+    }
     if (value > bestValue) [best, bestValue] = [size, value];
   }
   return best;
@@ -287,7 +324,10 @@ class FrontRun extends Agent {
         const weights = this.hindsight
           ? Array.from({ length: w.L }, (_, k) => (k === w.L - 1 ? 1 : 0))
           : lengthWeights(w);
-        const size = bestSize(w.S, w.b, BUDGET / live.length, weights);
+        const ceilings: Array<[number, number]> = this.hindsight
+          ? [[w.ceiling, 1]]
+          : ceilingWeights(w);
+        const size = bestSize(w.S, w.b, BUDGET / live.length, weights, ceilings);
         if (size > 0) {
           this.buy(w, i, t, size);
           this.open.add(i);
@@ -337,6 +377,8 @@ const events: StressEventConfig[] = config.stressEvents.map((c) =>
           ...c,
           ...(STOP_PROB !== undefined ? { waveStopProb: STOP_PROB } : {}),
           ...(RAMP_CAP !== undefined ? { rampBlocks: RAMP_CAP } : {}),
+          ...(CEILING !== undefined ? { wavePriceCeiling: CEILING } : {}),
+          ...(NO_CEILING ? { wavePriceCeiling: undefined } : {}),
         },
 );
 const launchEvent = events.find((e) => e.type === "tokenLaunch");
@@ -355,6 +397,8 @@ function epochWaves(seed: number): Wave[][] {
         const total = l.liquidityUsdc * l.waveUsdcMult;
         return {
           pool: new Pool(l.liquidityUsdc, l.liquidityUsdc),
+          ceiling: Math.min(WAVE_PRICE_CAP_MULT, l.priceCeilingMult ?? Infinity),
+          ...(launch.wavePriceCeiling !== undefined ? { ceilingRange: launch.wavePriceCeiling } : {}),
           S: l.liquidityUsdc,
           b: L > 0 ? total / L : 0,
           L,
@@ -413,7 +457,8 @@ console.log(
     (launch.waveStopProb !== undefined
       ? `memoryless ramp (waveStopProb ${launch.waveStopProb}, at most ${JSON.stringify(launch.rampBlocks)} blocks)`
       : `fixed ramp ${JSON.stringify(launch.rampBlocks)}`) +
-    `, lead ${TOKEN_LAUNCH_LEAD_BLOCKS}, wave price cap ${WAVE_PRICE_CAP_MULT}x`,
+    `, lead ${TOKEN_LAUNCH_LEAD_BLOCKS}, wave price cap ${WAVE_PRICE_CAP_MULT}x` +
+    (launch.wavePriceCeiling ? `, secret ceiling ${JSON.stringify(launch.wavePriceCeiling)}` : ", no secret ceiling"),
 );
 let gross = 0;
 let waves = 0;
@@ -433,11 +478,11 @@ const row = (label: string, r: ReturnType<typeof measure>) =>
   );
 console.log(
   `  wave gross per epoch, nobody else trading: ${(gross / SEEDS).toFixed(0)} USDC; ` +
-    `${((100 * capped) / Math.max(1, waves)).toFixed(1)}% of waves stopped by the price cap on their own`,
+    `${((100 * capped) / Math.max(1, waves)).toFixed(1)}% of waves stopped by their ceiling on their own`,
 );
 console.log("  P per epoch (USDC)            mean    ±se");
 row("front-run, best size", measure(() => new FrontRun(false)));
-row("front-run, length known", measure(() => new FrontRun(true)));
+row("front-run, length+ceiling known", measure(() => new FrontRun(true)));
 let best: { k: number; r: ReturnType<typeof measure> } | null = null;
 for (const k of ONE_AHEAD_K) {
   const r = measure(() => new OneAhead(k));
