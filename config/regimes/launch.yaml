@@ -140,7 +140,8 @@ stress:
     # buying has the same ~24 blocks expected ahead of it (1 in 25 stops each block); 4.7% run to the
     # cap of 75 = 3x the mean. Those spend up to 75 / 23.8 = 3.15x the drawn multiple, which is what
     # the wave wallets are funded for (core LAUNCH_WAVE_USDC_UNITS, the same in every regime), and
-    # the largest of them reach the 10x price cap on their own (2.9% of waves).
+    # the largest of them reach the 10x price cap on their own (2.9% of waves), which ends a wave
+    # where it stands (its sell-back runs from there).
     #
     # What it does and does not change, per epoch (npx tsx scripts/measureLaunchFrontRun.ts, 2,000
     # seeds of this file; --fixed-ramp 20,26 for the left column. Constant-product pools at 0.3%, an

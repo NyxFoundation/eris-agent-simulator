@@ -5,6 +5,7 @@ import { parse } from "yaml";
 import {
   EventSchedule,
   TOKEN_LAUNCH_LEAD_BLOCKS,
+  launchSellBackFrac,
   parseStressEvents,
   waveLengthFrom,
   waveLengthMean,
@@ -18,8 +19,10 @@ import {
   scaleUnits,
   tokenLaunchCeiling,
   tokenLaunchEndowments,
+  capStopRamp,
   waveBlockUsdcUnits,
   waveBuyTargetUnits,
+  waveTargets,
   waveUsdcUnits,
 } from "../core/src/realtime/tokenLaunch.js";
 
@@ -374,6 +377,64 @@ test("a buy says nothing about the length: every block of a memoryless wave buys
     }
   }
   assert.ok(waves > 300, `${waves} waves`);
+});
+
+test("the price cap ends the wave: nothing more to buy, and the sell-back runs from the stop", () => {
+  // It used to wait the cap out with the unbought target piling up: no sell-back while the price
+  // stayed up, and the first block back under the cap bought the whole backlog in one swap.
+  const doc = parse(readFileSync("config/regimes/launch.yaml", "utf8")) as {
+    run: { blocks: number };
+    stress: { events: Array<Record<string, unknown>> };
+  };
+  const parsed = parseStressEvents(JSON.stringify(doc.stress.events));
+  let checked = 0;
+  for (let seed = 1; seed <= 200 && checked < 20; seed++) {
+    const s = new EventSchedule(parsed, seed, doc.run.blocks);
+    const i = s.events.findIndex((e) => e.type === "tokenLaunch");
+    const ev = s.events[i];
+    for (const [j, l] of ev.launches!.entries()) {
+      if (l.dud || l.rampBlocks! < 8) continue;
+      checked++;
+      const block = waveBlockUsdcUnits(l)!;
+      const state: Parameters<typeof waveTargets>[0] = {
+        launch: l,
+        event: ev,
+        waveUsdcUnits: waveUsdcUnits(l),
+        waveBlockUsdcUnits: block,
+        grossBuyUsdc: 0n,
+        capStoppedAfter: undefined,
+      };
+      const ramp0 = ev.startBlock + TOKEN_LAUNCH_LEAD_BLOCKS;
+      const stopAt = Math.floor(l.rampBlocks! / 2); // the first block that finds the pool above the cap
+      for (let b = ramp0; b < ev.endBlock + 20; b++) {
+        const target = s.tokenLaunchTargetsAt(b).filter((t) => t.eventIndex === i)[j];
+        const t = b - ramp0;
+        if (t === stopAt) state.capStoppedAfter = capStopRamp(state, target);
+        const { buyTarget, sellBackFrac } = waveTargets(state, target);
+        if (state.capStoppedAfter === undefined) {
+          // Before the cap: the schedule's own targets.
+          assert.equal(buyTarget, waveBuyTargetUnits(state, target));
+          assert.equal(sellBackFrac, target.sellBackFrac);
+          state.grossBuyUsdc = buyTarget;
+        } else {
+          // After it: no backlog, ever, and the sell-back of a wave that stopped after stopAt blocks.
+          assert.equal(buyTarget, block * BigInt(stopAt), `seed ${seed} block ${b}`);
+          assert.equal(sellBackFrac, launchSellBackFrac(l, t, stopAt, ev.holdBlocks, ev.decayBlocks));
+        }
+      }
+      assert.equal(state.capStoppedAfter, stopAt);
+      // The sell-back now starts hold blocks after the stop, not after the drawn length.
+      const at = (t: number) =>
+        waveTargets(state, s.tokenLaunchTargetsAt(ramp0 + t).filter((x) => x.eventIndex === i)[j]).sellBackFrac;
+      assert.equal(at(stopAt + ev.holdBlocks - 1), 0);
+      assert.ok(at(stopAt + ev.holdBlocks) > 0);
+      assert.ok(Math.abs(at(stopAt + ev.holdBlocks + ev.decayBlocks - 1) - l.sellBackFrac) < 1e-12);
+      // A wave still catching up after its ramp keeps its scheduled sell-back.
+      const late = s.tokenLaunchTargetsAt(ramp0 + l.rampBlocks! + 3).filter((x) => x.eventIndex === i)[j];
+      assert.equal(capStopRamp(state, late), l.rampBlocks);
+    }
+  }
+  assert.ok(checked >= 20, `${checked} waves`);
 });
 
 test("parser: waveStopProb is one probability on a tokenLaunch with a single rampBlocks cap", () => {

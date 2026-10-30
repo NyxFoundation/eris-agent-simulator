@@ -337,6 +337,9 @@ export type TokenLaunchTarget = {
   // The same, counted in whole blocks of the token's ramp: min(t + 1, ramp), 0 before it and for a
   // dud. A wave with a per-block buy (waveBlockUsdcMult) targets exactly this many blocks' worth.
   buyBlocks: number;
+  // t: blocks since the token's ramp began (negative before it). The driver needs it to re-time the
+  // sell-back of a wave the price cap stopped (launchSellBackFrac with the blocks it bought).
+  rampIndex: number;
   // Fraction of the tokens bought that should have been sold back by now: 0 until the token's
   // decay starts (its own ramp + the window's hold), rising to sellBackFrac at its end and holding there.
   sellBackFrac: number;
@@ -823,16 +826,14 @@ export class EventSchedule {
         // spent by the end of the ramp and never comes back (the decay is a token sale, not a refund).
         const buyFrac = t < 0 ? 0 : t < r ? (r === 0 ? 1 : (t + 1) / r) : 1;
         const buyBlocks = t < 0 ? 0 : Math.min(t + 1, r);
-        const decayT = t - (r + h);
-        const decayFrac =
-          decayT < 0 ? 0 : d === 0 ? 1 : Math.min(1, (decayT + 1) / d);
         out.push({
           eventIndex,
           launch,
           listed,
           buyFrac: launch.dud ? 0 : buyFrac,
           buyBlocks: launch.dud ? 0 : buyBlocks,
-          sellBackFrac: launch.dud ? 0 : launch.sellBackFrac * decayFrac,
+          rampIndex: t,
+          sellBackFrac: launchSellBackFrac(launch, t, r, h, d),
           justClosed: blockIndex === ev.endBlock,
         });
       }
@@ -853,6 +854,24 @@ export class EventSchedule {
     const wethMult = baseMults.WETH ?? 1;
     return { wethMult, usdcPx: 1, baseMults };
   }
+}
+
+// The share of a token's bought tokens its wave should have sold back by ramp block t, for a wave
+// that bought for `ramp` blocks: 0 until its decay starts (`hold` blocks after its last buy), rising
+// to sellBackFrac over `decay` blocks and holding there. The schedule passes the drawn length; the
+// driver passes the blocks a wave bought before the price cap stopped it.
+export function launchSellBackFrac(
+  launch: ResolvedTokenLaunch,
+  t: number,
+  ramp: number,
+  hold: number,
+  decay: number,
+): number {
+  if (launch.dud) return 0;
+  const decayT = t - (ramp + hold);
+  const frac =
+    decayT < 0 ? 0 : decay === 0 ? 1 : Math.min(1, (decayT + 1) / decay);
+  return launch.sellBackFrac * frac;
 }
 
 function lerp(a: number, b: number, t: number): number {

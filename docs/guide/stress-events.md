@@ -207,8 +207,12 @@ from them. The token's `erc20` entry now comes from the launcher's `Launched` ev
 **`verified: true`** (the token was deployed inside environment code; a top-level CREATE is always
 published unverified, an internal CREATE not at all).
 
-The wave stops buying when the pool prices the token above **10× the listing price**
-(`WAVE_PRICE_CAP_MULT`, `stress_token_launch_wave_capped`). The largest official expected wave on its
+The wave ends for good the first block it finds the pool pricing the token above **10× the listing
+price** (`WAVE_PRICE_CAP_MULT`, `stress_token_launch_wave_capped`): it drops what it has not bought and
+holds and sells back from there, as if its stop had been drawn at that block. (Until 2026-10-31 it
+waited the cap out with the unbought amount piling up, so it never reached its sell-back while the
+price stayed up, and the first block back under the cap bought the whole backlog in one swap — a
+release any holder could time by selling the pool just under the cap.) The largest official expected wave on its
 own takes a full-range pool to 4×, so the cap binds once the field has bought ahead of it by more than
 about 1.16× the pool's seeded USDC — or, on its own, at the end of the longest memoryless waves (below;
 2.9% of waves).

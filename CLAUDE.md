@@ -1211,8 +1211,12 @@ gas は pin（9M、実測 5.6M）。翌ブロックにレジストリへ `uniswa
   launch だけに置くと block 0 でレジームが分かる（`test/regimeStartInvariance.test.ts` が検査）。
   deploy は registrar（setup 鍵）で `deployAgentMarketVenues` の中、`assertArtifactHasFunctions("TokenLauncher", …)` 付き。
   launcher のアドレスは `environmentAddresses` と `market_registry_deployed.tokenLauncher` に入る
-- **wave は pool の価格が上場価格の 10 倍（`WAVE_PRICE_CAP_MULT`）を超えたら買わない**（`stress_token_launch_wave_capped`、
-  summary の `waveCappedBlocks`）。full-range pool の価格は (pool の USDC / seed した USDC)² なので、公式の最大の期待 wave
+- **wave は pool の価格が上場価格の 10 倍（`WAVE_PRICE_CAP_MULT`）を超えていたら、そのブロックで終わる**
+  （`stress_token_launch_wave_capped`、summary の `capStoppedAfterBlocks`）。抽選の停止と同じ扱いで、残りは買わず、
+  そのブロックから hold → 売り戻し（`waveTargets` / `capStopRamp`）。以前は上限の間は待つだけで、買い残しが溜まり続けた。
+  そのため、価格が上にある限り売り戻しに進まず、10 倍を割った最初のブロックで溜めた分（最大 73 ブロック分）を 1 本で買った。
+  保有者は、少し売って 10 倍のすぐ下に落とせばこの一気買いの時期を選べ、そこへ売れた。`scripts/measureLaunchFrontRun.ts` の
+  戦略はこの経路を使わないので、変更の前後で数字は同じ。full-range pool の価格は (pool の USDC / seed した USDC)² なので、公式の最大の期待 wave
   （seed の 1.0 倍）単独で 4 倍、ramp 1 ブロックは最大 +8.6%。10 倍は seed の ~2.16 倍を買った所で、場が wave より先に
   ~1.16 倍買っても届かない値。長く続いた無記憶の wave（下）は単独でも届き、そこで止まる（波の 2.9%）。
   買い占められた pool へ wave が払い続けるのを止める（需要に上値があるのは需要の性質でもある）。判定は送信前の slot0 で、

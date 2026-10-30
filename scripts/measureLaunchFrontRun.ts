@@ -8,7 +8,8 @@
 // their pools, waves, duds, lengths, holds and sell-backs as the coordinator would run them). Each
 // launch pool is a full-range Uniswap V3 position = a constant-product pool with the 0.3% fee on the
 // way in, and the wave does what tokenLaunch.ts does: per block it buys toward its cumulative target
-// unless the pool is above WAVE_PRICE_CAP_MULT, then holds, then sells back toward its target.
+// until it stops -- at its drawn length, or for good the first block it finds the pool above
+// WAVE_PRICE_CAP_MULT -- then holds, then sells back toward its target.
 //
 // Timing, measured on a launch run (runs/2026-10-09T14-10-43-459Z): the wave's k-th buy lands in
 // ramp block k, and an agent that has seen block t-1 lands in block t -- in front of the wave's buy of
@@ -89,6 +90,8 @@ type Wave = {
   sellBack: number;
   dud: boolean;
   bought: number;
+  // The ramp block at which the price cap stopped the wave (it bought the blocks before it).
+  cappedAt?: number;
   tokens: number;
   sold: number;
   heldAtDecay?: number;
@@ -102,19 +105,22 @@ function note(w: Wave, t: number, usdc: number): void {
   w.flow.set(t, (w.flow.get(t) ?? 0) + usdc);
 }
 
+// The blocks the wave buys for: its drawn length, or fewer when the price cap stopped it.
+const rampOf = (w: Wave) => w.cappedAt ?? w.L;
+
 /** One block of tokenLaunch.ts's driver: buy toward the cumulative target, else sell back. */
 function waveStep(w: Wave, t: number): void {
   if (w.dud || t < 0) return;
-  const delta = w.b * Math.min(t + 1, w.L) - w.bought;
+  const delta = w.b * Math.min(t + 1, rampOf(w)) - w.bought;
   if (delta > 1e-9) {
     if (w.pool.price() <= WAVE_PRICE_CAP_MULT) {
       w.tokens += w.pool.buy(delta);
       w.bought += delta;
       note(w, t, delta);
-    }
+    } else w.cappedAt = Math.min(w.L, t); // the cap ends the wave, as a drawn stop would
     return;
   }
-  const decay0 = w.L + w.H;
+  const decay0 = rampOf(w) + w.H;
   if (t < decay0) return;
   if (w.heldAtDecay === undefined) w.heldAtDecay = w.tokens;
   const target = w.heldAtDecay * w.sellBack * Math.min(1, (t - decay0 + 1) / w.D);
@@ -127,7 +133,7 @@ function waveStep(w: Wave, t: number): void {
   }
 }
 
-const buyingAt = (w: Wave, t: number) => !w.dud && t >= 0 && t < w.L;
+const buyingAt = (w: Wave, t: number) => !w.dud && t >= 0 && t < rampOf(w);
 
 abstract class Agent {
   usdc: number;
@@ -244,8 +250,11 @@ function frontRunProfits(S: number, b: number, size: number, maxLen: number): nu
   let bought = b;
   const tokens = p.buy(size);
   const out = [p.quoteSell(tokens) - size];
+  let capped = false;
   for (let k = 1; k < maxLen; k++) {
-    if (p.price() <= WAVE_PRICE_CAP_MULT) {
+    // The first block above the cap ends the wave (tokenLaunch.ts).
+    if (!capped && p.price() > WAVE_PRICE_CAP_MULT) capped = true;
+    if (!capped) {
       p.buy(b * (k + 1) - bought);
       bought = b * (k + 1);
     }
