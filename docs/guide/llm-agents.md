@@ -187,7 +187,15 @@ What else differs from a hand-written strategy, because each was a way out of th
   ignored, or throws in strict code; use `Object.defineProperty` if you mean it. The usual cases
   still work: `this.name = "MyError"` in an `Error` subclass, and your own `toString`, `valueOf` or
   `constructor` on a plain object or a function. The global object itself is not frozen, so state
-  kept on `globalThis` lasts across calls (until the worker is replaced).
+  kept on `globalThis` lasts across calls (until the worker is replaced). `BigInt.prototype.toJSON = …`
+  is one such patch; give `JSON.stringify` a replacer for bigints instead.
+- **No `WebAssembly`, no `Symbol.for` / `Symbol.keyFor`.** Node answers `WebAssembly.compileStreaming`
+  with an error of its own realm, and `Symbol.for` is the way to `nodejs.util.inspect.custom`, which
+  Node's `util.inspect` calls with its own `inspect` as an argument.
+- **What the strategy throws reaches the runtime as text**, and a promise it rejects without handling
+  is logged once per decision without ending the worker (an uncaught exception, e.g. from a
+  `FinalizationRegistry` callback, still replaces it). Neither value is inspected: Node's default for
+  both ran it through `util.inspect`.
 
 Nothing in the body runs when it is compiled: the parent process compiles every revision to validate
 it, and only the worker ever runs one. Code that fails a check or fails to compile is not installed —

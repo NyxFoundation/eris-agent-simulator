@@ -711,6 +711,21 @@ test("compileExecutor: the system prompt's 'no process, no network' is what the 
     async () => await frozen.executor({ round: 1 } as never, hostContext({ logs: [], submitted: [] })),
     /not extensible/,
   );
+  // The bigint polyfill a model reaches for (observations carry bigints) is a patch that does
+  // nothing; the replacer the prompt points to instead works.
+  assert.match(system, /pass JSON\.stringify a replacer rather than\s+setting BigInt\.prototype\.toJSON/);
+  const polyfill = compileExecutor(`
+    BigInt.prototype.toJSON = function () { return this.toString(); };
+    let patched;
+    try { patched = JSON.stringify({ a: 1n }); } catch (e) { patched = e.constructor.name; }
+    const replaced = JSON.stringify({ a: 1n }, (k, v) => (typeof v === "bigint" ? v.toString() : v));
+    return { type: "noop", patched, replaced };
+  `);
+  assert.ok(polyfill.ok);
+  assert.deepEqual(
+    await polyfill.executor({ round: 1 } as never, hostContext({ logs: [], submitted: [] })),
+    { type: "noop", patched: "TypeError", replaced: '{"a":"1"}' },
+  );
   const imported = compileExecutor(`// import nothing\nreturn null;`);
   assert.ok(!imported.ok);
   assert.match(imported.reason, /"import" \(line 1\)/);

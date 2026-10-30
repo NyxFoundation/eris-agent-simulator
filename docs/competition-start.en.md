@@ -690,8 +690,8 @@ code and decides whether to rewrite it.
 
 Generated code passes a **static check for cheatcodes (§1's glossary) and the word `import` → compilation**
 before it is installed. Compiling does not run the body, and **it is not trial-run first** either. Inside
-generated code the built-ins are frozen, `eval` / `new Function` are unavailable, and the word `import` is
-refused anywhere in the body, comments included ([self-improving agents](guide/llm-agents.md#what-the-generated-code-may-do)). Once installed, every
+generated code the built-ins are frozen, `eval` / `new Function` and `WebAssembly` / `Symbol.for` are
+unavailable, and the word `import` is refused anywhere in the body, comments included ([self-improving agents](guide/llm-agents.md#what-the-generated-code-may-do)). Once installed, every
 call to `decide` is capped at **5 seconds** (`DECIDE_TIMEOUT_MS`, rules §2.3), the same bound a
 hand-written strategy gets; exceeding it records that round as no action (`decide timeout:`). A revision that fails static checking or compilation is not installed; the failure is recorded and the
 strategy keeps trading unchanged. There is no automatic rollback — reverting is the model's decision, made

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -414,3 +414,121 @@ test("a generated revision in the worker cannot reach the worker's process throu
     reached: "nothing kept",
   });
 });
+
+test("a generated revision in the worker cannot reach the worker's process through WebAssembly streaming", async (t) => {
+  // Node answers WebAssembly.compileStreaming / instantiateStreaming, and rejects a source that is
+  // not a Response with an error of its own realm: one `constructor.constructor` from the worker's
+  // process. The namespace is not in the context.
+  const { runner } = fixture(t, `export function decide() { return { type: 'noop' }; }`, 1000);
+  runner.setSource({
+    kind: "executor",
+    source: `
+      let reached = "nothing";
+      const names = ["compileStreaming", "instantiateStreaming"];
+      for (let i = 0; i < names.length; i++) {
+        try { await WebAssembly[names[i]](1); } catch (e) {
+          try { reached = typeof e.constructor.constructor("return process")().getBuiltinModule; } catch (x) {}
+        }
+      }
+      return { type: 'noop', round: ctx.latestObservation().round, reached };
+    `,
+  });
+  assert.deepEqual((await runner.decide(obs(3))).action, {
+    type: "noop",
+    round: 3,
+    reached: "nothing",
+  });
+});
+
+// A rejected promise nobody handles, or a throw from a callback the engine runs later, used to end in
+// Node's own handling of the value: the worker serialized it for the parent with util.inspect, which
+// calls a custom inspect function with the host's `inspect` as an argument. These payloads try that
+// (if Symbol.for is there to make the symbol) and write a file if they reach the worker's process.
+const inspectEscape = (proof: string) => `
+  const x = { stack: "s" };
+  try {
+    x[Symbol.for("nodejs.util.inspect.custom")] = function (depth, options, inspect) {
+      try {
+        const p = inspect.constructor.constructor("return process")();
+        p.getBuiltinModule("fs").writeFileSync(${JSON.stringify(proof)}, "reached the worker's process");
+      } catch (e) {}
+      return "x";
+    };
+  } catch (e) {}
+`;
+
+test("an unhandled rejection from a generated revision is not inspected and does not end the worker", async (t) => {
+  const { runner, logs } = fixture(t, `export function decide() { return { type: 'noop' }; }`, 1000);
+  const dir = mkdtempSync(join(tmpdir(), "eris-worker-proof-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const proof = join(dir, "proof.txt");
+  runner.setSource({
+    kind: "executor",
+    source: `${inspectEscape(proof)}
+      Promise.reject(x);
+      Promise.reject(new Error("a second one, same decision"));
+      globalThis.calls = (globalThis.calls || 0) + 1;
+      return { type: 'noop', calls: globalThis.calls };
+    `,
+  });
+  assert.deepEqual((await runner.decide(obs(1))).action, { type: "noop", calls: 1 });
+  for (let i = 0; i < 100 && logs.length === 0; i++) await delay(10);
+  await delay(50);
+  // Said once for the decision, as fixed text.
+  assert.deepEqual(logs, [
+    {
+      round: 1,
+      reason:
+        "the generated strategy left a rejected promise unhandled; the value is not read, " +
+        "and the strategy keeps running",
+    },
+  ]);
+  // The same worker answers the next decision: its state is still there.
+  assert.deepEqual((await runner.decide(obs(2))).action, { type: "noop", calls: 2 });
+  assert.ok(!existsSync(proof), "the custom inspect function reached the worker's process");
+});
+
+test(
+  "a throw from a FinalizationRegistry callback fails the worker with a fixed message, not the value",
+  { timeout: 60_000 },
+  async (t) => {
+    const { runner, logs } = fixture(t, `export function decide() { return { type: 'noop' }; }`, 5000);
+    const dir = mkdtempSync(join(tmpdir(), "eris-worker-proof-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const proof = join(dir, "proof.txt");
+    // The engine runs the cleanup callback as a task of its own once a registered object has been
+    // collected; Node reports a throw from it as an uncaught exception. Allocation drives the GC,
+    // and it has to be enough for a full collection: Node 22 processes the registry only then.
+    runner.setSource({
+      kind: "executor",
+      source: `
+        if (obs.round >= 1000) return { type: 'noop', reason: 'after' };
+        globalThis.registry = globalThis.registry || new FinalizationRegistry(() => {
+          ${inspectEscape(proof)}
+          throw x;
+        });
+        for (let i = 0; i < 20; i++) globalThis.registry.register({ i }, i);
+        let junk = 0;
+        for (let i = 0; i < 40; i++) junk += new Array(500000).fill(i).length;
+        return { type: 'noop', junk };
+      `,
+    });
+    const failures: string[] = [];
+    for (let round = 1; round <= 60 && failures.length === 0; round++) {
+      try {
+        await runner.decide(obs(round));
+      } catch (error) {
+        failures.push((error as Error).message);
+      }
+      for (let i = 0; i < 30 && logs.length === 0; i++) await delay(10);
+      for (const entry of logs) failures.push(entry.reason ?? "");
+    }
+    assert.ok(failures.length > 0, "the registry's callback never ran");
+    assert.match(
+      failures[0],
+      /uncaught exception in the generated strategy \(the value is not read\)/,
+    );
+    assert.ok(!existsSync(proof), "the custom inspect function reached the worker's process");
+    assert.deepEqual((await runner.decide(obs(1000))).action, { type: "noop", reason: "after" });
+  },
+);

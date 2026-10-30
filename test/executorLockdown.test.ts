@@ -410,3 +410,118 @@ test("compileExecutor: import() is refused, and code cannot be built from string
     assert.match(outcome, /Code generation from strings disallowed/);
   }
 });
+
+test("lockdown: WebAssembly's streaming functions cannot hand over an error of the host's realm", async (t) => {
+  withMarker(t);
+  // Node, not the engine, answers compileStreaming / instantiateStreaming, and it rejects a source
+  // that is not a Response with an error it creates in its own realm: that error's
+  // `constructor.constructor` was the host's Function. The namespace is removed and wasm code
+  // generation is off in the context.
+  const r = compileExecutor(`
+    let reached = "";
+    const calls = [
+      () => WebAssembly.compileStreaming(1),
+      () => WebAssembly.instantiateStreaming(1),
+      () => globalThis.WebAssembly.compileStreaming({ then(ok) { ok(1); } }),
+    ];
+    for (let i = 0; i < calls.length; i++) {
+      try { await calls[i](); } catch (e) {
+        try { reached += String(e.constructor.constructor("return process")().env.${MARKER_NAME}); } catch (x) {}
+      }
+    }
+    return { type: "noop", reached, round: obs.round, latest: ctx.latestObservation().round };
+  `);
+  assert.ok(r.ok, r.ok ? "" : r.reason);
+  assert.deepEqual(await r.executor(observation() as never, hostContext()), {
+    type: "noop",
+    reached: "",
+    round: 7,
+    latest: 7,
+  });
+});
+
+test("lockdown: WebAssembly, Symbol.for and Symbol.keyFor are not in the context", async () => {
+  // Symbol.for is the only way to a registered symbol, and Node reads one off arbitrary objects:
+  // util.inspect calls `obj[Symbol.for("nodejs.util.inspect.custom")]` with the host's inspect as an
+  // argument. Without Symbol.for no value generated code makes can carry it.
+  const r = compileExecutor(`
+    "use strict";
+    return {
+      type: "noop",
+      wasm: typeof WebAssembly + ":" + ("WebAssembly" in globalThis),
+      symbolFor: typeof Symbol.for + ":" + (Object.getOwnPropertyDescriptor(Symbol, "for") === undefined),
+      keyFor: typeof Symbol.keyFor + ":" + ("keyFor" in Symbol),
+      // The rest of Symbol is still there, and still frozen.
+      symbols: typeof Symbol("x") + ":" + (Symbol.iterator in []) + ":" + Object.isFrozen(Symbol),
+    };
+  `);
+  assert.ok(r.ok, r.ok ? "" : r.reason);
+  assert.deepEqual(await r.executor({ round: 1 } as never, hostContext()), {
+    type: "noop",
+    wasm: "undefined:false",
+    symbolFor: "undefined:true",
+    keyFor: "undefined:false",
+    symbols: "symbol:true:true",
+  });
+  // And what is not there cannot be put back.
+  const restore = compileExecutor(`"use strict"; Symbol.for = () => 1; return null;`);
+  assert.ok(restore.ok);
+  await assert.rejects(
+    async () => await restore.executor({ round: 1 } as never, hostContext()),
+    /not extensible/,
+  );
+});
+
+test("compileExecutor: what a strategy throws reaches the host as text, never as a value of the vm", async () => {
+  // A thrown value's toString, getters and prototype chain are the strategy's code. If the host
+  // stringifies it, what that code throws in turn is a value of the vm loose in the host, outside
+  // every try -- in the worker an unhandled rejection, which Node hands to util.inspect. So the
+  // bridge turns the throw into a string in the vm, and the executor rejects with an Error of this
+  // realm.
+  const cases: [string, string | RegExp][] = [
+    [`throw new Error("boom");`, "Error: boom"],
+    [`throw "plain";`, "plain"],
+    [`class E extends Error { constructor() { super("m"); this.name = "E"; } } throw new E();`, "E: m"],
+    [
+      `throw { toString() { throw { toString() { throw new Error("again"); } }; } };`,
+      "the strategy threw a value that could not be turned into text",
+    ],
+    [
+      `throw new Proxy({}, { get() { throw { stack: "s" }; }, getPrototypeOf() { throw 1; } });`,
+      "the strategy threw a value that could not be turned into text",
+    ],
+    // The return value is cloned into this realm, and the clone runs its getters.
+    [
+      `const o = { type: "noop" };
+       Object.defineProperty(o, "x", { enumerable: true, get() { throw { toString() { throw 1; } }; } });
+       return o;`,
+      "the executor's return value is not plain data: a getter of it threw",
+    ],
+    [
+      `const o = { type: "noop" };
+       Object.defineProperty(o, "x", { enumerable: true, get() { throw { toString() { throw 1; } }; } });
+       try { ctx.submit(o); } catch (e) { return { type: "noop", submit: e.message }; }
+       return null;`,
+      "",
+    ],
+  ];
+  for (const [source, expected] of cases) {
+    const r = compileExecutor(source);
+    assert.ok(r.ok, r.ok ? "" : r.reason);
+    let outcome: unknown;
+    try {
+      outcome = await r.executor({ round: 1 } as never, hostContext());
+    } catch (error) {
+      assert.ok(error instanceof Error, `${source}: rejected with a value of the vm`);
+      if (expected instanceof RegExp) assert.match(error.message, expected, source);
+      else assert.equal(error.message, expected, source);
+      continue;
+    }
+    // The submit case: the host's refusal comes back to the strategy as a copy, as text.
+    assert.equal(expected, "", `${source} did not throw`);
+    assert.deepEqual(outcome, {
+      type: "noop",
+      submit: "a submitted action is not plain data: a getter of it threw",
+    });
+  }
+});

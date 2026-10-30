@@ -86,8 +86,8 @@ import フックを `--experimental-vm-modules` 無しでは呼ばないので�
 （issue #215。`createContext(Object.create(null))`。以前はホストの `Object` / `JSON` / `Math` を渡していて
 `Object.constructor("return process")()` でホスト realm に出られ、worker の `process.env` から鍵が読めた。
 プロトタイプ無しなのは、`{}` だと `this.constructor` がホストの `Object` になるため）。さらに
-**文字列からのコード生成を切る**（`codeGeneration: { strings: false }`。`eval` / `Function` はコンテキストの
-EvalError。`import` を実行時に組み立てさせないため）。obs / ctx はコンテキスト realm へ**コピーして**渡し、
+**文字列からのコード生成を切る**（`codeGeneration: { strings: false, wasm: false }`。`eval` / `Function` は
+コンテキストの EvalError。`import` を実行時に組み立てさせないため）。obs / ctx はコンテキスト realm へ**コピーして**渡し、
 `publicClient` の読取結果も戻りでコピーする（`EXECUTOR_BRIDGE`）。**ブリッジは使う組み込みを評価時に定数へ取り、
 呼び出し時に引かない**（監査 #4a。以前は `Object.keys` / `Array.isArray` / `Object.prototype.toString` /
 `Promise.resolve` / `seen.get` / `.then` をその場で引いていて、生成コードがどれかを差し替えてから
@@ -100,9 +100,16 @@ non-writable / non-configurable にする。グローバル自体は拡張可能
 throw）は Object / Function / Error 系の数個だけ SES と同じくアクセサにして通す。それ以外の組み込みのメソッド名への
 代入（`arr.filter = f`）は無視される（strict では throw）。ホストのコードが走る読取（client の proxy trap 等）は
 全部 try の中でコピーする（スタック上限でホスト側のフレームが投げる RangeError もホストのオブジェクト）。生成コードは
-ホストから直接呼ばず、ブリッジの `invoke` から呼ぶ。生成コードから辿れるホストのオブジェクトを無くす層であって、
-ADR 0024 の「封じ込め境界ではない」は変わらない。**設置前に試運転はしない** — コンパイルは何も実行しないので、
-無限ループする本体もコンパイルは通る。だから設置後、
+ホストから直接呼ばず、ブリッジの `invoke` から呼ぶ。**V8 でなく Node が答えるものは凍結でなく
+削除**: `WebAssembly` は名前空間ごと消す（`compileStreaming(1)` の reject 理由が Node の realm の Error）。
+`Symbol.for` / `Symbol.keyFor` も消す（`nodejs.util.inspect.custom` を作らせない。`util.inspect` はその関数に
+ホストの `inspect` を渡す）。**ホストは生成コードの値を文字列化しない**: 投げられたものは `invoke` が vm の中で
+文字列にして reject し（`String(x)` をホストで走らせると x の toString が投げた値が try の外に出る）、worker は
+生成コードについて `unhandledRejection` / `uncaughtException` を自前で受けて値に触れない（Node の既定は worker の
+エラーを `util.inspect` で直列化する）。未処理 rejection は判断 1 回につき 1 行記録して worker を続け、uncaught
+exception（`FinalizationRegistry` のコールバック等）は従来どおり worker を失敗させる（固定文）。生成コードから
+辿れるホストのオブジェクトを無くす層であって、ADR 0024 の「封じ込め境界ではない」は変わらない。
+**設置前に試運転はしない** — コンパイルは何も実行しないので、無限ループする本体もコンパイルは通る。だから設置後、
 `decide` を **worker thread** で実行し、親スレッドが呼び出しごとに 5 秒を計測する
 （`DECIDE_TIMEOUT_MS` = 規約 §2.3、`runtime/strategyRunner.ts` / `decideTimeout.ts`）。
 **worker の env は親の env から秘密を落としたもの**（`runtime/strategyEnv.ts`。Python の子プロセスも同じ）:

@@ -20,10 +20,11 @@
 //      implementation's never fired in 18 runs. Reverting is the model's call, via `revertTo`.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isProxy } from "node:util/types";
 import { PYTHON_ACTION_VOCABULARY } from "@eris/sdk/pythonVocabulary.js";
 import { compileFunction, createContext, Script } from "node:vm";
 import { parse as parseYaml } from "yaml";
-import { withDecideTimeout } from "./decideTimeout.js";
+import { DecideTimeoutError, withDecideTimeout } from "./decideTimeout.js";
 import { findCheatcodeUsage } from "@eris/sdk/strategyStaticCheck.js";
 import {
   digestMarketHistory,
@@ -531,10 +532,29 @@ const EXECUTOR_BRIDGE = `(() => {
     submit: (action) => call(() => host.submit(action)),
     log: (entry) => call(() => host.log(entry)),
   });
+  // What the strategy threw, as text made here. Turning it into text runs its code (toString, a
+  // getter, a proxy trap), which is harmless in this realm; on the host's side a String(x) ran it
+  // outside any try, and what it threw from there was the strategy's value again, loose in the host.
+  // So the host is handed a string and nothing else.
+  const StringCtor = String;
+  const describe = (e) => {
+    try {
+      const text = typeof e === "string" ? e : StringCtor(e);
+      if (typeof text === "string") return text;
+    } catch {}
+    return "the strategy threw a value that could not be turned into text";
+  };
   // The one way the host calls generated code. The call is made from this realm, so whatever it
   // reaches is handed this realm's values (a callable Proxy's apply trap gets its arguments array
-  // from the realm that calls it), and the host only ever holds the promise of this async arrow.
-  const invoke = async (decide, obs, host) => decide(copyIn(obs), wrapContext(host));
+  // from the realm that calls it), and the host only ever holds the promise of this async arrow,
+  // which settles to the strategy's answer or rejects with a string.
+  const invoke = async (decide, obs, host) => {
+    try {
+      return await decide(copyIn(obs), wrapContext(host));
+    } catch (e) {
+      throw describe(e);
+    }
+  };
   return { invoke };
 })()`;
 
@@ -560,11 +580,28 @@ type ExecutorBridge = {
 // on the receiver instead, the way SES's lockdown handles it. Any other built-in property is
 // read-only on instances too: `arr.filter = f` is ignored (or throws, in strict code), while
 // `Object.defineProperty(arr, "filter", ...)` still works.
+//
+// Three things are removed rather than frozen, because Node rather than the engine answers them.
+// WebAssembly's streaming functions hand their argument to Node, which rejects a non-Response with an
+// error of its own realm: `WebAssembly.compileStreaming(1)`, and the rejection's
+// `constructor.constructor` is the host's Function (wasm code generation is off in the context as
+// well). `Symbol.for` is the only way to a registered symbol, and Node reads registered symbols off
+// arbitrary objects -- `nodejs.util.inspect.custom` above all, which util.inspect calls with the host's
+// `inspect` as an argument. Without it, nothing generated code makes can carry one, whichever host
+// path inspects it (`Symbol.keyFor` goes with it). Strategies have no use for either.
 const EXECUTOR_LOCKDOWN = `(() => {
   "use strict";
   const { freeze, getOwnPropertyDescriptor, getPrototypeOf } = Object;
-  const { defineProperty, ownKeys } = Reflect;
+  const { defineProperty, deleteProperty, ownKeys } = Reflect;
   const TypeErrorCtor = TypeError;
+  const removed = [[globalThis, "WebAssembly"], [Symbol, "for"], [Symbol, "keyFor"]];
+  for (let i = 0; i < removed.length; i++) {
+    const owner = removed[i][0];
+    const name = removed[i][1];
+    deleteProperty(owner, name);
+    if (getOwnPropertyDescriptor(owner, name) !== undefined)
+      throw new TypeErrorCtor("could not remove " + name);
+  }
   const overridable = (proto, names) => {
     for (let i = 0; i < names.length; i++) {
       const name = names[i];
@@ -675,15 +712,35 @@ function findImport(source: string): number | null {
   return null;
 }
 
+// Text for something caught where generated code may have supplied it. Only a string or an error of
+// this realm is read (a DataCloneError, a stack overflow, the worker's own failures). Anything else
+// may be the vm's, and its toString, its getters and its prototype chain are generated code: running
+// them here is what turned a thrown value into a second throw outside every try, and an unhandled
+// rejection in the worker ends in util.inspect, which hands the host's `inspect` to the value's
+// custom inspect function. So it is not stringified and no property of it is read.
+export function hostErrorText(error: unknown, otherwise: string): string {
+  try {
+    if (typeof error === "string") return error;
+    if (!isProxy(error) && error instanceof Error) {
+      const message = error.message;
+      if (typeof message === "string") return message;
+    }
+  } catch {
+    // Whatever threw here is not looked at either.
+  }
+  return otherwise;
+}
+
 // A value the generated code built, brought into this realm before anyone downstream touches it.
 // Actions, log entries and submissions are plain data by contract, so a structural clone loses
-// nothing; anything unclonable was not valid in the first place.
+// nothing; anything unclonable was not valid in the first place. The clone runs the value's getters,
+// so what it throws can be the strategy's own value (hostErrorText).
 function toHostRealm<T>(what: string, value: T): T {
   try {
     return structuredClone(value);
   } catch (error) {
     throw new Error(
-      `${what} is not plain data: ${error instanceof Error ? error.message : String(error)}`,
+      `${what} is not plain data: ${hostErrorText(error, "a getter of it threw")}`,
     );
   }
 }
@@ -753,9 +810,10 @@ export function compileExecutor(source: string): CompileResult {
     // `this.constructor` at the top of the strategy is the host's Object and
     // `this.constructor.constructor("return process")()` is the host's process.
     // No code from strings: eval and the Function constructors throw an EvalError of the context,
-    // so the source is all the code there is (see IMPORT_WORD).
+    // so the source is all the code there is (see IMPORT_WORD). No wasm either (EXECUTOR_LOCKDOWN
+    // also removes the WebAssembly namespace).
     const sandbox = createContext(Object.create(null), {
-      codeGeneration: { strings: false },
+      codeGeneration: { strings: false, wasm: false },
     });
     const { invoke } = new Script(EXECUTOR_BRIDGE, {
       filename: "executor-bridge.js",
@@ -783,10 +841,21 @@ export function compileExecutor(source: string): CompileResult {
         submit: (action) => ctx.submit(toHostRealm("a submitted action", action)),
         log: (entry) => ctx.log(toHostRealm("a log entry", entry)),
       };
-      const result = await withDecideTimeout(
-        invoke(decide, obs, hostFacing),
-        obs.round,
-      );
+      let result: unknown;
+      try {
+        result = await withDecideTimeout(invoke(decide, obs, hostFacing), obs.round);
+      } catch (error) {
+        // invoke rejects with a string only (the bridge's describe); the timeout is this realm's.
+        if (typeof error === "string") throw new Error(error);
+        let timeout = false;
+        try {
+          timeout = error instanceof DecideTimeoutError;
+        } catch {
+          // Not this realm's, then.
+        }
+        if (timeout) throw error;
+        throw new Error("the strategy failed with a value that is not text");
+      }
       if (result === null || result === undefined) return null;
       return toHostRealm("the executor's return value", result) as AgentAction;
     };
@@ -883,9 +952,11 @@ export function buildRevisionSystem(
       `Do not install packages during a revision. ctx exposes agent_id, address, log and submit; no viem client or wallet.`,
       `The host signs all returned/submitted actions. Privileged RPC calls (anvil_*, evm_*, hardhat_*) are`,
     ] : [
-      `The body may use only: obs, ctx, and the standard JavaScript built-ins, which are frozen. There`,
-      `is no require, no eval or new Function, no import (the word is refused anywhere in the body,`,
-      `even in a comment), no process, no network. Privileged RPC calls (anvil_*, evm_*, hardhat_*) are`,
+      `The body may use only: obs, ctx, and the standard JavaScript built-ins, which are frozen, so`,
+      `patching one fails (to serialize a bigint, pass JSON.stringify a replacer rather than`,
+      `setting BigInt.prototype.toJSON). There is no require, no eval or new Function,`,
+      `no import (the word is refused anywhere in the body, even in a comment), no process, no network.`,
+      `Privileged RPC calls (anvil_*, evm_*, hardhat_*) are`,
     ]),
     `rejected before installation.`,
     ...pythonVocabulary,
