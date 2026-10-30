@@ -8,11 +8,13 @@ import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 import {
   dailyEpisodePlan,
+  dayTemplates,
   EDGE_MARGIN_HOURS,
   KINDS_PER_DAY,
   MIN_SLICE_HOURS,
   renderEventLines,
   replaceStressEvents,
+  reviseEpisode,
 } from "../core/src/practiceEpisodes.js";
 import {
   EventSchedule,
@@ -133,4 +135,27 @@ test("rewriting the events list keeps every other line of the config", () => {
     return [...l.slice(0, i + 1), ...l.slice(j)].join("\n");
   };
   assert.equal(outside(once), outside(original));
+});
+
+test("the day's gaps ramp over at most two blocks, and a revision writes them that way", () => {
+  // As in the official regimes (test/officialMartingale.test.ts MAX_GAP_RAMP_BLOCKS): a contract
+  // reads a step inside its own block and its GMX order fills in the next, so a third block of ramp
+  // is a third of the gap to whoever joins (ADR 0029 Amendment 5).
+  const upper = (r: unknown) => (Array.isArray(r) ? (r[1] as number) : (r as number));
+  const gaps = dayTemplates(0).filter((e) => e.type === "crash" || e.type === "spike");
+  assert.equal(gaps.length, 2);
+  for (const e of gaps)
+    assert.ok(upper(e.rampBlocks) <= 2, `${e.type}.rampBlocks ${JSON.stringify(e.rampBlocks)}`);
+  // A day written before this change (ramp 3) comes back in today's shape, its window kept.
+  const old = {
+    type: "crash",
+    magnitudeRange: [0.02, 0.04],
+    windowFrac: [0.5, 0.6],
+    rampBlocks: 3,
+    holdBlocks: 6,
+    decayBlocks: 8,
+  };
+  const revised = reviseEpisode(old);
+  assert.ok(upper(revised.rampBlocks) <= 2);
+  assert.deepEqual(revised.windowFrac, [0.5, 0.6]);
 });

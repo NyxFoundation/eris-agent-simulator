@@ -19,14 +19,19 @@
 // depeg,cdp-incident}.yaml). Three things are not, because this is one world that runs for weeks
 // rather than a fresh one per epoch (ADR 0029 Amendment 3): a price gap stays where it lands and goes
 // either way with even odds, as in the official regimes, but 2-4% rather than 15-32% -- two a day
-// for a month of level shifts would otherwise wander the price by +/-150%. The cex-drift episode is
-// a volatility burst as in the official regime (Amendment 4), at the official peak: the same 0.008-
-// 0.012 a block in absolute terms, ~25x this period's own noise for the length of a window.
+// for a month of level shifts would otherwise wander the price by +/-150%. It ramps over one or two
+// blocks, as the official gaps do (Amendment 5): a contract reads the first step inside the block it
+// lands in and its GMX order fills in the next, so a third block of ramp was left to whoever joined.
+// A running period takes this, like any other shape, from `--revise-from-day N` on. The cex-drift
+// episode is a volatility burst as in the official regime (Amendment 4), at the official peak: the
+// same 0.008-0.012 a block in absolute terms, ~25x this period's own noise for the length of a window.
 
 export const EDGE_MARGIN_HOURS = 1.5;
 
 /** A day's two price gaps: level shifts of 2-4%, each up or down with even odds (ADR 0029 Amendment 3). */
 export const GAP_MAGNITUDE = [0.02, 0.04];
+/** Their ramp: at most two blocks, so nothing is left to join at a fill lag of 1 (ADR 0029 Amendment 5). */
+export const GAP_RAMP_BLOCKS = [1, 2];
 /** volBurst peak volatility: the official regime's, in the unit of market.volatility. */
 export const BURST_PEAK = [0.008, 0.012];
 export const MIN_SLICE_HOURS = 2 * EDGE_MARGIN_HOURS + 1;
@@ -42,7 +47,7 @@ export function dayTemplates(day: number): Episode[] {
       magnitudeRange: GAP_MAGNITUDE,
       flipProb: 0.5,
       recoverFrac: [0, 0],
-      rampBlocks: 3,
+      rampBlocks: GAP_RAMP_BLOCKS,
       holdBlocks: 6,
       decayBlocks: 8,
     },
@@ -59,7 +64,7 @@ export function dayTemplates(day: number): Episode[] {
       magnitudeRange: GAP_MAGNITUDE,
       flipProb: 0.5,
       recoverFrac: [0, 0],
-      rampBlocks: 3,
+      rampBlocks: GAP_RAMP_BLOCKS,
       holdBlocks: 6,
       decayBlocks: 8,
     },
