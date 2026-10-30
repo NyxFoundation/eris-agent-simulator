@@ -114,16 +114,17 @@ flow:
   baseInformedMax: { WBTC: "10000000" } # 0.1 BTC: matches the 2 WETH Uniswap informed cap
 
 stress:
-  # The ramp and the level shift are as in crash.yaml (nothing recovers, ADR 0029 Amendment 1); it
-  # stays one crash, always down, for the same reason as lending-incident (the victims are the regime).
-  # spike.yaml carries the upward gap that keeps the official mix's expected gap at ~0.
+  # The ramp and the level shift are as in crash.yaml (at most two blocks of ramp, nothing recovers:
+  # ADR 0029 Amendments 5 and 1); it stays one crash, always down, for the same reason as
+  # lending-incident (the victims are the regime). spike.yaml carries the upward gap that keeps the
+  # official mix's expected gap at ~0.
   events:
     - {
         type: crash,
         recoverFrac: [0, 0],
         magnitudeRange: [0.12, 0.16],
         windowFrac: [0.3, 0.7],
-        rampBlocks: [2, 3],
+        rampBlocks: [1, 2],
         holdBlocks: [4, 8],
         decayBlocks: [6, 10],
       }

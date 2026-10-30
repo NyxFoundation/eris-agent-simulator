@@ -231,6 +231,16 @@ period running in October: no reversion toward the opening price, gaps that stay
 4. Tell participants. The price moves differently from the restart on and the episodes from day N.
    Nothing they hold changes, and the manifest is unchanged.
 
+**Pending (ADR 0029 Amendment 5, 2026-10-30): the gaps' ramp.** The generator now writes crash / spike
+with `rampBlocks: [1, 2]`; the period running since October still has `rampBlocks: 3` on every gap
+line, including the days revised from day 23. A contract an agent calls every block reads a step inside
+the block it lands in and its GMX order fills in the next, so the third block of a 3-block ramp (a third
+of a 2-4% gap, before leverage) goes to whoever joins. Revise as above —
+`npm run gen:practice-episodes -- --revise-from-day N` with N a day that starts after the restart — and
+restart; nothing else in the config changes. Check the diff (`--print` writes it to stdout instead): it
+should touch only crash / spike lines from `# day N` on, two a day. The volBurst lines from the day-23
+revision come back byte for byte (a dry run from day 30 on 2026-10-30 changed 48 lines, all gaps).
+
 Adding a participant mid-period still does not need a restart — that is what
 `run.registrationsFile` is for ([practice devnet](../../docs/guide/practice-devnet.md)), and entries
 added while the coordinator was down are picked up by its first poll after the resume.

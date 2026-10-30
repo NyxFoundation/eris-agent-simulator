@@ -49,6 +49,9 @@ export const nonfungiblePositionManagerAbi = parseAbi([
   "function positions(uint256 tokenId) view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)",
   "function balanceOf(address owner) view returns (uint256)",
   "function tokenOfOwnerByIndex(address owner, uint256 index) view returns (uint256)",
+  // The scorer reads the positions an agent obtained itself off its Transfer logs, not off the
+  // holder enumeration above (uniswapLpOwnership.ts), and checks each one is still the agent's.
+  "function ownerOf(uint256 tokenId) view returns (address)",
   // decreaseLiquidity only credits tokensOwed; the tokens do not leave the pool until collect. The
   // liquidityPull event has to do both, and in one transaction: two sends from the same key race on
   // the nonce the same way the LST accrual did.
@@ -58,6 +61,13 @@ export const nonfungiblePositionManagerAbi = parseAbi([
   // Issue #40: an agent creating its own market. Create-and-initialize in one call, and idempotent,
   // so two agents racing for the same pair do not both lose the block to a revert.
   "function createAndInitializePoolIfNecessary(address token0, address token1, uint24 fee, uint160 sqrtPriceX96) payable returns (address pool)",
+]);
+
+// The position manager's ERC-721 Transfer: a mint is Transfer(0, recipient, id), a burn
+// Transfer(holder, 0, id). Which of an agent's positions count as its own is read off these
+// (protocols/uniswapLpOwnership.ts), so it is subscribed to rather than called.
+export const nonfungiblePositionManagerEventsAbi = parseAbi([
+  "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
 ]);
 
 // Issue #40: the factory's own creation log, which is how the environment discovers a pool an agent

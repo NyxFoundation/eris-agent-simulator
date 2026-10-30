@@ -774,7 +774,7 @@ test("config/regimes/spike.yaml: one upward gap that stays, with the pull on its
     const frac = g.startBlock / blocks;
     assert.ok(frac >= 0.3 && frac <= 0.7, `window frac ${frac} inside [0.3, 0.7]`);
     assert.ok(g.magnitude >= 0.24 && g.magnitude <= 0.32);
-    assert.ok(g.rampBlocks >= 2 && g.rampBlocks <= 3);
+    assert.ok(g.rampBlocks >= 1 && g.rampBlocks <= 2);
     // Nothing recovers: the full gap is there from the end of the ramp to the last block.
     assert.ok(Math.abs(s.at(g.startBlock + g.rampBlocks - 1).wethMult - (1 + g.magnitude)) < 1e-9);
     assert.ok(Math.abs(s.at(blocks - 1).wethMult - (1 + g.magnitude)) < 1e-9, `seed ${seed}`);
@@ -807,7 +807,7 @@ test("config/regimes/crash.yaml: 1-2 gaps that stay, each up or down with even o
       const frac = g.startBlock / blocks;
       assert.ok(frac >= 0.3 && frac <= 0.7, `window frac ${frac} inside [0.3, 0.7]`);
       assert.ok(g.magnitude >= 0.15 && g.magnitude <= 0.22);
-      assert.ok(g.rampBlocks >= 2 && g.rampBlocks <= 3);
+      assert.ok(g.rampBlocks >= 1 && g.rampBlocks <= 2);
       if (k > 0) assert.ok(g.startBlock >= pulls[k - 1].endBlock + 20, "the next gap waits out the last pull");
       level *= 1 + (g.type === "spike" ? 1 : -1) * g.magnitude;
     }

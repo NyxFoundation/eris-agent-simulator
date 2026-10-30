@@ -42,14 +42,19 @@ function stableVariantDecimals(token: Address): number | undefined {
 // buying back) that size would realize. The mid overstates a large holding -- which is why the
 // own-size quote exists -- so the fallback is said out loud.
 //
-// All five are reported — a zero in summary.json must never be mistaken for a trading loss, and
+// "received" is excluded by rule rather than for want of a price: a holding another address put in
+// the agent's hands -- a Uniswap V3 position NFT minted or sent to it in someone else's transaction
+// (protocols/uniswapLpOwnership.ts). Counting it would let a third party decide what an agent holds.
+//
+// All six are reported — a zero in summary.json must never be mistaken for a trading loss, and
 // neither must a dollar.
 export type ScoringExclusionReason =
   | "unpriced"
   | "read-failed"
   | "unrealizable"
   | "par-fallback"
-  | "mid-fallback";
+  | "mid-fallback"
+  | "received";
 
 // A holding left out of a value, and why.
 export type UnpricedAmount = {

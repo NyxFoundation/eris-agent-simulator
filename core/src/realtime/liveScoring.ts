@@ -41,6 +41,10 @@ import {
   GmxShortfallTracker,
   type GmxShortfallTrackerState,
 } from "./gmxShortfall.js";
+import {
+  LpOwnershipTracker,
+  type LpOwnershipTrackerState,
+} from "@eris/sdk/protocols/uniswapLpOwnership.js";
 import { nextIntervalBoundary } from "../epochExtent.js";
 import {
   firstBoundaryV0,
@@ -83,6 +87,9 @@ export type LiveScorerSnapshot = {
   // GMX insolvent closes and the position lives they are charged against (gmxShortfall.ts). Absent
   // in a checkpoint written before it existed, or on a run without gmx.
   gmxShortfall?: GmxShortfallTrackerState;
+  // Which Uniswap V3 positions each agent obtained itself (sdk protocols/uniswapLpOwnership.ts).
+  // Absent in a checkpoint written before it existed (rebuilt at the restart), or without uniswap.
+  lpOwnership?: LpOwnershipTrackerState;
 };
 
 export class LiveScorer {
@@ -107,6 +114,11 @@ export class LiveScorer {
   private readonly gmxShortfall: GmxShortfallTracker | null;
   // agent id -> the charge in the last boundary read (summary.json gmxShortfallChargedUsd).
   private readonly lastShortfallCharge = new Map<string, number>();
+  // Which Uniswap V3 positions are each agent's own (sdk protocols/uniswapLpOwnership.ts): only
+  // those are valued, so a position another address mints or sends to an agent can neither be
+  // counted nor push the agent's own past LP_POSITIONS_LIMIT. Synced every block for the same reason
+  // as the GMX ledger: the logs are read while the node still has them.
+  private readonly lpOwnership: LpOwnershipTracker | null;
 
   constructor(
     private readonly opts: {
@@ -139,6 +151,14 @@ export class LiveScorer {
       readLagBlocks?: number;
       /** How V_0 treats a measured value above the endowment (endowmentV0.ts). Default floor. */
       v0Rule?: V0Rule;
+      /**
+       * The first block whose NPM Transfer logs the LP ownership ledger reads; what an agent holds
+       * before it is seeded from the holder enumeration (bounded, provenance unknown). The block the
+       * agents could first act at -- before runStartBlock, since they trade before the first block
+       * (issue #207) -- so that nothing they obtain before the bell is left to the enumeration.
+       * Default runStartBlock. The post-run sweep must be given the same block.
+       */
+      lpLedgerFromBlock?: number;
     },
   ) {
     for (const a of opts.agents) this.valuesByAgent.set(a.id, []);
@@ -170,6 +190,13 @@ export class LiveScorer {
           },
         })
       : null;
+    this.lpOwnership = opts.enabledIds.includes("uniswap")
+      ? new LpOwnershipTracker({
+          publicClient: opts.publicClient,
+          accounts: opts.agents.map((a) => a.address),
+          fromBlock: opts.lpLedgerFromBlock ?? opts.runStartBlock,
+        })
+      : null;
     this.marketSampler = opts.sampleMarket
       ? new LiveMarketSampler({
           publicClient: opts.publicClient,
@@ -199,6 +226,8 @@ export class LiveScorer {
     if (this.valuesByAgent.has(agent.id)) return;
     this.opts.agents.push(agent);
     this.gmxShortfall?.track(agent.address);
+    // Seeded from what it holds at the next sync: it was not followed before it registered.
+    this.lpOwnership?.track(agent.address);
     this.valuesByAgent.set(
       agent.id,
       this.boundaries.map(() => null),
@@ -233,7 +262,22 @@ export class LiveScorer {
         /* retried */
       }
     }
+    if (this.lpOwnership) {
+      try {
+        await this.lpOwnership.syncTo(blockNumber);
+      } catch {
+        /* retried, and again (as a whole) by the boundary read */
+      }
+    }
     await this.readThrough(blockNumber - (this.opts.readLagBlocks ?? 0));
+  }
+
+  /**
+   * The LP ownership ledger the boundaries are valued with, for the end-of-run value
+   * (SimContext.uniswapLpOwnership) to count the same positions. Null without uniswap.
+   */
+  get uniswapLpOwnership(): LpOwnershipTracker | null {
+    return this.lpOwnership;
   }
 
   /** agent id -> GMX shortfall charged at the last boundary read; only agents with a charge. */
@@ -275,6 +319,7 @@ export class LiveScorer {
       // here rather than historical. Nothing about the rule changes with when it is applied.
       const stablePricesOverride = await this.markMedian.at(blockNumber);
       await this.gmxShortfall?.syncTo(blockNumber);
+      await this.lpOwnership?.syncTo(blockNumber);
       const snapshot = await readValueSnapshotAtBlock({
         publicClient: this.opts.publicClient,
         agents: this.opts.agents,
@@ -291,6 +336,7 @@ export class LiveScorer {
         ...(this.gmxShortfall
           ? { gmxInsolvency: this.gmxShortfall.ledger }
           : {}),
+        ...(this.lpOwnership ? { uniswapLp: this.lpOwnership.ledger } : {}),
         ...(stablePricesOverride ? { stablePricesOverride } : {}),
       });
       const index = this.boundaries.length;
@@ -302,6 +348,7 @@ export class LiveScorer {
         if (v.shortfallChargedUsd)
           this.lastShortfallCharge.set(v.id, v.shortfallChargedUsd);
       this.gmxShortfall?.ledger.prune(blockNumber);
+      this.lpOwnership?.ledger.prune(blockNumber);
       // The first boundary is V_0, and there the measured value is floored at the endowment
       // (issue #207; scoring/endowmentV0.ts). Every later boundary is the measured value.
       // The floor belongs to the run's first block, not to whichever boundary happened to be read
@@ -386,6 +433,9 @@ export class LiveScorer {
       ...(this.gmxShortfall
         ? { gmxShortfall: this.gmxShortfall.snapshot() }
         : {}),
+      ...(this.lpOwnership
+        ? { lpOwnership: this.lpOwnership.snapshot() }
+        : {}),
     };
   }
 
@@ -440,6 +490,12 @@ export class LiveScorer {
     // from the period's first block (GmxShortfallTracker.startAfter).
     else if (snapshot.lastAttempted !== null)
       this.gmxShortfall?.startAfter(snapshot.lastAttempted);
+    if (snapshot.lpOwnership) this.lpOwnership?.restore(snapshot.lpOwnership);
+    // A checkpoint from before the LP ownership ledger: the logs back to the period's start are not
+    // on a practice node, so it is rebuilt from what each agent holds at the first block synced
+    // after the restart (LpOwnershipTracker.rebuildAtNextSync).
+    else if (snapshot.lastAttempted !== null)
+      this.lpOwnership?.rebuildAtNextSync();
   }
 
   /** The block the first boundary was read at, or null before it was. */

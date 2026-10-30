@@ -63,7 +63,8 @@ boundary series. Seven details are decisions, not formalities:
     Believing it would let anyone raise somebody else's V_0: send them an LP NFT of a pool paired
     with your own token before the first boundary, pull the liquidity during the epoch, and their
     P drops by the gift while yours is absorbed by your own floor (ERC-721 transfers are outside
-    the roster-transfer scan).
+    the roster-transfer scan). An LP NFT given this way is no longer valued at all (below), but
+    the rule covers whatever else can be given.
   - `continuous` (the practice period, a single `sim:realtime` run): V_0 is
     `max(endowment, measured)` -- the chain state at that boundary counts where it stands higher,
     because positions carried across a restart are the agent's own.
@@ -92,6 +93,18 @@ owner alone in a pool could push it off fair for three of the window's five bloc
 before the bell, netting the swaps out between their wallet and their position while the position
 was still marked at the pushed split. At the boundary block's own split, a swap in that block moves
 between wallet and position and the mark does not move.
+
+**A Uniswap V3 position counts only if you obtained it yourself**: its NFT reached your address in a
+transaction your address sent (you minted it, or pulled it as an approved operator). A position
+anyone else minted or sent to you is not valued and not listed in your observation; the count of
+those is reported as `uniswap-lp-received` (reason `received`) in `scoring_unpriced_holdings`. The
+position manager lets anyone mint to any recipient and enumerates a holder's NFTs in arrival order,
+so the old rule -- value the first 128 the holder enumeration returns -- let a rival push every
+position you opened later past the bound with 128 dust mints. The bound (`LP_POSITIONS_LIMIT`, 128)
+now counts only your own positions; past it they are `uniswap-lp-unscanned`, as before. A position
+you send away stops counting for you and does not count for the receiver, so an LP NFT moves no
+value between agents. Mint from the address you are scored as: a position minted by a second EOA or
+a helper contract you deployed arrives in someone else's transaction and is received.
 
 ## Where it lands in summary.json
 

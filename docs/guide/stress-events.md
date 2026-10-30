@@ -62,6 +62,13 @@ xychart-beta
 A trapezoid rather than a jump on purpose: an instantaneous move interacts badly with the 1-block
 delay of oracle updates, and the ramp leaves everyone the same lag to react in.
 
+The ramp is not the same lag for everyone, though. The price is in storage before a block's
+transactions run, so a contract called in every block reads each step inside the block it lands in,
+and a GMX order it creates there fills in the next block — one block ahead of an agent that reads the
+chain from outside. An r-block ramp leaves nothing to follow at a fill lag of L blocks only while
+r ≤ 1 + L, so the official gaps ramp over one or two blocks (ADR 0029 Amendment 5): by the time an
+order placed on the first step fills, the gap is complete.
+
 ### `whale` — a single large order moves the pool, not the fair price
 
 A point event: one market order of `magnitudeRange` **whole base units** (30 = a 30 WETH order),
@@ -206,6 +213,16 @@ pool at a price of their choosing, so the environment's mint went in at that pri
 from them. The token's `erc20` entry now comes from the launcher's `Launched` event and is
 **`verified: true`** (the token was deployed inside environment code; a top-level CREATE is always
 published unverified, an internal CREATE not at all).
+
+The listing cannot be buried by what the field deploys. The registry publishes 8 entries a block and
+queues the rest; the environment's listing (the token and the pool the launcher created) is written
+ahead of every participant entry, in the block after the listing, and the queue is round-robin by
+creator, so a participant who deploys a hundred contracts a block delays only its own. The
+observation carries the newest 128 entries **plus** the environment's listings whatever their age
+(`observation.registry.dropped` counts what is left out). Before 2026-10-30 a creator deploying tiny
+contracts that answer `name`/`symbol`/`decimals` could hold the launch token behind its own entries
+past the wave, or have it dropped from the backlog for good, and sixteen blocks of such entries
+pushed any listing out of every agent's 128-entry window.
 
 The wave ends for good the first block it finds the pool pricing the token above **10× the listing
 price** (`WAVE_PRICE_CAP_MULT`, `stress_token_launch_wave_capped`): it drops what it has not bought and

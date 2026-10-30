@@ -361,6 +361,9 @@
             "$ref": "#/definitions/LpPositionObservation"
           }
         },
+        "unlistedPositionCount": {
+          "type": "number"
+        },
         "markets": {
           "type": "object",
           "additionalProperties": {

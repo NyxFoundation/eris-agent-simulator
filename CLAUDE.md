@@ -269,9 +269,10 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   練習期間の再開は `LiveScorerSnapshot.gmxShortfall`。**口座をまたぐストラドル（2 体で片側ずつ）は対象外**（1 参加単位 1 体が前提）。
   **(B2) レバレッジ上限 ~5.05 倍**（`GMX_MIN_COLLATERAL_FACTOR` = 0.198。`sdk/src/protocols/gmxKeys.ts`）。債務超過は B1 が
   請求するので、上限が塞ぐのは B1 で消えない「負け脚が gap の最終段より前に清算され、勝ち脚が裸で残りを取る」分。清算は検知の
-  1 ブロック後に着くので、それには 3 段 ramp の 1 段目（spike 32% / 3 = 10.7%、crash 22% / 3 = 7.3%）で清算線
-  （≈ 1/レバ − 1.1%）に届く必要があり ~8.4 倍以上。2 段 ramp なら清算は gap の満額で着く。**この余裕は gap の形（1 段の幅と段数）に
-  依存する**ので crash / spike を較正し直したら導き直す。5 倍で残るのは片側建玉の有限責任分（5 倍ショートが spike で証拠金を超えて
+  1 ブロック後に着くので、ramp が 3 段だった頃は 1 段目（spike 32% / 3 = 10.7%、crash 22% / 3 = 7.3%）で清算線
+  （≈ 1/レバ − 1.1%）に届く ~8.4 倍以上で開いていた。**今の ramp は 2 段以下**（ADR 0029 Amendment 5）で清算は常に gap の満額で
+  着くので、この経路はレバレッジによらず無く、上限はそれを ramp の形に頼らない層として残る。**ramp を 3 段以上に較正し直したら
+  この算術で導き直す**。5 倍で残るのは片側建玉の有限責任分（5 倍ショートが spike で証拠金を超えて
   失う最大サイズの 12%、12 レジーム一様で期待値は証拠金の ~3% / エポック。3 倍なら 0）。当初は B1 なしでも債務超過しない
   ~3.03 倍（レバ × 0.32 + 決済費用 < 1）で出したが、現実（Arbitrum は 100 倍）からの乖離を小さくするため 5 倍にした（2026-10-30）。
   **keeper で拒否するのではなく GMX 自身に執行させる**: `setupGlobal` が DataStore の `MIN_COLLATERAL_FACTOR` を CONTROLLER として
@@ -653,6 +654,26 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     #144 で一度中央値にしたが、自分しか LP のいないプールを窓の 3 ブロックだけずらして境界前に戻すと、同じ流動性が
     ずらした側の分割で評価され、預けた額の数十 % が架空の価値になった（fair からずれたプールの持分は fair で評価すると
     必ず大きい）。境界ブロックの分割なら同じブロックの swap は財布と LP で相殺される
+  - **Uniswap V3 の LP NFT は「自分で取得したもの」だけを評価・観測する**（`sdk/src/protocols/uniswapLpOwnership.ts`）。
+    以前は保有者列挙（`tokenOfOwnerByIndex`）の先頭 `LP_POSITIONS_LIMIT`（128）件を評価していたが、NPM の `mint` は
+    `recipient` を誰にでもでき、保有順は挿入順なので、エポック序盤に相手へダスト建玉を 128 件 mint すると相手が後から
+    建てた LP が全部上限の外に押し出されて鐘で 0 になった（~0.4M gas × 128、tip 0 ならほぼ無料。相手の観測は上限なしで
+    列挙していたので異常が見えず、ERC-721 は `rosterTransfers` の対象外で flag も出ない）。今は NPM の
+    `Transfer(from, to=agent, tokenId)` が **agent 自身が送った tx（tx.from = agent）** の中で出たものだけが自分の建玉で、
+    上限 128 はそれにだけ掛かる（超過は従来どおり本人の責任 = `uniswap-lp-unscanned`）。他人の tx で mint・送付された
+    NFT は評価も一覧もせず、`balanceOf` との差を `uniswap-lp-received`（reason `received`）で報告する。送り出した NFT は
+    誰の価値にもならないので、NFT による価値移転と LP NFT の「贈り物」攻撃も消える。台帳は Transfer ログ（受け取りが
+    あったブロックだけ tx 付きで block を 1 回読んで送信者を引く = 読取量は NFT の本数でなくブロック数で頭打ち）から作り、
+    ライブ採点（毎ブロック同期・境界の後に prune）と事後 sweep（窓を 1 回同期）が同じ起点 `lpLedgerFromBlock`
+    （coordinator が agent 起動直前のブロックを渡す。agent は最初の競技ブロックより前に取引できるため）から同じログを読むので
+    `interval_series_agreement` は 0 のまま。起点より前の保有は保有者列挙で seed する（上限 128・出所不明・自分で取得した
+    ものより後ろに並ぶので押し出せない）。評価時は `ownerOf` で chain と突き合わせ、ずれた建玉は評価せず `read-failed`。
+    練習期間は `LiveScorerSnapshot.lpOwnership` で持ち越し、それの無い旧 checkpoint は再起動後最初の同期ブロックで seed
+    し直す。runtime の観測もプロセス内に同じ台帳を持ち、`protocols.uniswap.positions` は採点と同じ集合（最大 128 件）、
+    載らない NFT の数は `unlistedPositionCount`（ログが読めないブロックだけ上限付き列挙に落ちる）。coordinator の
+    終了時 `netPnlUsdc` も採点の台帳を使う。**既知の限界**: agent が送った tx の中で起きた受け取り（相手のコントラクトの
+    callback が mint する等）は本人の行為として数える／第 2 EOA・自作コントラクトから mint した建玉は received 扱い／
+    期間途中で再起動した自己ホスト runtime の観測台帳は列挙から seed し直す（採点側は連続）
   - **エポック順序は抽選 seed から導出**（`npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k 60`。`core/src/competition/schedule.ts` = SHA-256 カウンタ + 棄却法 + Fisher-Yates、レジームはエポックごとに独立・一様（issue #186）。`--starts-at <ISO> --every-minutes <N>`（または `--ends-at <ISO>` で窓に均等配置）で各エポックに `startsAt` を付けると matrix.json の `schedule` 経由で dashboard が「次のエポック開始予定」を出し、`backtest --follow-schedule` がその時刻を待って各エポックを始める。コミットメントには入らない）。`npm run competition -- commit <file>` が正規化 JSON の sha256 を出す（非公開 seed は 9/23 前、抽選 seed は 11/30 に公表。原本は結果発表後）。形は `config/competition/*.example.yaml`
   - **ライブ週の編成は [ADR 0026](docs/adr/0026-live-week-schedule.md)（Proposed）**: k = 60（レジームはエポックごとに i.i.d. 一様に引く = issue #186。平均 5 回 ± 2.1、どれかが 0 回になる確率 6.4%）・1 エポック 360 ブロック・ガス用 ETH 3（ベンチマークも同額。公式レジームの `funding.ethWei` は別変更）・168 時間に 168 分おきで均等配置し `--follow-schedule` の 1 プロセスで走らせる。**60 エポックはブロック時間で 12 時間 = 週の 7%**。週を埋めるなら「360 ブロックのままエポックを増やす（非公開 seed の追加 commit が要る）」が推奨で、エポックを伸ばすのは全 12 レジームの再較正になる（ADR の §5）
   - **公式レジーム（12 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）/ `spike`（crash の鏡像 = 上方向のギャップ + 同じ窓の引き抜き。バスケットを持っているだけの側が報われる唯一のレジーム。issue #105）/ `depeg-persist`（`depeg` の `persist: true` 版。ディスカウントが最終採点ブロックまで戻らず、買い戻しは teardown。「戻ると信じて持つ」が構造で勝てない唯一のレジーム。issue #106）/ `cdp-incident`（Liquity victim = ICR 1.20 の Trove 2 本 + 12〜16% 暴落 + 同じ窓の `eusdDepeg` と引き抜き。清算・償還・借り手防御の 3 skill。issue #107。victim は `core/src/liquityVictims.ts`、`stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei`、`stress_liquity_*` イベント）/ `launch`（run 途中に 2〜3 の新トークンが環境の Uniswap V3 factory 経由で USDC の薄いプールに上場し、トークンごとに需要の波が来るか dud かをシードが決める。鐘の時点の保有は 0 = ADR 0022 公理 2。issue #29。下の「新規トークンの上場」節）。**Liquity の 14 日 bootstrap 期間**: deployer は deploy 時に warp するが、state dump を新しい anvil に `--load-state` すると時計が実時間に戻って期間内に逆戻りし、**全 backtest run で `liquityRedeem` が revert していた**（実測: redemption-arb が 8 ブロック連続で redeem を決めて全部 `Redemptions are not allowed during bootstrap phase`）。`setupLiquity` が期間内なら `evm_increaseTime` で飛ばす（`liquity_bootstrap_warped`）。**抽選はエポックごとにレジームを独立・一様に引く**（`schedule.ts`、issue #186。以前は各レジーム k/R 回をシャッフルしていたが、それだと状態を引き継ぐ agent が既出レジームを数えて残りを推測できた）。非公開セットは**各レジーム k 本以上**の seed が要る（全エポックが同じレジームを引きうる）。**乱数ストリームはレジーム名でも分かれる**（`run.regime` → `setScenarioRegime`、flow bot へは `ERIS_SCENARIO_REGIME`。issue #186。以前は同じ seed の calm と crash が同じ価格ショック・フローを引いていた。backtest が自動で書く。agent には渡さない）
@@ -869,7 +890,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 
 ### 市場ストレスイベント（spike/crash + Aave 清算。ADR 0009。既定 off）
 
-**公式 12 レジームの base は martingale**（`market.kappa: 0` を 12 本に明示。ADR 0029）。OU は開始時の fair（毎エポック同じ $3,000 / $60,000、ブロック 0 で読める）へ回帰していたので、「開始水準へ向かって建てる」が手数料後も全レジームで名目の ~470bps / エポック（`scripts/measurePredictability.ts`。20 倍の GMX なら配布額の数十 %）。κ を下げるだけでは消えない（乖離が育つ）。ショックは既定のままなので venue の乖離はほぼ不変、エポック終端の fair の sd は ~1.15% → ~4.4%。sdk 既定の κ = 0.02 は公式外（練習期間・venue 単体 regime・example）のために残し、`test/officialMartingale.test.ts` が 12 本 × base で 0 を検査する。**cex-drift はドリフトをやめて `volBurst`**（ADR 0029 Amendment 4。新しい process イベント: 窓の間だけブロックの揺れを run 自身の値から `magnitudeRange` = ピークの volatility（`market.volatility` と同じ単位）へ台形で上げ下げし、ドリフトと回帰は触らない = 向きが無い。公式は 0.008〜0.012 = 2〜3 倍）。ドリフト（0.1〜0.2% / ブロック × 30〜54 ブロック）はノイズに対して ~10 ブロックで見分けられ、追随が名目の +540〜700bps / エポックだった（calm では同じ規則が −13〜−47）。変更後は −49（手数料）。プールがどれだけ遅れるか（calm 40bps・informed 帯 30bps に対して）はチェーンで未測定で、2〜3 倍は出発点。`cexDrift` 型は公式外のために残り、`test/officialMartingale.test.ts` が公式での使用を拒む。**価格ギャップも戻らない**（ADR 0029 Amendment 1）: crash / spike / lending-incident / cdp-incident は `recoverFrac: [0, 0]`（旧 [0.4, 1.0] は「止まったら逆張り」が名目の +1,100〜2,200bps / エポック、下限が 0 より上なので利幅を縮めただけだった。decay は直線なので幅を 0 跨ぎにしても追随で取れる）・`rampBlocks: [2, 3]`（約定が観測の 2 ブロック後なので 4 だと最後の 1/4 を追随で取れた）・crash `flipProb: 0.5`・spike は 1 本 24〜32% 反転なし（下固定の lending + cdp と釣り合わせ、12 本一様のギャップ期待 ≈ 0 = 「base を持たない」が得にならない）・4 本とも `windowFrac: [0.3, 0.7]`。測定は `npx tsx scripts/measurePredictability.ts`。**練習期間も同じ形**（ADR 0029 Amendment 3）: 1 か月続くチェーンに公式の揺れで κ = 0 を入れると 1 日 sd ~48% になるので、`market: { volatility: 0.00037, kappa: 0 }`（ブロック sd は公式の 1/11、練習 1 日 ≈ 公式 1 エポックの散らばり）、ギャップは戻らない・上下半々・2〜4%、cex-drift の窓は公式と同じ絶対値の volBurst（`core/src/practiceEpisodes.ts`）。合計で 1 日 ~6.9%、残り 32 日で ~39%。**期間は止めずに途中から切り替える**: `periodResume.ts` の revise（`market.*` と未再生のエピソードは変えてよい、head + 300 ブロックより前に始まる窓は同一でなければ拒否 = `revisedScheduleProblems`）と `npm run gen:practice-episodes -- --revise-from-day N`（day N より前の行はバイト単位で不変）。そのために **`stress.saltWithEventList: false`**（変化キーのあるリストは digest を salt に混ぜるので、未来の行を変えると過去の窓まで引き直される。公式レジームは設定しない）。練習期間は day 23 から書き換え済み（`infra/devnet/README.md`「Revising a period」）。
+**公式 12 レジームの base は martingale**（`market.kappa: 0` を 12 本に明示。ADR 0029）。OU は開始時の fair（毎エポック同じ $3,000 / $60,000、ブロック 0 で読める）へ回帰していたので、「開始水準へ向かって建てる」が手数料後も全レジームで名目の ~470bps / エポック（`scripts/measurePredictability.ts`。20 倍の GMX なら配布額の数十 %）。κ を下げるだけでは消えない（乖離が育つ）。ショックは既定のままなので venue の乖離はほぼ不変、エポック終端の fair の sd は ~1.15% → ~4.4%。sdk 既定の κ = 0.02 は公式外（練習期間・venue 単体 regime・example）のために残し、`test/officialMartingale.test.ts` が 12 本 × base で 0 を検査する。**cex-drift はドリフトをやめて `volBurst`**（ADR 0029 Amendment 4。新しい process イベント: 窓の間だけブロックの揺れを run 自身の値から `magnitudeRange` = ピークの volatility（`market.volatility` と同じ単位）へ台形で上げ下げし、ドリフトと回帰は触らない = 向きが無い。公式は 0.008〜0.012 = 2〜3 倍）。ドリフト（0.1〜0.2% / ブロック × 30〜54 ブロック）はノイズに対して ~10 ブロックで見分けられ、追随が名目の +540〜700bps / エポックだった（calm では同じ規則が −13〜−47）。変更後は −49（手数料）。プールがどれだけ遅れるか（calm 40bps・informed 帯 30bps に対して）はチェーンで未測定で、2〜3 倍は出発点。`cexDrift` 型は公式外のために残り、`test/officialMartingale.test.ts` が公式での使用を拒む。**価格ギャップも戻らない**（ADR 0029 Amendment 1）: crash / spike / lending-incident / cdp-incident は `recoverFrac: [0, 0]`（旧 [0.4, 1.0] は「止まったら逆張り」が名目の +1,100〜2,200bps / エポック、下限が 0 より上なので利幅を縮めただけだった。decay は直線なので幅を 0 跨ぎにしても追随で取れる）・`rampBlocks: [1, 2]`（ADR 0029 Amendment 5。価格はブロックの tx より前に storage にあるので、毎ブロック呼ぶコントラクトは 1 段目をそのブロックの中で読み、そこで出した GMX 注文は次のブロックで約定する = 遅れ L = 1（チェーンの外は 2）。r 段の ramp を追随で取れないのは r ≤ 1 + L のときだけで、旧 [2, 3] は L = 1 の追随に crash で名目 +467bps / エポックを残した。[2, 2] でなく [1, 2] なのは、Liquity の償還が読んだ価格そのもので約定する（L = 0。買いのみ・償還手数料で頭打ち）ので 2 段が半分になる方が残りが小さいから）・crash `flipProb: 0.5`・spike は 1 本 24〜32% 反転なし（下固定の lending + cdp と釣り合わせ、12 本一様のギャップ期待 ≈ 0 = 「base を持たない」が得にならない）・4 本とも `windowFrac: [0.3, 0.7]`。測定は `npx tsx scripts/measurePredictability.ts`（`--lags` は約定の遅れ、既定 2,1 で表を 2 つ。`--ramp lo,hi` で形を差し替える）。**練習期間も同じ形**（ADR 0029 Amendment 3）: 1 か月続くチェーンに公式の揺れで κ = 0 を入れると 1 日 sd ~48% になるので、`market: { volatility: 0.00037, kappa: 0 }`（ブロック sd は公式の 1/11、練習 1 日 ≈ 公式 1 エポックの散らばり）、ギャップは戻らない・上下半々・2〜4%・ramp ≤ 2（生成器のみ。走っている期間の `config/practice.yaml` は 3 段のままで、運営が `--revise-from-day N` で書き換える）、cex-drift の窓は公式と同じ絶対値の volBurst（`core/src/practiceEpisodes.ts`）。合計で 1 日 ~6.9%、残り 32 日で ~39%。**期間は止めずに途中から切り替える**: `periodResume.ts` の revise（`market.*` と未再生のエピソードは変えてよい、head + 300 ブロックより前に始まる窓は同一でなければ拒否 = `revisedScheduleProblems`）と `npm run gen:practice-episodes -- --revise-from-day N`（day N より前の行はバイト単位で不変）。そのために **`stress.saltWithEventList: false`**（変化キーのあるリストは digest を salt に混ぜるので、未来の行を変えると過去の窓まで引き直される。公式レジームは設定しない）。練習期間は day 23 から書き換え済み（`infra/devnet/README.md`「Revising a period」）。
 
 OU の base price はそのまま進め、その上に **SEED 由来でランダム化した決定論オーバーレイ**（`core/src/realtime/events.ts` `EventSchedule`）を重ねて effective price を導出する。effective が PriceFeed・Aave WETH オラクル・GMX・採点へ一貫伝播し、窓外では β≈0 を保つ（ADR 0007 を毀損しない）。清算を成立させる **seed 由来 victim 群**（採点対象外）を建てる。`config/local.yaml` の `stress:` セクションで指定:
 
@@ -1083,8 +1104,29 @@ ours なのは 2 つだけ（core は無改変）:
   - **codehash は登録時のものだけ。更新しない。**ラウンドトリップ規則の下では差し替え proxy は
     「抜け出せなかった」の一形態なので環境が取り締まる必要がなく、気づくかどうかが技能差になる
   - **登録は毎ブロック上限つき・環境負担**（`agentMarkets.registrationsPerBlock`、既定 8）。あふれは
-    次ブロックへ繰り越し、factory 由来を先に。**書き込みは admin ではなく setup 鍵**（oracle 更新が
+    次ブロックへ繰り越す。**書き込みは admin ではなく setup 鍵**（oracle 更新が
     毎ブロック admin から出ているので、同じ鍵に 2 送信者を置くと nonce を奪い合う）
+  - **待ち行列は作成者ごとに公平**（`core/src/realtime/marketRegistry.ts` の `fairOrder` / `capByCreator`）。
+    書く順は **環境の上場**（launcher の `Launched` 由来の token と、launch wallet が作成者の pool。
+    `PendingEntry.environment`）→ factory 由来の kind → erc20 → unknown の段で、**各段の中は作成者の
+    round-robin**。判定待ち（`MAX_CLASSIFY_PER_SWEEP` = 64 / sweep）も同じ round-robin。待ち行列は
+    **作成者 1 人あたり `MAX_PENDING_PER_CREATOR` = 64**（判定待ち・書き込み待ちの各段）で、超えた分は
+    **その作成者自身の、最後に書かれる側**（低い段・新しい順）だけを捨てる。全体の上限 `MAX_PENDING_ENTRIES` = 2,048
+    は backstop で（64 × 32 = 2,048 なので作成者が 33 人以上いないと効かない）、一番多く持つ作成者から削る。**環境の上場はどの上限でも
+    捨てない**。捨てたら `market_registration_dropped`（`stage` = `classify` / `publish`、`byCreator`）。捨てた
+    key は `seen` に残るので後から公開されることはない。以前は 1 本のリストを (kind, 経過) で並べて末尾から
+    切っていた（コメントは「古いものを捨てる」と書いていたが、実際は新しいもの）。10 バイトの
+    `[0x20, 0]` を返すコントラクト（name "" / symbol "" / decimals 32 = erc20 と判定される。1 本 ~56k gas、
+    10M の予算で 1 ブロック ~150 本）を毎ブロック deploy すると、同じ erc20 段にいる launch token が波の後まで
+    遅れるか永久に捨てられ、正直な作成者の token も同じだった（fake chain で 20 ブロック回すと旧実装は launch token も
+    正直な token も 1 度も公開せず、待ちは 1,122 件）。**残る穴は sybil**: 作成者 = tx の送信者なので、資金を
+    分けた複数の EOA は別人として round-robin に並ぶ（環境の上場は影響を受けない）
+  - **観測は最新 128 件 + 環境の上場**（`sdk/src/agentMarkets.ts`。`REGISTRY_OBSERVATION_LIMIT` /
+    `REGISTRY_PINNED_LIMIT` = 32）。`verified` の `erc20` エントリは launcher からしか作られないので、その
+    作成者（launch wallet）と、同じ作成者のエントリ（launcher が作った pool）を古さに関係なく載せる。
+    `verified` だけで選ばないのは、参加者の Uniswap pool や貸出市場も `verified` だから。並びは newest-first の
+    まま、`dropped` は載らなかった件数。以前は 16 ブロック分の spam（128 / 8）で上場が全員の観測から落ち、
+    `launchPools` が見つけられなかった
   - **読み手は `all()` を呼ばない**（`count()` + `entriesFrom` を 256 件ずつ。`sdk/src/marketRegistry.ts`）。
     `all()` のガスは件数に比例し（cold storage で 1,500 件 ~29.5M、**1,600 件で 30M の call 上限を超えて out of gas**）、
     件数は誰でも安く積める（`createMarket` は permissionless、環境は毎ブロック 8 件登録 = 200 ブロック）。以前は全 agent の
@@ -1171,8 +1213,8 @@ ours なのは 2 つだけ（core は無改変）:
   coordinator は答えなかったアドレスを `unknown` として登録し `agent_market_read_failed`（out-of-gas / timeout /
   error。revert は「token でない」の通常回答なので出さない）を**アドレスごとに 1 回**出す。ただし timeout / error は
   ノードが答えなかっただけでコントラクトの答えではないので、**次の sweep で再判定**し（`CLASSIFY_ATTEMPTS` = 3 回まで。
-  `seen` にはまだ入れない）、1 sweep の判定は `MAX_CLASSIFY_PER_SWEEP` = 64 件まで（残りは繰り越し。期限は batch 全体で
-  1 つなので、CREATE を大量に積んだブロックで同じブロックの正直な token まで `unknown` に固定されていた）。singleton 経由の
+  `seen` にはまだ入れない）、1 sweep の判定は `MAX_CLASSIFY_PER_SWEEP` = 64 件まで（残りは繰り越し、作成者の round-robin で選ぶ。
+  期限は batch 全体で 1 つなので、CREATE を大量に積んだブロックで同じブロックの正直な token まで `unknown` に固定されていた）。singleton 経由の
   `isHealthy` / `expectedPosition` はコントラクト側の staticcall 上限で既に守られているので multicall のまま
 - 参照 agent は 6 体: `market-launcher`（正直な作成者。immutable オラクルで作って鐘の前に withdraw）/
   `market-taker`（利用者。`oracleOwner` を読んでから入る）/ `trap-launcher`（自分が握るオラクルで
@@ -1278,7 +1320,9 @@ gas は pin（9M、実測 5.6M）。翌ブロックにレジストリへ `uniswa
   `launchTokenCodehash`（repo の `AgentERC20` artifact を `to` 無しの `eth_call` で走らせた runtime code の keccak。
   CREATE2 で deploy しても runtime code は同じ = anvil で一致を実測。artifact が無ければ null = 形だけで判定し
   agent ログに 1 回残す）が取れていれば一致。launch wallet のアドレスは観測にもマニフェストにも無い。
-  以前は「同じ bytecode を同じ鍵から deploy した参加者のプール」が通っていたが、今は参加者の上場は 1 つも通らない
+  以前は「同じ bytecode を同じ鍵から deploy した参加者のプール」が通っていたが、今は参加者の上場は 1 つも通らない。
+  **上場は spam に埋もれない**: registry は環境の上場を他の全エントリより先に書き（見つけたブロックの書き込み）、
+  観測は最新 128 件の外でも載せる（上の「エージェントが作る市場」の待ち行列と観測の項）
 - **実測（seed 101, 2026-09-12, main + PR #81 の burst 吸収を手元適用）**は PR #29 の本文。**main の anvil backlog
   burst（PR #81 で修正中）がある環境では最初の ~200 ブロックが 1 秒で流れて窓ごと飛ぶ**。この regime だけの
   問題ではなく windowFrac を持つ全イベントが同じ目に遭う

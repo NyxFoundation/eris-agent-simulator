@@ -34,6 +34,12 @@ import {
 import type { StablePrices } from "../stables.js";
 import { resolveMarket } from "./marketHelpers.js";
 import {
+  enumerateLpPositions,
+  LP_POSITIONS_LIMIT,
+  LpOwnershipTracker,
+  type LpHeldAt,
+} from "./uniswapLpOwnership.js";
+import {
   getAmount0Delta,
   getAmount1Delta,
   getSqrtRatioAtTick,
@@ -52,6 +58,7 @@ import type {
   AgentProtocolValue,
   BuiltTx,
   ProtocolAdapter,
+  UnpricedHoldingDetail,
   ValidationResult,
 } from "./types.js";
 
@@ -390,6 +397,73 @@ function positionMarketOf(
   return undefined;
 }
 
+// An ownership ledger per (client object, owner), for a caller that hands none in
+// (SimContext.uniswapLpOwnership). It lives as long as the caller keeps the same client; the agent
+// runtime, which pins a new client to every block, keeps its own instead (runtime/read.ts).
+const observedOwnership = new WeakMap<object, Map<string, LpOwnershipTracker>>();
+
+function observedTracker(
+  publicClient: PublicClient,
+  owner: Address,
+): LpOwnershipTracker {
+  let byOwner = observedOwnership.get(publicClient);
+  if (!byOwner) {
+    byOwner = new Map();
+    observedOwnership.set(publicClient, byOwner);
+  }
+  const key = `${UNISWAP.nonfungiblePositionManager.toLowerCase()}|${owner.toLowerCase()}`;
+  let tracker = byOwner.get(key);
+  if (!tracker) {
+    // No fromBlock: it begins at the first block it is synced to, seeded from the holder
+    // enumeration there (bounded). In a fresh world the agent holds nothing yet at that point.
+    tracker = new LpOwnershipTracker({ publicClient, accounts: [owner] });
+    byOwner.set(key, tracker);
+  }
+  return tracker;
+}
+
+// Which position NFTs of `owner` to read: the ones it obtained itself, at most LP_POSITIONS_LIMIT
+// (uniswapLpOwnership.ts), plus how many NFTs it holds that are not among them. Off the tracker the
+// caller hands in (the coordinator's scoring one) or the runtime's own.
+async function ownedPositionIds(
+  publicClient: PublicClient,
+  owner: Address,
+  ownership: LpOwnershipTracker | undefined,
+  atBlock: number | undefined,
+): Promise<{ tokenIds: bigint[]; unlisted?: number }> {
+  const tracker = ownership ?? observedTracker(publicClient, owner);
+  if (!tracker.ledger.tracks(owner)) tracker.track(owner);
+  try {
+    const block =
+      atBlock ?? Number(await publicClient.getBlockNumber({ cacheTime: 0 }));
+    await tracker.syncTo(block);
+    // A tracker already past `block` (shared with a reader at the head) still answers for it.
+    const heldAt = tracker.ledger.heldAt(owner, block);
+    const tokenIds = heldAt?.tokenIds ?? [];
+    const balance = (await publicClient
+      .readContract({
+        address: UNISWAP.nonfungiblePositionManager,
+        abi: nonfungiblePositionManagerAbi,
+        functionName: "balanceOf",
+        args: [owner],
+      })
+      .catch(() => undefined)) as bigint | undefined;
+    const unlisted =
+      balance === undefined ? undefined : Number(balance) - tokenIds.length;
+    return {
+      tokenIds,
+      ...(unlisted !== undefined && unlisted > 0 ? { unlisted } : {}),
+    };
+  } catch {
+    // The node would not serve the logs (or a seed read failed). Fall back to the holder
+    // enumeration, bounded -- the rule before the ledger, which another address can crowd -- so
+    // the agent still sees and can manage its positions this block; the ledger retries next block.
+    const { balance, tokenIds } = await enumerateLpPositions(publicClient, owner);
+    const unlisted = Number(balance) - tokenIds.length;
+    return { tokenIds, ...(unlisted > 0 ? { unlisted } : {}) };
+  }
+}
+
 export async function getLpPositions(
   publicClient: PublicClient,
   owner: Address,
@@ -397,7 +471,34 @@ export async function getLpPositions(
   fairPriceByBase: Record<string, number>,
   // pool address (lower) -> slot0. If observe passes the already-read slot0, the re-read is skipped.
   knownSlot0ByPool?: Record<string, PoolSlot0>,
+  // Whose word on which positions are the owner's own (uniswapLpOwnership.ts). Omitted: a ledger kept
+  // for the owner per client object, begun at its first call.
+  ownership?: LpOwnershipTracker,
+  // The block the rest of the reads are pinned to, so the ledger answers for it. Omitted: the head.
+  atBlock?: number,
 ): Promise<LpPositionObservation[]> {
+  return (
+    await getLpPositionsDetail(
+      publicClient,
+      owner,
+      fairPriceByBase,
+      knownSlot0ByPool,
+      ownership,
+      atBlock,
+    )
+  ).positions;
+}
+
+// getLpPositions plus how many position NFTs the owner holds that are not listed: ones another
+// address minted or sent to it (never valued), or its own past LP_POSITIONS_LIMIT.
+async function getLpPositionsDetail(
+  publicClient: PublicClient,
+  owner: Address,
+  fairPriceByBase: Record<string, number>,
+  knownSlot0ByPool: Record<string, PoolSlot0> | undefined,
+  ownership: LpOwnershipTracker | undefined,
+  atBlock?: number,
+): Promise<{ positions: LpPositionObservation[]; unlisted?: number }> {
   const markets = marketsFor("uniswap");
   // Each market's slot0 (read it if not provided).
   const slot0ByPool: Record<string, PoolSlot0> = { ...(knownSlot0ByPool ?? {}) };
@@ -411,34 +512,27 @@ export async function getLpPositions(
     }),
   );
 
-  const balance = await publicClient.readContract({
-    address: UNISWAP.nonfungiblePositionManager,
-    abi: nonfungiblePositionManagerAbi,
-    functionName: "balanceOf",
-    args: [owner],
-  });
-
-  const indices = Array.from({ length: Number(balance) }, (_, i) => BigInt(i));
-  const tokenIds = await Promise.all(
-    indices.map((i) =>
-      publicClient.readContract({
-        address: UNISWAP.nonfungiblePositionManager,
-        abi: nonfungiblePositionManagerAbi,
-        functionName: "tokenOfOwnerByIndex",
-        args: [owner, i],
-      }),
+  // Only the positions the owner obtained itself, and at most LP_POSITIONS_LIMIT of them: what the
+  // scorer values, and a read count no other address can raise. The holder enumeration this used to
+  // walk had no bound, so every NFT someone minted to the agent cost it two reads a block or more.
+  const owned = await ownedPositionIds(publicClient, owner, ownership, atBlock);
+  // A position burned between the ledger's block and this read reverts; it is gone, not a failure.
+  const read = await Promise.all(
+    owned.tokenIds.map((tokenId) =>
+      publicClient
+        .readContract({
+          address: UNISWAP.nonfungiblePositionManager,
+          abi: nonfungiblePositionManagerAbi,
+          functionName: "positions",
+          args: [tokenId],
+        })
+        .then((raw) => ({ tokenId, raw }))
+        .catch(() => undefined),
     ),
   );
-  const rawPositions = await Promise.all(
-    tokenIds.map((tokenId) =>
-      publicClient.readContract({
-        address: UNISWAP.nonfungiblePositionManager,
-        abi: nonfungiblePositionManagerAbi,
-        functionName: "positions",
-        args: [tokenId],
-      }),
-    ),
-  );
+  const present = read.filter((r) => r !== undefined);
+  const tokenIds = present.map((r) => r.tokenId);
+  const rawPositions = present.map((r) => r.raw);
 
   // Issue #40: positions in pools the environment did not deploy. An agent that creates its own
   // pool and provides liquidity to it used to see *nothing* here -- the position was dropped for
@@ -628,7 +722,9 @@ export async function getLpPositions(
       ...(market.base === "WETH" ? {} : { market: market.key }),
     });
   }
-  return positions;
+  return owned.unlisted === undefined
+    ? { positions }
+    : { positions, unlisted: owned.unlisted };
 }
 
 // A pool's slot0 as the LP valuation needs it. The two fields answer different questions and must
@@ -977,13 +1073,54 @@ export function lpPositionValueUsdc(
 // The raw positions(tokenId) tuple the NPM returns.
 export type PositionTuple = Parameters<typeof lpPositionValueUsdc>[0];
 
-// The most LP NFTs one agent's valuation enumerates at a boundary (issue #196). The count is the
-// agent's own to raise -- minting a position costs it gas and nothing else -- and each one is two
-// reads (tokenOfOwnerByIndex, positions) plus its pool's state, at every boundary and at every block
-// of the median window. Past the bound the positions are not read and the agent is told so in its
-// value (`uniswap-lp-unscanned`, like `lending-unscanned`), rather than the field paying for them.
-// 128 holds every reference strategy many times over; the same figure as USER_MARKET_LIMIT.
-export const LP_POSITIONS_LIMIT = 128;
+// The most LP NFTs one agent's valuation reads at a boundary (issue #196): defined with the ownership
+// ledger, which decides which ones they are (uniswapLpOwnership.ts).
+export { LP_POSITIONS_LIMIT };
+
+// What the ownership ledger leaves out of an agent's LP value at a boundary, said in the value:
+//   uniswap-lp-unscanned  its own positions past LP_POSITIONS_LIMIT -- its own doing (issue #196)
+//   uniswap-lp-received   NFTs it holds that it did not obtain itself: minted or sent to it in
+//                         another address's transaction. Never valued. Counted off balanceOf rather
+//                         than kept by id, so spam costs the ledger nothing to hold, and anything
+//                         the ledger did not see arrive (a holding past the seed bound) lands here
+//                         too rather than nowhere.
+// `balance` is the boundary's NonfungiblePositionManager.balanceOf for the agent (undefined if the
+// read failed, which hides only this count: the valued positions are read by id).
+export function lpOwnershipExclusions(
+  held: LpHeldAt,
+  balance: unknown,
+): UnpricedHoldingDetail[] {
+  const out: UnpricedHoldingDetail[] = [];
+  const own = held.heldOwn + held.heldSeeded + held.ownOverflow;
+  const unscanned = own - held.tokenIds.length;
+  if (unscanned > 0)
+    out.push({
+      source: "uniswap-lp-unscanned",
+      amountRaw: String(unscanned),
+      reason: "read-failed",
+      read:
+        `${held.tokenIds.length} of the ${own} positions the agent obtained itself read ` +
+        `(LP_POSITIONS_LIMIT ${LP_POSITIONS_LIMIT}); the rest are not in this value`,
+    });
+  if (typeof balance !== "bigint") {
+    out.push({
+      source: "uniswap-lp-received",
+      amountRaw: "",
+      reason: "read-failed",
+      read:
+        "NonfungiblePositionManager.balanceOf (only the count of NFTs not valued; the valued positions were read by id)",
+    });
+    return out;
+  }
+  const received = Number(balance) - own;
+  if (received > 0)
+    out.push({
+      source: "uniswap-lp-received",
+      amountRaw: String(received),
+      reason: "received",
+    });
+  return out;
+}
 
 // UniswapV3Factory.getPool returns this for a pair/fee that has no pool.
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -1391,11 +1528,13 @@ export const uniswapAdapter: ProtocolAdapter = {
         tick: ms.tick,
         sqrtPriceX96: ms.sqrtPriceX96,
       };
-    const positions = await getLpPositions(
+    const { positions, unlisted } = await getLpPositionsDetail(
       ctx.publicClient,
       agent,
       fairByBase,
       slot0ByPool,
+      ctx.uniswapLpOwnership,
+      ctx.observationBlock,
     );
     const weth =
       s.markets.find((m) => m.market.base === "WETH") ?? s.markets[0];
@@ -1411,6 +1550,7 @@ export const uniswapAdapter: ProtocolAdapter = {
           : { liquidity: weth.liquidity.toString() }),
       },
       positions,
+      ...(unlisted === undefined ? {} : { unlistedPositionCount: unlisted }),
     };
     const extra: Record<string, UniswapMarketObservation> = {};
     for (const ms of s.markets) {
@@ -1479,35 +1619,55 @@ export const uniswapAdapter: ProtocolAdapter = {
 
   async valueUsdc(ctx, agent, _state, fairPrice): Promise<number> {
     const fairByBase = ctx.fairPrices ?? { WETH: fairPrice };
-    const positions = await getLpPositions(ctx.publicClient, agent, fairByBase);
+    const positions = await getLpPositions(
+      ctx.publicClient,
+      agent,
+      fairByBase,
+      undefined,
+      ctx.uniswapLpOwnership,
+      ctx.observationBlock,
+    );
     return positions.reduce((sum, p) => sum + p.valueUsdc, 0);
   },
 
   // Historical LP valuation, staged so the scorer can batch each stage across every adapter and
-  // agent (issue #41). Stages: registered ticks + NFT counts -> tokenIds -> positions -> pools for
-  // positions outside MARKET_LEGS -> their ticks -> fee growth. Stages after the first are skipped
-  // entirely when nothing needs them.
+  // agent (issue #41). With the ownership ledger (ctx.uniswapLp, every scoring path) the first stage
+  // already holds each owned position's ownerOf and positions next to the registered ticks and the
+  // NFT counts; without it, the holder enumeration takes two more (tokenIds -> positions). Then pools
+  // for positions outside MARKET_LEGS -> their ticks -> fee growth. Stages after the first are
+  // skipped entirely when nothing needs them.
   async *valueAtBlock(ctx) {
-    const zero = (): Record<string, AgentProtocolValue> => {
-      const out: Record<string, AgentProtocolValue> = {};
-      for (const a of ctx.agents)
-        out[a.id] = { valueUsdc: 0, liquidatableValueUsdc: 0, unpriced: [] };
-      return out;
-    };
+    const out: Record<string, AgentProtocolValue> = {};
+    for (const a of ctx.agents)
+      out[a.id] = { valueUsdc: 0, liquidatableValueUsdc: 0, unpriced: [] };
 
     const markets = marketsFor("uniswap");
+    const ledger = ctx.uniswapLp;
+    // The positions each agent obtained itself, held at this block, at most LP_POSITIONS_LIMIT
+    // (uniswapLpOwnership.ts). What anybody else minted or sent to it is not among them, so it can
+    // neither crowd these out of the bound nor be counted.
+    const heldByAgent = ledger
+      ? ctx.agents.map((a) => ledger.heldAt(a.address, ctx.blockNumber))
+      : undefined;
+    const npmRead = (functionName: string, args: readonly unknown[]) => ({
+      address: UNISWAP.nonfungiblePositionManager,
+      abi: nonfungiblePositionManagerAbi,
+      functionName,
+      args,
+    });
     const stage1 = yield [
       ...markets.map((m) => ({
         address: legOf(m).pool,
         abi: poolAbi,
         functionName: "slot0",
       })),
-      ...ctx.agents.map((a) => ({
-        address: UNISWAP.nonfungiblePositionManager,
-        abi: nonfungiblePositionManagerAbi,
-        functionName: "balanceOf",
-        args: [a.address],
-      })),
+      ...ctx.agents.map((a) => npmRead("balanceOf", [a.address])),
+      ...(heldByAgent ?? []).flatMap((h) =>
+        (h?.tokenIds ?? []).flatMap((tokenId) => [
+          npmRead("ownerOf", [tokenId]),
+          npmRead("positions", [tokenId]),
+        ]),
+      ),
     ];
 
     const slot0ByPool: Record<string, PoolSlot0> = {};
@@ -1515,61 +1675,125 @@ export const uniswapAdapter: ProtocolAdapter = {
       const slot0 = stage1[i] as readonly [bigint, number] | undefined;
       if (slot0) slot0ByPool[legOf(m).pool.toLowerCase()] = slot0Of(slot0);
     });
-    const owners: Array<{ agentId: string; owner: Address; index: bigint }> =
+    // Every position that was read, with what its failures and its value are reported under.
+    const read: Array<{ agentId: string; tokenId: bigint; raw: PositionTuple }> =
       [];
-    // An unreadable NFT count makes every position the agent holds disappear at once, which reads
-    // exactly like having closed them all — report it rather than treating it as "holds none" (#44).
-    const countFailed: string[] = [];
-    const overLimit: Array<{ agentId: string; total: bigint }> = [];
-    ctx.agents.forEach((agent, i) => {
-      const raw = stage1[markets.length + i];
-      if (typeof raw !== "bigint") {
-        countFailed.push(agent.id);
-        return;
-      }
-      if (raw > BigInt(LP_POSITIONS_LIMIT))
-        overLimit.push({ agentId: agent.id, total: raw });
-      const n = raw > BigInt(LP_POSITIONS_LIMIT) ? BigInt(LP_POSITIONS_LIMIT) : raw;
-      for (let k = 0n; k < n; k++)
-        owners.push({ agentId: agent.id, owner: agent.address, index: k });
-    });
-    const unreadableCount = (out: Record<string, AgentProtocolValue>) => {
-      for (const agentId of countFailed) {
-        out[agentId].unpriced.push({
-          source: "uniswap-lp",
-          amountRaw: "",
-          reason: "read-failed",
-          read: "NonfungiblePositionManager.balanceOf",
+    if (heldByAgent) {
+      let k = markets.length + ctx.agents.length;
+      ctx.agents.forEach((agent, i) => {
+        const h = heldByAgent[i];
+        const unpriced = out[agent.id].unpriced;
+        if (!h) {
+          // Not followed by the ledger (it was never told about this agent): nothing is valued, and
+          // that is said rather than read as "holds none".
+          unpriced.push({
+            source: "uniswap-lp",
+            amountRaw: "",
+            reason: "read-failed",
+            read: "the LP ownership ledger does not follow this agent",
+          });
+          return;
+        }
+        unpriced.push(
+          ...lpOwnershipExclusions(h, stage1[markets.length + i]),
+        );
+        for (const tokenId of h.tokenIds) {
+          const owner = stage1[k++];
+          const raw = stage1[k++];
+          if (
+            typeof owner !== "string" ||
+            owner.toLowerCase() !== agent.address.toLowerCase()
+          ) {
+            // The ledger says it is held and the chain does not (or would not say): a log the
+            // ledger missed. Not valued -- it may be somebody else's now -- and not silent.
+            unpriced.push({
+              source: `uniswap-lp:${tokenId}`,
+              amountRaw: "",
+              reason: "read-failed",
+              read:
+                typeof owner === "string"
+                  ? `NonfungiblePositionManager.ownerOf is ${owner}, not this agent (the ownership ledger is out of step)`
+                  : "NonfungiblePositionManager.ownerOf",
+            });
+            continue;
+          }
+          if (!raw) {
+            unpriced.push({
+              source: `uniswap-lp:${tokenId}`,
+              amountRaw: "",
+              reason: "read-failed",
+              read: "NonfungiblePositionManager.positions",
+            });
+            continue;
+          }
+          read.push({ agentId: agent.id, tokenId, raw: raw as PositionTuple });
+        }
+      });
+    } else {
+      // The holder enumeration (no ledger in hand): what the agent holds, first LP_POSITIONS_LIMIT
+      // by index. Another address can fill those indices, which is why no scoring path takes it.
+      const owners: Array<{ agentId: string; owner: Address; index: bigint }> =
+        [];
+      ctx.agents.forEach((agent, i) => {
+        const raw = stage1[markets.length + i];
+        if (typeof raw !== "bigint") {
+          // An unreadable NFT count makes every position the agent holds disappear at once, which
+          // reads exactly like having closed them all — report it rather than "holds none" (#44).
+          out[agent.id].unpriced.push({
+            source: "uniswap-lp",
+            amountRaw: "",
+            reason: "read-failed",
+            read: "NonfungiblePositionManager.balanceOf",
+          });
+          return;
+        }
+        // Beyond the per-agent bound: said in its value rather than silently left out (issue #196).
+        if (raw > BigInt(LP_POSITIONS_LIMIT))
+          out[agent.id].unpriced.push({
+            source: "uniswap-lp-unscanned",
+            amountRaw: (raw - BigInt(LP_POSITIONS_LIMIT)).toString(),
+            reason: "read-failed",
+            read:
+              `NonfungiblePositionManager.tokenOfOwnerByIndex: ${LP_POSITIONS_LIMIT} of ${raw} ` +
+              `positions read (LP_POSITIONS_LIMIT ${LP_POSITIONS_LIMIT}); the rest are not in this value`,
+          });
+        const n =
+          raw > BigInt(LP_POSITIONS_LIMIT) ? BigInt(LP_POSITIONS_LIMIT) : raw;
+        for (let k = 0n; k < n; k++)
+          owners.push({ agentId: agent.id, owner: agent.address, index: k });
+      });
+      if (owners.length === 0) return out;
+      const tokenIds = yield owners.map(({ owner, index }) =>
+        npmRead("tokenOfOwnerByIndex", [owner, index]),
+      );
+      const positions = yield tokenIds.map((tokenId) =>
+        npmRead("positions", [tokenId ?? 0n]),
+      );
+      owners.forEach(({ agentId, index }, j) => {
+        const raw = positions[j];
+        if (!raw || tokenIds[j] === undefined) {
+          // The position is known to exist (it was counted) but could not be read, so its value is
+          // unknown rather than zero (issue #44).
+          out[agentId].unpriced.push({
+            source: `uniswap-lp#${index}`,
+            amountRaw: "",
+            reason: "read-failed",
+            read:
+              tokenIds[j] === undefined
+                ? "NonfungiblePositionManager.tokenOfOwnerByIndex"
+                : "NonfungiblePositionManager.positions",
+          });
+          return;
+        }
+        read.push({
+          agentId,
+          tokenId: tokenIds[j] as bigint,
+          raw: raw as PositionTuple,
         });
-      }
-      // Beyond the per-agent bound: the agent's own doing, and said in its value rather than
-      // silently left out of it (issue #196).
-      for (const { agentId, total } of overLimit) {
-        out[agentId].unpriced.push({
-          source: "uniswap-lp-unscanned",
-          amountRaw: (total - BigInt(LP_POSITIONS_LIMIT)).toString(),
-          reason: "read-failed",
-          read:
-            `NonfungiblePositionManager.tokenOfOwnerByIndex: ${LP_POSITIONS_LIMIT} of ${total} ` +
-            `positions read (LP_POSITIONS_LIMIT ${LP_POSITIONS_LIMIT}); the rest are not in this value`,
-        });
-      }
-      return out;
-    };
-    if (owners.length === 0) return unreadableCount(zero());
-
-    const tokenIds = yield owners.map(({ owner, index }) => ({
-      address: UNISWAP.nonfungiblePositionManager,
-      abi: nonfungiblePositionManagerAbi,
-      functionName: "tokenOfOwnerByIndex",
-      args: [owner, index],
-    }));
-    const positions = yield tokenIds.map((tokenId) => ({
-      address: UNISWAP.nonfungiblePositionManager,
-      abi: nonfungiblePositionManagerAbi,
-      functionName: "positions",
-      args: [tokenId ?? 0n],
-    }));
+      });
+    }
+    if (read.length === 0) return out;
+    const positions = read.map((r) => r.raw);
 
     // Pools outside MARKET_LEGS: resolve through the factory, then read their slot0.
     const poolByKey: Record<string, Address> = {};
@@ -1673,24 +1897,8 @@ export const uniswapAdapter: ProtocolAdapter = {
 
     const fairByBase = ctx.fairByBase();
     const stablePrices = ctx.stablePrices();
-    const out = unreadableCount(zero());
-    owners.forEach(({ agentId, index }, j) => {
-      const raw = positions[j];
-      if (!raw || tokenIds[j] === undefined) {
-        // The position is known to exist (it was counted) but could not be read, so its value is
-        // unknown rather than zero (issue #44).
-        out[agentId].unpriced.push({
-          source: `uniswap-lp#${index}`,
-          amountRaw: "",
-          reason: "read-failed",
-          read:
-            tokenIds[j] === undefined
-              ? "NonfungiblePositionManager.tokenOfOwnerByIndex"
-              : "NonfungiblePositionManager.positions",
-        });
-        return;
-      }
-      const valuation = lpPositionValuation(raw as PositionTuple, {
+    read.forEach(({ agentId, tokenId, raw }) => {
+      const valuation = lpPositionValuation(raw, {
         slot0ByPool,
         fairByBase,
         stablePrices,
@@ -1707,7 +1915,7 @@ export const uniswapAdapter: ProtocolAdapter = {
         mergeStableUnits(agent.stableLongs, valuation.stableUnits);
       }
       for (const h of valuation.unpriced)
-        agent.unpriced.push({ ...h, source: `uniswap-lp:${tokenIds[j]}` });
+        agent.unpriced.push({ ...h, source: `uniswap-lp:${tokenId}` });
     });
     return out;
   },

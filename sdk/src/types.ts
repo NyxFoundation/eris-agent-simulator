@@ -507,7 +507,13 @@ export type UniswapObservation = {
     tickSpacing: number;
     liquidity?: string;
   };
+  // The position NFTs the agent obtained itself (a mint or transfer in a transaction it sent), at
+  // most LP_POSITIONS_LIMIT -- exactly the set its score values (protocols/uniswapLpOwnership.ts).
   positions: LpPositionObservation[];
+  // Position NFTs the agent holds that are not in `positions`, when there are any: ones another
+  // address minted or sent to it (never valued, and they cannot crowd its own out), or its own past
+  // LP_POSITIONS_LIMIT.
+  unlistedPositionCount?: number;
   // ADR 0013: non-WETH markets (WBTC/USDC etc.). The WETH market stays on pool/positions.
   markets?: Record<string, UniswapMarketObservation>;
 };
@@ -881,7 +887,8 @@ export type RegistryObservation = {
   }>;
   strandedUnknown: StrandedHoldingObservation[];
   // Registry entries that exist and are not in `entries`. Deployment is permissionless, so the count
-  // is somebody's choice; one observation carries a bounded, newest-first slice of it, and the
+  // is somebody's choice; one observation carries a bounded, newest-first slice of it (the newest
+  // 128, plus the environment's own token listings and their pools whatever their age), and the
   // number dropped is reported rather than left to be inferred from a list that looks complete.
   dropped: number;
   // Present only when this block's registry read failed. The rest of the section is then the last

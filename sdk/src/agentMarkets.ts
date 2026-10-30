@@ -276,8 +276,35 @@ export const UNLIMITED_ALLOWANCE_THRESHOLD = 1n << 255n;
 // How many registry entries one observation carries. Deployment is permissionless and costs the
 // creator only gas, so the entry count is somebody's choice; the per-block cost of reading it must
 // not be. Newest first, and the number dropped is reported rather than left to be inferred from a
-// list that looks complete.
+// list that looks complete. The environment's own listings come on top of it (REGISTRY_PINNED_LIMIT).
 export const REGISTRY_OBSERVATION_LIMIT = 128;
+
+// The environment's own listings ride along whatever their age (`environmentCreatorsOf`), so that the
+// newest-first window cannot be filled over them: deploying is cheap and the registry publishes 8
+// entries a block, so 16 blocks of somebody's spam used to push a launch out of every agent's view.
+// The environment lists at most 3 tokens an epoch (LAUNCH_WALLET_SLOTS), two entries each; the cap
+// is there so a mistake upstream cannot make the observation unbounded again.
+export const REGISTRY_PINNED_LIMIT = 32;
+
+/**
+ * The creators of the environment's own listings: whoever created a `verified` `erc20` entry. An
+ * entry is the environment's listing when its creator is one of them.
+ *
+ * A verified `erc20` entry has exactly one source, the TokenLauncher's `Launched` event
+ * (core/src/realtime/marketRegistry.ts): a token a participant deploys is a top-level CREATE,
+ * published unverified, or an internal one, not published at all. Only the launch wallets can call
+ * the launcher, so the creator of such an entry is a launch wallet, and the other entries a launch
+ * wallet created are the pools the launcher made for it. A participant's pool or lending market is
+ * `verified` too (the factory is the environment's), which is why `verified` alone does not pin.
+ */
+export function environmentCreatorsOf(
+  entries: readonly Pick<RegistryEntry, "kind" | "verified" | "creator">[],
+): Set<string> {
+  const out = new Set<string>();
+  for (const e of entries)
+    if (e.kind === "erc20" && e.verified) out.add(e.creator.toLowerCase());
+  return out;
+}
 
 export class MarketRegistryWatcher {
   private readonly ledger = new StrandedLedger();
@@ -287,6 +314,9 @@ export class MarketRegistryWatcher {
   // read once and kept. Re-reading the whole list each block made the per-block cost grow with a
   // length anyone can inflate, until the read ran out of gas and every observation failed.
   private readonly known: RegistryEntry[] = [];
+  // Indices into `known` of the environment's listings (`environmentCreatorsOf`), ascending.
+  private pinned: number[] = [];
+  private readonly environmentCreators = new Set<string>();
   private lastGood: RegistryObservation | undefined;
 
   constructor(
@@ -338,15 +368,29 @@ export class MarketRegistryWatcher {
     if (count < this.known.length) {
       this.known.length = 0;
       this.markets.clear();
+      this.pinned = [];
+      this.environmentCreators.clear();
       return this.read(publicClient, blockNumber);
     }
+    const firstFresh = this.known.length;
     this.known.push(...fresh);
     const all = this.known;
     // Every entry feeds the ledger's market set -- an omitted entry would make a real deposit look
     // like it went nowhere -- but only a bounded, newest-first slice is read back per block and
     // carried in the observation.
     for (const e of fresh) this.markets.add(e.market.toLowerCase());
-    const entries = all.slice(-REGISTRY_OBSERVATION_LIMIT).reverse();
+    this.pinFrom(firstFresh);
+    const windowStart = Math.max(0, all.length - REGISTRY_OBSERVATION_LIMIT);
+    // The window, newest first, then the environment's listings that are older than the window,
+    // newest first: the whole list stays newest first.
+    const entries = [
+      ...all.slice(windowStart).reverse(),
+      ...this.pinned
+        .filter((i) => i < windowStart)
+        .slice(-REGISTRY_PINNED_LIMIT)
+        .reverse()
+        .map((i) => all[i]),
+    ];
     const droppedEntries = all.length - entries.length;
 
     const [codehashes, oracleOwners] = await Promise.all([
@@ -440,5 +484,20 @@ export class MarketRegistryWatcher {
       strandedUnknown,
       dropped: droppedEntries,
     };
+  }
+
+  // Extend `pinned` with the environment's listings among known[from..]. A launch wallet is
+  // recognised only once its token's entry is read, and the registrar can publish the pool a block
+  // before the token, so the first sight of a new launch wallet looks back over what is already held.
+  private pinFrom(from: number): void {
+    const before = this.environmentCreators.size;
+    for (const creator of environmentCreatorsOf(this.known.slice(from)))
+      this.environmentCreators.add(creator);
+    const start = this.environmentCreators.size > before ? 0 : from;
+    const pinned = new Set(this.pinned);
+    for (let i = start; i < this.known.length; i++)
+      if (this.environmentCreators.has(this.known[i].creator.toLowerCase()))
+        pinned.add(i);
+    this.pinned = [...pinned].sort((a, b) => a - b);
   }
 }
