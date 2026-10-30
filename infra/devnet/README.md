@@ -114,6 +114,14 @@ npx tsx scripts/liveWeek.ts sealed-senders --config config/practice.yaml \
 (cd infra/monitoring && docker compose up -d rpc-gateway-live)   # recreate the gateway with it
 ```
 
+Put the same value in `.env.practice` as `ERIS_GATEWAY_SEALED_SENDERS=` too. The coordinator then checks
+its own signers against it at every start and, if one is missing, says so on stderr and in
+`events.jsonl` (`environment_signers_sealed` with `gateway: "missing"` and the wallets' ids). It does
+**not** refuse to start: in the practice period a refused start stops the chain everyone trades on,
+and a gap in the list is a leak to fix, not a reason for that. Without the line the event says
+`gateway: "unchecked"`. (The live week refuses instead; `run-week.sh` hands the coordinator the value
+it starts the gateway with.)
+
 Recreating the gateway does not touch the chain or the coordinator (it talks to anvil directly, never
 through the gateway); participants' requests fail for the seconds it takes to come back. Check it:
 `curl -s localhost:8546/metrics | grep rpc_pending_sender_sealed_total` counts the rewritten queries.

@@ -204,7 +204,11 @@ import { AgentDiskWatch, agentLogFiles } from "./agentDisk.js";
 import { measureAgentNetworks, networkMismatches } from "./agentNetwork.js";
 import { createAgentStopper } from "./agentStop.js";
 import { environmentSignerOwners } from "./environmentSigners.js";
-import { deriveFlowWallets, environmentSigners } from "./environmentWallets.js";
+import {
+  deriveFlowWallets,
+  environmentSigners,
+  gatewaySealRecord,
+} from "./environmentWallets.js";
 import {
   createDockerRunner,
   DOCKER_CALL_TIMEOUT_MS,
@@ -671,6 +675,7 @@ async function assertLiveWeekPosture(
     agentsReadyTimeoutSec: config.agentsReadyTimeoutSec,
     agents,
     env: process.env,
+    gatewaySeal: gatewaySealRecord(environmentSigners(config), process.env),
   });
   // The proxy's mode is only visible from the proxy itself (liveWeek.ts).
   const proxy = await probeInferenceProxy(process.env);
@@ -1549,6 +1554,21 @@ export async function runRealtimeSimulation(
       throw new Error(
         `environment wallets missing from environmentSigners (core/src/realtime/environmentWallets.ts): ${unlisted.join(", ")}. ` +
           "Add them there, so the gateway seals their pending nonce and the nonce floor raises them",
+      );
+  }
+  // ...and against the list the gateway actually holds, when it was handed over. The live week
+  // refused a list that misses one before anything ran (assertLiveWeekPosture); anywhere else -- the
+  // practice period above all, where a refused start stops the chain everyone trades on -- a gap is
+  // a leak to fix, not a reason to stop, so it is said loudly and recorded.
+  {
+    const seal = gatewaySealRecord(signers, process.env);
+    logger.event({ type: "environment_signers_sealed", signers: signers.length, ...seal });
+    if (seal.gateway === "missing")
+      console.error(
+        `[gateway] WARNING: the RPC gateway's sealed-senders list misses ${seal.missing.length} of this ` +
+          `run's environment signers (${seal.missing.map((m) => m.id).join(", ")}): their pending ` +
+          "nonces are readable. Regenerate it with `scripts/liveWeek.ts sealed-senders` under this " +
+          "run's wallet secret and role keys, and restart the gateway",
       );
   }
 

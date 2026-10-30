@@ -446,7 +446,12 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   `.env.local` で 4 本とも必須、財布の秘密は `--wallet-secret` か `ERIS_WALLET_SECRET_FILE` で必須）: ライブ週は `run-week.sh` が
   公式 12 レジーム ∪ プランのレジームで計算し（34 本）、練習 devnet は `--config config/practice.yaml` の出力（30 本）を
   `infra/monitoring/.env` の `ASCON_PENDING_SEALED_SENDERS` に書いて gateway を作り直す（役割鍵・財布の秘密・venue / actor 数が
-  変わったら作り直す）。環境自身は anvil に直結するので封じても困らない。agent の財布（AUTO 含む）と運用ツールのプローブは封じない
+  変わったら作り直す）。環境自身は anvil に直結するので封じても困らない。agent の財布（AUTO 含む）と運用ツールのプローブは封じない。
+  **ゲートウェイが実際に持つ一覧とも照合する**（上の「一覧に無ければ落ちる」は coordinator 内の 2 つの導出の照合で、作り直し忘れた
+  `.env` や別の財布の秘密で作った値は見えない）: `ERIS_GATEWAY_SEALED_SENDERS` に gateway と同じ値を渡すと、その run の署名者が
+  全部含まれるか（一致ではなく包含。gateway の値はレジームの和集合）を `environment_signers_sealed` イベントに記録する。
+  **ライブ週は漏れ・未設定を拒否**（`liveWeekRefusals`。`run-week.sh` が gateway に渡すのと同じ `$SEALED` を export）、
+  **それ以外は警告だけ**（練習期間は起動を拒否するとチェーンが止まる。`.env.practice` に同じ値を書く）。値はアドレスだけで agent には渡さない
 - **ロスターは登録リストであって起動リストではない**。`external: true` + `address`（参加者が鍵を持つ。**運営が
   作った鍵は運営が持っている鍵**なのでこちらを推奨）/ `wallet`（運営が発行して渡す）。`command`/`args`/`dir`/`env`
   は**黙殺せず拒否**する（黙って落とすと「運営が動かしている」ように読めるロスターになる）。

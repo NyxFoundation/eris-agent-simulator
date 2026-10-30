@@ -146,6 +146,9 @@ SEALED=$(node --import tsx scripts/liveWeek.ts sealed-senders --wallet-secret "$
   --scenarios config/scenarios/public.yaml --scenarios "$PLAN") \
   || die "cannot list the environment's signers for the gateway (live-week.env role keys, wallet-secret.yaml)"
 ok "gateway seals the pending nonce of $(echo "$SEALED" | tr ',' '\n' | grep -c .) environment addresses"
+# The coordinator gets the same value and refuses the week if one of an epoch's signers is not on it
+# (core/src/realtime/liveWeek.ts). Never passed to the agents (agentProcess.ts).
+export ERIS_GATEWAY_SEALED_SENDERS="$SEALED"
 docker rm -f "$GATEWAY_CT" "$PROXY_CT" >/dev/null 2>&1 || true
 mkdir -p "runs/rpc-gateway-$MODE" "runs/inference-$MODE"
 LOGOPTS=(--log-opt max-size=100m --log-opt max-file=5)

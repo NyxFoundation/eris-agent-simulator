@@ -107,7 +107,9 @@ The same command, whatever stopped it (Ctrl-C, a crash, a reboot). It re-checks 
 recorded value, recreates the gateway and proxy containers (the gateway with every environment signer's
 pending nonce sealed: `scripts/liveWeek.ts sealed-senders` over the official regimes and the plan,
 from `live-week.env`'s role keys and `wallet-secret.yaml`; `[run-week]   ok    gateway seals the
-pending nonce of 34 environment addresses`), and resumes the matrix recorded in
+pending nonce of 34 environment addresses`; the coordinator gets the same value as
+`ERIS_GATEWAY_SEALED_SENDERS` and refuses the week before the first epoch if one of a regime's
+signers is not on it), and resumes the matrix recorded in
 `matrix-dir`: complete epochs are skipped, an epoch that was running starts again from its beginning
 with the same seed, and the agents' state is restored from the checkpoint the epoch before it ended
 with (`<state root>/.snapshots/end-s<N>`). If the first start stopped before epoch 1 finished there is

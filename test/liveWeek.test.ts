@@ -101,6 +101,25 @@ test("an agents-ready bound below the floor is refused, and so is no wait", () =
   assert.match(none[0], /agentsReadyTimeoutSec is 0 \(no wait\)/);
 });
 
+test("a gateway list that misses a signer, or none at all, is refused", () => {
+  assert.deepEqual(posture({ gatewaySeal: { gateway: "covered", sealed: 34 } }), []);
+  const none = posture({ gatewaySeal: { gateway: "unchecked" } });
+  assert.equal(none.length, 1);
+  assert.match(none[0], /no gateway sealed-senders list: set ERIS_GATEWAY_SEALED_SENDERS/);
+  const address = privateAdmin().toLowerCase() as Address;
+  const missing = posture({
+    gatewaySeal: { gateway: "missing", sealed: 4, missing: [{ id: "flow-uniswap:informed", address }] },
+  });
+  assert.equal(missing.length, 1);
+  assert.match(missing[0], new RegExp(`does not seal 1 .*flow-uniswap:informed ${address}`));
+  // Without the wallet secret file the signers were derived from a random secret: that is the one
+  // refusal, not a list that "misses" addresses no run uses.
+  const { ERIS_WALLET_SECRET_FILE: _, ...noSecret } = isolated;
+  const reasons = posture({ env: noSecret, gatewaySeal: { gateway: "unchecked" } });
+  assert.equal(reasons.length, 1);
+  assert.match(reasons[0], /no wallet secret file/);
+});
+
 test("a command/args entry is refused: it starts outside the container", () => {
   const reasons = posture({
     agents: [...field, { id: "own-binary", wallet: "AUTO", command: "./bot" }],

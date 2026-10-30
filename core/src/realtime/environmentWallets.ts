@@ -36,6 +36,7 @@ import {
 } from "./tokenLaunch.js";
 import { deriveVulnPoolWallet } from "./vulnPools.js";
 import { WHALE_WALLET_KEY } from "./whale.js";
+import { GATEWAY_SEALED_SENDERS_ENV } from "./liveWeek.js";
 
 const FLOW_KINDS: readonly FlowKind[] = ["informed", "uninformed"];
 
@@ -171,4 +172,57 @@ export function environmentSignerAddresses(
   const set = new Set<string>();
   for (const config of configs) for (const s of environmentSigners(config)) set.add(s.address);
   return [...set].sort() as Address[];
+}
+
+// The gateway's list as the coordinator is told it (GATEWAY_SEALED_SENDERS_ENV, liveWeek.ts): the
+// same value the gateway was started with (RPC_PENDING_SEALED_SENDERS), handed to the coordinator
+// alongside. The gateway is another process, often another container, and the list it holds was made
+// by someone running `liveWeek.ts sealed-senders` under some wallet secret and some role keys. Nothing
+// above can see a list made under the wrong ones -- a rotated secret, a stale `.env`, the four role
+// keys from before -- and every wallet it misses leaks its unmined transactions while the run looks
+// sealed.
+
+/** The addresses in a sealed-senders value (comma-separated, any case), lowercased. */
+export function parseSealedSenders(value: string): Set<string> {
+  return new Set(
+    value
+      .split(",")
+      .map((a) => a.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+/**
+ * The signers the gateway's list does not seal. Containment, not equality: the gateway's list is the
+ * union over every regime the week can draw, and one epoch signs with a subset of it.
+ */
+export function signersNotSealed(
+  signers: readonly EnvironmentSigner[],
+  sealed: ReadonlySet<string>,
+): EnvironmentSigner[] {
+  return signers.filter((s) => !sealed.has(s.address));
+}
+
+/** What a run records about the gateway's coverage of its signers. Addresses only; never a key. */
+export type GatewaySealRecord =
+  | { gateway: "unchecked" }
+  | { gateway: "covered"; sealed: number }
+  | { gateway: "missing"; sealed: number; missing: Array<{ id: string; address: Address }> };
+
+/** Compare this run's signers with the gateway's list from `env`, if one was handed over. */
+export function gatewaySealRecord(
+  signers: readonly EnvironmentSigner[],
+  env: Record<string, string | undefined>,
+): GatewaySealRecord {
+  const value = env[GATEWAY_SEALED_SENDERS_ENV]?.trim();
+  if (!value) return { gateway: "unchecked" };
+  const sealed = parseSealedSenders(value);
+  const missing = signersNotSealed(signers, sealed);
+  return missing.length === 0
+    ? { gateway: "covered", sealed: sealed.size }
+    : {
+        gateway: "missing",
+        sealed: sealed.size,
+        missing: missing.map((s) => ({ id: s.id, address: s.address })),
+      };
 }

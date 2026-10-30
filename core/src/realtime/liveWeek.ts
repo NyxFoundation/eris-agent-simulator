@@ -31,6 +31,9 @@ import type { AgentSpec } from "@eris/sdk/types.js";
 import { agentSandboxWarning } from "./agentView.js";
 import { AGENT_STATE_ROOT_ENV } from "./agentState.js";
 import { WALLET_SECRET_FILE_ENV } from "../walletKeys.js";
+// Type only: environmentWallets.ts reaches sdk/src/constants.ts, which the CLIs that import this
+// file must not load before their env is set (test/cliImportsBeforeEnv.test.ts).
+import type { GatewaySealRecord } from "./environmentWallets.js";
 import {
   checkRoleKeys,
   publicTestAddresses,
@@ -47,6 +50,14 @@ import {
  * start the week.
  */
 export const LIVE_WEEK_MIN_AGENTS_READY_SEC = 120;
+
+/**
+ * The list the RPC gateway seals the pending nonce of (its RPC_PENDING_SEALED_SENDERS), handed to the
+ * coordinator too so it can check its own signers are on it (environmentWallets.ts). run-week.sh sets
+ * both from one `sealed-senders` value. An address list, never a key; not passed to agents
+ * (agentProcess.ts).
+ */
+export const GATEWAY_SEALED_SENDERS_ENV = "ERIS_GATEWAY_SEALED_SENDERS";
 
 /** The matrix runner's override that marks one epoch as the live week's (honoured from nowhere else). */
 export const LIVE_WEEK_OVERRIDE = "ERIS_LIVE_WEEK";
@@ -76,6 +87,8 @@ export function liveWeekRefusals(opts: {
   agentsReadyTimeoutSec: number;
   agents: ReadonlyArray<AgentSpec>;
   env: Record<string, string | undefined>;
+  /** This config's signers against the gateway's list (gatewaySealRecord); absent = not computed. */
+  gatewaySeal?: GatewaySealRecord;
   platform?: NodeJS.Platform;
 }): string[] {
   const reasons: string[] = [];
@@ -145,6 +158,26 @@ export function liveWeekRefusals(opts: {
         "Without it the environment's wallets are derived from a per-process random secret, and " +
         "every --resume moves every AUTO agent and flow wallet to a new address",
     );
+
+  // The gateway seals the pending nonce of the environment's wallets (infra/rpc-gateway/README.md).
+  // Which wallets it seals is whatever list it was started with; one made under another wallet
+  // secret or other role keys seals nothing this week signs with, and the week would run with every
+  // informed wallet's next-price signal open while looking sealed. Not checked without the wallet
+  // secret file: the signers would be derived from a random secret, and that is refused above.
+  if (opts.gatewaySeal && opts.env[WALLET_SECRET_FILE_ENV]?.trim()) {
+    if (opts.gatewaySeal.gateway === "unchecked")
+      reasons.push(
+        `no gateway sealed-senders list: set ${GATEWAY_SEALED_SENDERS_ENV} to the value the RPC ` +
+          "gateway was started with (RPC_PENDING_SEALED_SENDERS; infra/live-week/run-week.sh sets both)",
+      );
+    else if (opts.gatewaySeal.gateway === "missing")
+      reasons.push(
+        `the RPC gateway does not seal ${opts.gatewaySeal.missing.length} of this week's environment ` +
+          `signers (${opts.gatewaySeal.missing.map((m) => `${m.id} ${m.address}`).join(", ")}): its ` +
+          "list was made under another wallet secret or other role keys. Regenerate it with " +
+          "`scripts/liveWeek.ts sealed-senders` under this week's, and restart the gateway",
+      );
+  }
 
   const custom = opts.agents
     .filter((a) => a.external !== true && a.command !== undefined)

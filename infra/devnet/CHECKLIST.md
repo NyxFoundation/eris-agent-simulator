@@ -370,7 +370,9 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
   `npx tsx scripts/liveWeek.ts sealed-senders --config config/practice.yaml --wallet-secret ~/.eris-secrets/practice-wallet-secret.yaml`
   の stdout。環境が署名する**全**アドレス（役割鍵 4 + flow / whale / launch 25 + vuln 1 = 30 前後。stderr に内訳）で、
   役割鍵 4 本だけの古い値のままだと flow の informed 財布の pending nonce が次の価格の向きを 1 ブロック先に漏らす
-  （[README](README.md#what-it-needs)）。役割鍵か財布の秘密を変えたら作り直す
+  （[README](README.md#what-it-needs)）。役割鍵か財布の秘密を変えたら作り直す。同じ値を `.env.practice` の
+  `ERIS_GATEWAY_SEALED_SENDERS` にも書く（coordinator が起動ごとに自分の署名者と照合し、漏れがあれば stderr と
+  `environment_signers_sealed` イベントで警告する。練習期間では起動は止めない）
 - [ ] エピソードを起動予定時刻で作り直し、PR にしてマージし、**box に promote する**:
   `npm run gen:practice-episodes -- --start <起動予定時刻（タイムゾーン付き）>` → マージ → box で
   `infra/dashboard/sync-main.sh promote <マージ commit>`。**マージだけでは box に届かない**（pin で

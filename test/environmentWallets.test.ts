@@ -30,7 +30,10 @@ const {
   deriveFlowWallets,
   environmentSigners,
   flowWalletKeys,
+  gatewaySealRecord,
 } = await import("../core/src/realtime/environmentWallets.js");
+const { GATEWAY_SEALED_SENDERS_ENV } = await import("../core/src/realtime/liveWeek.js");
+const { isEnvironmentOnlyEnv } = await import("../core/src/realtime/agentProcess.js");
 const { ENVIRONMENT_SIGNER_IDS } = await import("../core/src/realtime/environmentSigners.js");
 const { loadRunConfig } = await import("../core/src/runConfig.js");
 const { privateKeyForWalletName } = await import("../core/src/config.js");
@@ -275,6 +278,39 @@ test("sealed-senders lists every environment signer over the official set, and n
   assert.equal(sealed.byKind.role, 4);
   assert.equal(sealed.byKind["stress-victim"], 2);
   assert.equal(sealed.byKind["liquity-victim"], 2);
+});
+
+test("the coordinator checks its signers against the gateway's list by containment", async () => {
+  const env = ROLE_ENV();
+  const { configs, walletSecretPath } = sealedSendersArgs(["--wallet-secret", walletSecretFile()], {}, ROOT);
+  const union = (await sealedSenders({ env, walletSecretPath, configs })).addresses;
+  const { config } = load("config/regimes/calm.yaml", env);
+  const signers = environmentSigners(config);
+  const seal = (value?: string) =>
+    gatewaySealRecord(signers, value === undefined ? {} : { [GATEWAY_SEALED_SENDERS_ENV]: value });
+
+  assert.deepEqual(seal(), { gateway: "unchecked" });
+  assert.deepEqual(seal("  "), { gateway: "unchecked" });
+  // The week's list is a union over every regime: one epoch's signers are a subset of it, and the
+  // case the gateway reads it in does not matter.
+  assert.deepEqual(seal(union.join(",")), { gateway: "covered", sealed: union.length });
+  assert.equal(seal(union.map((a) => a.toUpperCase().replace("0X", "0x")).join(", ")).gateway, "covered");
+
+  // The list from before: the four role keys only. Every flow wallet is open, and named.
+  const roleOnly = Object.values(env).map((k) => privateKeyToAccount(k).address).join(",");
+  const old = seal(roleOnly);
+  assert.equal(old.gateway, "missing");
+  const missing = old.gateway === "missing" ? old.missing.map((m) => m.id) : [];
+  assert.ok(missing.includes("flow-uniswap:informed"), missing.join(", "));
+  assert.ok(!missing.includes("oracle"), "a role key the list has is not reported");
+  assert.equal(missing.length, signers.length - 4);
+
+  // A list made under another week's role keys seals none of this week's role keys.
+  const other = seal((await sealedSenders({ env: ROLE_ENV(), walletSecretPath, configs })).addresses.join(","));
+  assert.equal(other.gateway === "missing" ? other.missing.length : 0, 4);
+
+  // An address list, but a map of the environment's wallets: never an agent's.
+  assert.equal(isEnvironmentOnlyEnv(GATEWAY_SEALED_SENDERS_ENV), true);
 });
 
 test("sealed-senders takes a plan's regimes and practice's config", async () => {
