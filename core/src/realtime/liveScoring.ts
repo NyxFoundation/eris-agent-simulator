@@ -37,6 +37,10 @@ import {
   type IntervalSeriesMeta,
 } from "../intervalSeries.js";
 import { LiveMarketSampler, type MarketSeriesRow } from "./marketSeries.js";
+import {
+  GmxShortfallTracker,
+  type GmxShortfallTrackerState,
+} from "./gmxShortfall.js";
 import { nextIntervalBoundary } from "../epochExtent.js";
 import {
   firstBoundaryV0,
@@ -76,6 +80,9 @@ export type LiveScorerSnapshot = {
   endBlock: number | null;
   firstBoundaryBlock: number | null;
   firstBoundaryByAgent: Record<string, FirstBoundaryV0>;
+  // GMX insolvent closes and the position lives they are charged against (gmxShortfall.ts). Absent
+  // in a checkpoint written before it existed, or on a run without gmx.
+  gmxShortfall?: GmxShortfallTrackerState;
 };
 
 export class LiveScorer {
@@ -94,6 +101,12 @@ export class LiveScorer {
   // V_0 was derived next to P. Keyed by agent; the block it was read at is firstBoundaryBlock.
   private readonly firstBoundaryByAgent = new Map<string, FirstBoundaryV0>();
   private firstBoundaryBlockNumber: number | null = null;
+  // GMX liquidation shortfalls charged to a straddle's winning leg (sdk protocols/gmxInsolvency.ts).
+  // Synced every block, not only at boundaries: a practice node keeps ~300 blocks of logs and an
+  // interval is longer than that.
+  private readonly gmxShortfall: GmxShortfallTracker | null;
+  // agent id -> the charge in the last boundary read (summary.json gmxShortfallChargedUsd).
+  private readonly lastShortfallCharge = new Map<string, number>();
 
   constructor(
     private readonly opts: {
@@ -136,6 +149,27 @@ export class LiveScorer {
       windowBlocks: opts.markMedianBlocks,
       floorBlock: opts.runStartBlock,
     });
+    this.gmxShortfall = opts.enabledIds.includes("gmx")
+      ? new GmxShortfallTracker({
+          publicClient: opts.publicClient,
+          fromBlock: opts.runStartBlock,
+          accounts: opts.agents.map((a) => a.address),
+          onInsolventClose: (close) => {
+            const agent = this.opts.agents.find(
+              (a) => a.address.toLowerCase() === close.account.toLowerCase(),
+            );
+            this.opts.logger.event({
+              type: "gmx_insolvent_close",
+              agentId: agent?.id ?? null,
+              ...close,
+              note:
+                "a liquidation GMX closed below zero; the pool absorbed shortfallUsd. Charged to the " +
+                "account's opposite-side PnL in the same market, up to that PnL (cross-margin per " +
+                "account); a one-sided position keeps its limited liability",
+            });
+          },
+        })
+      : null;
     this.marketSampler = opts.sampleMarket
       ? new LiveMarketSampler({
           publicClient: opts.publicClient,
@@ -164,6 +198,7 @@ export class LiveScorer {
   addAgent(agent: ReconstructionAgent): void {
     if (this.valuesByAgent.has(agent.id)) return;
     this.opts.agents.push(agent);
+    this.gmxShortfall?.track(agent.address);
     this.valuesByAgent.set(
       agent.id,
       this.boundaries.map(() => null),
@@ -189,7 +224,23 @@ export class LiveScorer {
   // event (pointEventsAt). Never reads past the end block, whatever block it is told about.
   async onBlock(blockNumber: number): Promise<void> {
     if (!this.enabled) return;
+    if (this.gmxShortfall) {
+      // Best effort here: a failure is retried on the next block, and a boundary read syncs again
+      // (and fails as a whole) before it charges anything.
+      try {
+        await this.gmxShortfall.syncTo(blockNumber);
+      } catch {
+        /* retried */
+      }
+    }
     await this.readThrough(blockNumber - (this.opts.readLagBlocks ?? 0));
+  }
+
+  /** agent id -> GMX shortfall charged at the last boundary read; only agents with a charge. */
+  shortfallChargedByAgent(): Record<string, number> {
+    return Object.fromEntries(
+      [...this.lastShortfallCharge].filter(([, v]) => v > 0),
+    );
   }
 
   private async readThrough(through: number): Promise<void> {
@@ -223,6 +274,7 @@ export class LiveScorer {
       // G7 (ADR 0019 §5): the same median window as the post-run path, over blocks that are recent
       // here rather than historical. Nothing about the rule changes with when it is applied.
       const stablePricesOverride = await this.markMedian.at(blockNumber);
+      await this.gmxShortfall?.syncTo(blockNumber);
       const snapshot = await readValueSnapshotAtBlock({
         publicClient: this.opts.publicClient,
         agents: this.opts.agents,
@@ -236,12 +288,20 @@ export class LiveScorer {
         // that exists.
         horizonBlock: blockNumber,
         medianWindow: this.markMedian.window(blockNumber),
+        ...(this.gmxShortfall
+          ? { gmxInsolvency: this.gmxShortfall.ledger }
+          : {}),
         ...(stablePricesOverride ? { stablePricesOverride } : {}),
       });
       const index = this.boundaries.length;
       this.boundaries.push(blockNumber);
       const values: Record<string, number | null> = {};
       const byId = new Map(snapshot.values.map((v) => [v.id, v.valueUsdc]));
+      this.lastShortfallCharge.clear();
+      for (const v of snapshot.values)
+        if (v.shortfallChargedUsd)
+          this.lastShortfallCharge.set(v.id, v.shortfallChargedUsd);
+      this.gmxShortfall?.ledger.prune(blockNumber);
       // The first boundary is V_0, and there the measured value is floored at the endowment
       // (issue #207; scoring/endowmentV0.ts). Every later boundary is the measured value.
       // The floor belongs to the run's first block, not to whichever boundary happened to be read
@@ -323,6 +383,9 @@ export class LiveScorer {
       endBlock: this.endBlock,
       firstBoundaryBlock: this.firstBoundaryBlockNumber,
       firstBoundaryByAgent: Object.fromEntries(this.firstBoundaryByAgent),
+      ...(this.gmxShortfall
+        ? { gmxShortfall: this.gmxShortfall.snapshot() }
+        : {}),
     };
   }
 
@@ -372,6 +435,11 @@ export class LiveScorer {
     this.firstBoundaryByAgent.clear();
     for (const [id, v0] of Object.entries(snapshot.firstBoundaryByAgent))
       this.firstBoundaryByAgent.set(id, v0);
+    if (snapshot.gmxShortfall) this.gmxShortfall?.restore(snapshot.gmxShortfall);
+    // A checkpoint from before the ledger existed: charge from where this start picks up, not
+    // from the period's first block (GmxShortfallTracker.startAfter).
+    else if (snapshot.lastAttempted !== null)
+      this.gmxShortfall?.startAfter(snapshot.lastAttempted);
   }
 
   /** The block the first boundary was read at, or null before it was. */

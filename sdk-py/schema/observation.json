@@ -586,6 +586,9 @@
         },
         "fundingModeled": {
           "type": "boolean"
+        },
+        "maxLeverage": {
+          "type": "number"
         }
       },
       "required": [
@@ -612,6 +615,9 @@
         },
         "fundingModeled": {
           "type": "boolean"
+        },
+        "maxLeverage": {
+          "type": "number"
         }
       },
       "required": [

@@ -480,6 +480,7 @@ class GmxMarketObservation(BaseModel):
     short_oi_usd: float | None = Field(None, alias='shortOiUsd')
     funding_per_hour_bps: float | None = Field(None, alias='fundingPerHourBps')
     funding_modeled: bool | None = Field(None, alias='fundingModeled')
+    max_leverage: float | None = Field(None, alias='maxLeverage')
 
 
 class RegistryObservation(BaseModel):
@@ -510,6 +511,7 @@ class GmxObservation(BaseModel):
     short_oi_usd: float | None = Field(None, alias='shortOiUsd')
     funding_per_hour_bps: float | None = Field(None, alias='fundingPerHourBps')
     funding_modeled: bool | None = Field(None, alias='fundingModeled')
+    max_leverage: float | None = Field(None, alias='maxLeverage')
 
 
 class ProtocolObservations(BaseModel):

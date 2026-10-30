@@ -97,3 +97,32 @@ sequenceDiagram
   K->>N: executeOrder with the oracle price
   Note over A,N: the position change appears in the observation ~1 block later
 ```
+
+### GMX leverage cap and liquidation shortfalls
+
+**Leverage is capped at ~5.05x** (`MIN_COLLATERAL_FACTOR` = 0.198 for every market; the manifest's
+`limits.gmxMaxLeverage` and `obs.protocols.gmx.maxLeverage` / `markets[*].maxLeverage` carry it).
+GMX itself enforces it inside the keeper's `executeOrder`, measured as size / equity (collateral +
+PnL + price impact − fees) at the oracle price:
+
+- An increase that would leave the position above the cap is **cancelled by GMX, with the collateral
+  and the execution fee refunded in the same transaction**. Leave room for the opening fee
+  (0.04–0.06% of size): an order at exactly 5.00x passes, one at 5.05x does not.
+- A decrease that withdraws collateral below the cap has the withdrawal set to zero (with no size,
+  the order is cancelled). A partial decrease that would leave the rest above the cap is cancelled.
+  **A full close always executes.**
+- Liquidation is unchanged: at 1% equity.
+
+Why 5x: the official regimes gap the price by up to 32% (spike, over a 2–3 block ramp, never
+recovered), and a liquidation lands a block after the keeper sees it. Below ~8x a losing leg is not
+liquidatable after the first of three ramp steps, so a hedged pair cannot have one leg liquidated
+early and the other ride the rest of the gap. A 5x position can still close below zero in a large
+gap; that shortfall is handled as below.
+
+**A liquidation that GMX closes below zero is charged cross-margin.** GMX lets a liquidation close a
+position whose loss exceeds its collateral; the pool absorbs the rest (`InsolventClose`). In scoring,
+that shortfall is charged to **the same account's opposite-side positions in the same market**, up to
+their PnL — realised (including a winner you already closed) and unrealised — for positions whose life
+overlapped the liquidated one. A one-sided position keeps its on-chain limited liability: it loses at
+most its collateral. A long + short straddle no longer turns a gap into free PnL. The charge shows in
+`summary.json` as `agents[].gmxShortfallChargedUsd` and each close as a `gmx_insolvent_close` event.

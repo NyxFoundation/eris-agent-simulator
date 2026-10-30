@@ -580,6 +580,12 @@ export type GmxMarketObservation = {
   // strategy — or the revision loop — would draw the wrong conclusion from a pre-funding state
   // dump.
   fundingModeled?: boolean;
+  // The highest leverage this market accepts (size / equity at the oracle price; ~5.05 in the
+  // official regimes, sdk protocols/gmxKeys.ts GMX_MAX_LEVERAGE). GMX cancels an increase that would
+  // leave the position above it -- collateral and execution fee refunded in the same transaction --
+  // and a partial decrease that would; a full close always goes through. Read from the DataStore;
+  // absent when the read failed.
+  maxLeverage?: number;
 };
 
 export type GmxObservation = GmxMarketObservation & {
