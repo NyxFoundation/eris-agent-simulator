@@ -34,7 +34,9 @@ export type StrategyResponse =
       id: number;
       action: Parameters<AgentContext["submit"]>[0];
     }
-  | { type: "log"; id: number; entry: AgentLogEntry };
+  | { type: "log"; id: number; entry: AgentLogEntry }
+  // Said by the worker itself, outside any one decision (strategyWorker.ts): fixed text only.
+  | { type: "notice"; round?: number; reason: string };
 export type StrategyWorkerData = {
   source: StrategySource;
   context: StrategyContext;

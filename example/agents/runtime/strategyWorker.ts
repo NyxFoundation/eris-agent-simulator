@@ -4,7 +4,7 @@ import type { AgentContext, AgentModule, DecideFn } from "@eris/sdk/agent.js";
 import { makeClients } from "@eris/sdk/chain.js";
 import { setLendingSingleton } from "@eris/sdk/protocols/lending.js";
 import { DecideTimeoutError } from "./decideTimeout.js";
-import { compileExecutor } from "./improve.js";
+import { compileExecutor, hostErrorText } from "./improve.js";
 import { readOnlyClient } from "./readOnlyClient.js";
 import type {
   StrategyMetadata,
@@ -44,7 +44,47 @@ if (data.source.kind === "module") {
   metadata = { mode: "decide" };
 } else throw new Error("Python sources must run through PyBridge");
 
+// The latest request, for what is reported outside one (below).
+let lastRequest = { id: 0, round: undefined as number | undefined };
+
+// Generated code runs in this thread, and two things it can do end with Node handling a value of its
+// realm by itself: a promise it rejects and never handles, and a throw from a callback the engine
+// runs later (a FinalizationRegistry cleanup). Node's default for both serializes the value for the
+// parent with util.inspect, which calls the value's custom inspect function with the host's
+// `inspect` as an argument -- this realm's Function one `.constructor` away, and with it the worker's
+// process. So for a generated strategy the value is never touched here: not inspected, not
+// stringified, no property read (the lockdown in improve.ts also leaves generated code no way to
+// make the custom-inspect symbol; this does not rely on it).
+//
+// An unhandled rejection is logged, once per decision, and the worker keeps running. The decision it
+// came from has answered or answers by itself, nothing was left half-done, and failing the worker
+// would throw away the strategy's state and cost a worker spawn every block for a strategy that leaves
+// one rejection behind each time (an idle failure does not count towards the back-off). An uncaught
+// exception still fails the worker, as any worker failure does, with a fixed message instead of the
+// value: the handler throws, and Node reports what the handler threw.
+//
+// Only for generated code: a hand-written strategy is the participant's own code with this thread's
+// full privileges, so Node's default handling, and its message, stay.
+if (data.source.kind === "executor") {
+  let noticed = -1;
+  process.on("unhandledRejection", () => {
+    if (noticed === lastRequest.id) return;
+    noticed = lastRequest.id;
+    post({
+      type: "notice",
+      round: lastRequest.round,
+      reason:
+        "the generated strategy left a rejected promise unhandled; the value is not read, " +
+        "and the strategy keeps running",
+    });
+  });
+  process.on("uncaughtException", () => {
+    throw new Error("uncaught exception in the generated strategy (the value is not read)");
+  });
+}
+
 port.on("message", async ({ id, observation }: StrategyRequest) => {
+  lastRequest = { id, round: observation.round };
   // Each context has its own lifetime. A timer/async continuation from a completed call must not
   // acquire the next call's id and submit a stale action in that block.
   let active = true;
@@ -72,11 +112,19 @@ port.on("message", async ({ id, observation }: StrategyRequest) => {
     const action = await decide(observation, ctx);
     post({ type: "result", id, action });
   } catch (error) {
+    // What a generated strategy threw reaches here as an error of this realm (compileExecutor), but a
+    // stray value is still not stringified: a throw out of this catch is an unhandled rejection.
+    let timeout = false;
+    try {
+      timeout = error instanceof DecideTimeoutError;
+    } catch {
+      // Not this realm's.
+    }
     post({
       type: "error",
       id,
-      message: error instanceof Error ? error.message : String(error),
-      timeout: error instanceof DecideTimeoutError,
+      message: hostErrorText(error, "the strategy threw a value that is not an Error"),
+      timeout,
     });
   } finally {
     active = false;

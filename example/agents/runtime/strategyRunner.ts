@@ -136,6 +136,14 @@ export class StrategyRunner {
         resolveReady(message.metadata);
         return;
       }
+      if (message.type === "notice") {
+        this.log(
+          message.round === undefined
+            ? { reason: message.reason }
+            : { round: message.round, reason: message.reason },
+        );
+        return;
+      }
       const pending = instance.pending;
       if (!pending || pending.id !== message.id) return;
       if (performance.now() >= pending.deadline) {

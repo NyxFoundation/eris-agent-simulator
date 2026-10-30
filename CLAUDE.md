@@ -76,15 +76,40 @@ LLM の手掛かりは現在の戦略コードだけになり、**一度も swap
 知りようがない**（実測: USDC-only 配布で `lp-provider` が 18/18 シナリオ無取引 =
 `docs/scoring-metric-measurements.md` §5.8）。「持っていないことは何もしない理由にならない」も明記する。
 改訂は `{notes, executorTs}` か `{notes, revertTo: <version>}` を返し、`executorTs: null` は
-「今の戦略を維持」。生成コードは **cheatcode 静的検査 → vm コンパイル**（関数式の *評価* に 1 秒
-= `runInContext(..., {timeout: 1000})`）を通ってから設置される。**vm のコンテキストは空で作る**
+「今の戦略を維持」。生成コードは **cheatcode 静的検査 + `import` の語の拒否 → vm コンパイル**を通ってから
+設置される。**コンパイルは本体を 1 行も実行しない**（`vm.compileFunction` で関数本体としてパースするだけ）。
+以前は `(async function decide(obs, ctx) {…})` を `Script` で評価していて、本体が `});` で閉じて後ろに文を
+書けた = 改訂を検証する**親プロセス**（鍵を env に持つ）でコンパイル時に実行され、`import()` の reject 理由
+（Node が自分の realm で作る Error）から `process.env` の鍵まで読めた。**`import` は本体のどこにあっても拒否**
+（コメント・文字列の中も。字句解析しないと区別できず、誤検出は改訂 1 回、見逃しは realm）。Node は文脈ごとの
+import フックを `--experimental-vm-modules` 無しでは呼ばないので、語で止める。**vm のコンテキストは空で作る**
 （issue #215。`createContext(Object.create(null))`。以前はホストの `Object` / `JSON` / `Math` を渡していて
 `Object.constructor("return process")()` でホスト realm に出られ、worker の `process.env` から鍵が読めた。
-プロトタイプ無しなのは、`{}` だと `this.constructor` がホストの `Object` になるため）。obs / ctx はコンテキスト
-realm へ**コピーして**渡し、`publicClient` の読取結果も戻りでコピーする（`EXECUTOR_BRIDGE`）。生成コードから
+プロトタイプ無しなのは、`{}` だと `this.constructor` がホストの `Object` になるため）。さらに
+**文字列からのコード生成を切る**（`codeGeneration: { strings: false, wasm: false }`。`eval` / `Function` は
+コンテキストの EvalError。`import` を実行時に組み立てさせないため）。obs / ctx はコンテキスト realm へ**コピーして**渡し、
+`publicClient` の読取結果も戻りでコピーする（`EXECUTOR_BRIDGE`）。**ブリッジは使う組み込みを評価時に定数へ取り、
+呼び出し時に引かない**（監査 #4a。以前は `Object.keys` / `Array.isArray` / `Object.prototype.toString` /
+`Promise.resolve` / `seen.get` / `.then` をその場で引いていて、生成コードがどれかを差し替えてから
+`ctx.latestObservation()` や `ctx.publicClient.*` を呼ぶとホストの値を渡され、`.constructor.constructor("return
+process")()` で worker の process に届いた）。加えて**生成コードのコンパイル前に組み込みを全部凍結し、グローバルの
+束縛を書換・削除不可にする**（`EXECUTOR_LOCKDOWN`。取り込みだけではエンジン内部の参照が、凍結だけでは
+`globalThis.Uint8Array = …` の差し替えが残るので両方。V8 は contextified global の freeze を拒むので束縛ごとに
+non-writable / non-configurable にする。グローバル自体は拡張可能のまま = 呼び出しをまたぐ状態を `globalThis` に
+置ける）。凍結で起きる override mistake（`this.name = …` が凍結された `Error.prototype.name` に当たって class 内で
+throw）は Object / Function / Error 系の数個だけ SES と同じくアクセサにして通す。それ以外の組み込みのメソッド名への
+代入（`arr.filter = f`）は無視される（strict では throw）。ホストのコードが走る読取（client の proxy trap 等）は
+全部 try の中でコピーする（スタック上限でホスト側のフレームが投げる RangeError もホストのオブジェクト）。生成コードは
+ホストから直接呼ばず、ブリッジの `invoke` から呼ぶ。**V8 でなく Node が答えるものは凍結でなく
+削除**: `WebAssembly` は名前空間ごと消す（`compileStreaming(1)` の reject 理由が Node の realm の Error）。
+`Symbol.for` / `Symbol.keyFor` も消す（`nodejs.util.inspect.custom` を作らせない。`util.inspect` はその関数に
+ホストの `inspect` を渡す）。**ホストは生成コードの値を文字列化しない**: 投げられたものは `invoke` が vm の中で
+文字列にして reject し（`String(x)` をホストで走らせると x の toString が投げた値が try の外に出る）、worker は
+生成コードについて `unhandledRejection` / `uncaughtException` を自前で受けて値に触れない（Node の既定は worker の
+エラーを `util.inspect` で直列化する）。未処理 rejection は判断 1 回につき 1 行記録して worker を続け、uncaught
+exception（`FinalizationRegistry` のコールバック等）は従来どおり worker を失敗させる（固定文）。生成コードから
 辿れるホストのオブジェクトを無くす層であって、ADR 0024 の「封じ込め境界ではない」は変わらない。
-**設置前に試運転はしない** — vm の
-timeout は式の評価しか覆わないので、無限ループする本体は評価を通ってしまう。だから設置後、
+**設置前に試運転はしない** — コンパイルは何も実行しないので、無限ループする本体もコンパイルは通る。だから設置後、
 `decide` を **worker thread** で実行し、親スレッドが呼び出しごとに 5 秒を計測する
 （`DECIDE_TIMEOUT_MS` = 規約 §2.3、`runtime/strategyRunner.ts` / `decideTimeout.ts`）。
 **worker の env は親の env から秘密を落としたもの**（`runtime/strategyEnv.ts`。Python の子プロセスも同じ）:

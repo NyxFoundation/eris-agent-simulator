@@ -359,9 +359,9 @@ test("buildRevisionContext: reports PnL since the run and since the last revisio
 });
 
 test("compileExecutor: a strategy that never returns is bounded, not left to wedge the agent", async () => {
-  // The Script timeout covers evaluating the function expression, not calling it. Without a bound
-  // on the call, a generated body that awaits forever holds the caller's `deciding` guard and the
-  // agent stops deciding for the rest of the run while every log still looks healthy.
+  // Compiling runs nothing, so nothing at compile time can bound the call. Without a bound on the
+  // call, a generated body that awaits forever holds the caller's `deciding` guard and the agent
+  // stops deciding for the rest of the run while every log still looks healthy.
   const r = compileExecutor(`await new Promise(() => {}); return null;`);
   assert.ok(r.ok);
   const started = Date.now();
@@ -459,8 +459,9 @@ function hostContext(captured: { logs: unknown[]; submitted: unknown[] }) {
 
 test("compileExecutor: no path from generated code reaches the host realm's process", async () => {
   // Every door the previous context left open, and the ones a copy of the arguments closes. Each
-  // either evaluates `process` in the vm's own realm (ReferenceError) or never gets a host Function
-  // constructor to evaluate it with.
+  // either reaches only the vm's own Function constructor, which cannot generate code from a string
+  // there (EvalError) and would find no `process` if it could (ReferenceError), or never gets a host
+  // Function constructor to evaluate it with. A host one would evaluate and return the process.
   const escapes = [
     `return Object.constructor("return process")();`,
     `return Function("return process")();`,
@@ -500,7 +501,11 @@ test("compileExecutor: no path from generated code reaches the host realm's proc
       async () => await r.executor({ round: 1, nested: { amount: 1n }, list: [1] } as never, hostContext(captured)),
       (e: unknown) => {
         const message = String((e as { message?: string })?.message ?? e);
-        assert.match(message, /process is not defined/, `${source} -> ${message}`);
+        assert.match(
+          message,
+          /process is not defined|Code generation from strings disallowed/,
+          `${source} -> ${message}`,
+        );
         return true;
       },
     );
@@ -616,9 +621,10 @@ test("compileExecutor: what the strategy passes the client cannot hand it a host
     assert.ok(requests.some((r) => r.method === "eth_call"), "the read still reached the chain");
 
     // Visible: an enumerable function on the abi is not plain data, so the read is refused by name
-    // rather than sent with the function silently dropped.
+    // rather than sent with the function silently dropped. Defined, not assigned: Array.prototype is
+    // frozen in the vm, so `abi.filter = f` is ignored like any assignment over a frozen built-in.
     const visible = compileExecutor(`${ESCAPE_ABI}
-      abi.filter = steal("filter");
+      Object.defineProperty(abi, "filter", { value: steal("filter"), enumerable: true });
       try {
         await ctx.publicClient.readContract({
           address: "0x0000000000000000000000000000000000000001", abi, functionName: "x", args: [7n],
@@ -663,7 +669,10 @@ test("compileExecutor: an observation callback is never handed a host observatio
   await r.executor({ round: 1 } as never, ctx);
   assert.ok(deliver, "the callback was registered");
   deliver!({ round: 2 });
-  assert.deepEqual(captured.logs, [{ round: 2, reached: "process is not defined" }]);
+  // The vm's own Function constructor: no code from a string in that context.
+  assert.deepEqual(captured.logs, [
+    { round: 2, reached: "Code generation from strings disallowed for this context" },
+  ]);
 });
 
 test("compileExecutor: the system prompt's 'no process, no network' is what the vm has", async () => {
@@ -682,6 +691,44 @@ test("compileExecutor: the system prompt's 'no process, no network' is what the 
     const v = await r.executor({ round: 1 } as never, hostContext({ logs: [], submitted: [] }));
     assert.equal(v, "undefined", source);
   }
+  // "no eval or new Function", "frozen", and the word import.
+  const system = buildRevisionSystem(agent, "return null;");
+  assert.match(system, /no eval or new Function/);
+  assert.match(system, /built-ins, which are frozen/);
+  assert.match(system, /no import \(the word is refused anywhere/);
+  for (const source of [`return eval("1");`, `return new Function("return 1")();`]) {
+    const r = compileExecutor(source);
+    assert.ok(r.ok);
+    await assert.rejects(
+      async () => await r.executor({ round: 1 } as never, hostContext({ logs: [], submitted: [] })),
+      /Code generation from strings disallowed/,
+      source,
+    );
+  }
+  const frozen = compileExecutor(`"use strict"; Array.prototype.sum = 1; return null;`);
+  assert.ok(frozen.ok);
+  await assert.rejects(
+    async () => await frozen.executor({ round: 1 } as never, hostContext({ logs: [], submitted: [] })),
+    /not extensible/,
+  );
+  // The bigint polyfill a model reaches for (observations carry bigints) is a patch that does
+  // nothing; the replacer the prompt points to instead works.
+  assert.match(system, /pass JSON\.stringify a replacer rather than\s+setting BigInt\.prototype\.toJSON/);
+  const polyfill = compileExecutor(`
+    BigInt.prototype.toJSON = function () { return this.toString(); };
+    let patched;
+    try { patched = JSON.stringify({ a: 1n }); } catch (e) { patched = e.constructor.name; }
+    const replaced = JSON.stringify({ a: 1n }, (k, v) => (typeof v === "bigint" ? v.toString() : v));
+    return { type: "noop", patched, replaced };
+  `);
+  assert.ok(polyfill.ok);
+  assert.deepEqual(
+    await polyfill.executor({ round: 1 } as never, hostContext({ logs: [], submitted: [] })),
+    { type: "noop", patched: "TypeError", replaced: '{"a":"1"}' },
+  );
+  const imported = compileExecutor(`// import nothing\nreturn null;`);
+  assert.ok(!imported.ok);
+  assert.match(imported.reason, /"import" \(line 1\)/);
 });
 
 // ---- chain-derived text is data, not instructions (issue #214 item 3) ----
