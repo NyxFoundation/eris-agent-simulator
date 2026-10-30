@@ -21,7 +21,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PYTHON_ACTION_VOCABULARY } from "@eris/sdk/pythonVocabulary.js";
-import { createContext, Script } from "node:vm";
+import { compileFunction, createContext, Script } from "node:vm";
 import { parse as parseYaml } from "yaml";
 import { withDecideTimeout } from "./decideTimeout.js";
 import { findCheatcodeUsage } from "@eris/sdk/strategyStaticCheck.js";
@@ -361,105 +361,319 @@ export type CompileResult =
 // Function constructor evaluating in the host realm -- `process.env`, and with it whatever the
 // worker's environment holds). So what goes in is copied, what comes back is copied, and host
 // functions are only ever called from behind a function of this realm.
+//
+// Every built-in the bridge uses is taken into a constant here, when it is evaluated, and called
+// through that constant from then on -- never looked up when it runs. The lookups were the hole
+// (audit #4a): `Object.keys`, `Array.isArray`, `Object.prototype.toString`, `Promise.resolve`,
+// `seen.get` (Map.prototype), `.then` (Promise.prototype) are this realm's, generated code runs in
+// this realm, and each of them was handed a host value. A strategy that replaced one and then called
+// `ctx.latestObservation()` received the host observation itself. The lockdown below freezes all of
+// them before generated code is compiled; this capture is what still holds where a lookup would go
+// somewhere the freeze does not reach, and the freeze is what covers the lookups no capture can
+// remove (the engine's own, inside a built-in). The bridge is strict, so a function of it is never
+// handed out by `caller`, and it assigns a property only where nothing on the frozen prototype
+// chain has the name (see `define`).
+//
+// Host code runs whenever the bridge reads a host value (a proxy trap, a getter) or calls a host
+// function, and anything it throws is a host object -- a RangeError at the stack limit included,
+// which generated code can arrange by recursing before it calls in. So every such read is inside a
+// try whose catch hands back a copy.
 const EXECUTOR_BRIDGE = `(() => {
-  const tag = (v) => Object.prototype.toString.call(v);
+  "use strict";
+  const apply = Reflect.apply;
+  const defineProperty = Object.defineProperty;
+  const keys = Object.keys;
+  const isArray = Array.isArray;
+  // fn(self, ...args) without looking up fn.call: the arguments array is a rest parameter, which is
+  // built without the iterator protocol, and Reflect.apply reads it by index.
+  const uncurry = (fn) => (self, ...args) => apply(fn, self, args);
+  const toStringTag = uncurry(Object.prototype.toString);
+  const MapCtor = Map;
+  const mapGet = uncurry(Map.prototype.get);
+  const mapSet = uncurry(Map.prototype.set);
+  const mapForEach = uncurry(Map.prototype.forEach);
+  const SetCtor = Set;
+  const setAdd = uncurry(Set.prototype.add);
+  const setForEach = uncurry(Set.prototype.forEach);
+  const DateCtor = Date;
+  const getTime = uncurry(Date.prototype.getTime);
+  const ErrorCtor = Error;
+  const Uint8ArrayCtor = Uint8Array;
+  const ProxyCtor = Proxy;
+  // An own data property. Assignment walks the prototype chain -- a setter there, a frozen built-in
+  // that refuses it (an observation keyed by a token called "hasOwnProperty" would make every copy
+  // throw), \`__proto__\` -- and definition does not, but definition is several times slower, and an
+  // observation is mostly keys. So a key is defined when this realm's Object.prototype has the name
+  // and assigned otherwise: the lockdown freezes that prototype before any of this runs, so the set
+  // of names on the chain of a fresh object or array is the one read here.
+  const define = (o, k, value) => {
+    defineProperty(o, k, { __proto__: null, value, writable: true, enumerable: true, configurable: true });
+  };
+  const onChain = { __proto__: null };
+  const inherited = Object.getOwnPropertyNames(Object.prototype);
+  for (let i = 0; i < inherited.length; i++) onChain[inherited[i]] = true;
+  const copyKeys = (v, out, seen, defineAll) => {
+    const ks = keys(v);
+    for (let i = 0; i < ks.length; i++) {
+      const k = ks[i];
+      const x = copyIn(v[k], seen);
+      if (defineAll || onChain[k] === true) define(out, k, x);
+      else out[k] = x;
+    }
+    return out;
+  };
   // Deep copy of plain data into this realm. Functions are dropped: an observation carries none,
   // and a host function in the copy would be the escape the copy exists to prevent.
-  const copyIn = (v, seen = new Map()) => {
+  const copyIn = (v, seen = new MapCtor()) => {
     if (v === null || typeof v !== "object") return typeof v === "function" ? undefined : v;
-    const hit = seen.get(v);
+    const hit = mapGet(seen, v);
     if (hit !== undefined) return hit;
-    if (Array.isArray(v)) {
+    if (isArray(v)) {
       const out = [];
-      seen.set(v, out);
-      for (const x of v) out.push(copyIn(x, seen));
+      mapSet(seen, v, out);
+      // Indices: neither Array.prototype nor Object.prototype has one.
+      const n = v.length;
+      for (let i = 0; i < n; i++) out[i] = copyIn(v[i], seen);
       return out;
     }
-    switch (tag(v)) {
+    switch (toStringTag(v)) {
       case "[object Date]":
-        return new Date(v.getTime());
+        return new DateCtor(getTime(v));
       case "[object Error]": {
-        const out = new Error(String(v.message));
-        seen.set(v, out);
-        out.name = String(v.name);
-        for (const k of Object.keys(v)) out[k] = copyIn(v[k], seen);
-        return out;
+        // Error.prototype is on this chain too (name, message), so every key is defined.
+        const out = new ErrorCtor(typeof v.message === "string" ? v.message : undefined);
+        mapSet(seen, v, out);
+        define(out, "name", typeof v.name === "string" ? v.name : "Error");
+        return copyKeys(v, out, seen, true);
       }
       case "[object Map]": {
-        const out = new Map();
-        seen.set(v, out);
-        for (const [k, x] of v) out.set(copyIn(k, seen), copyIn(x, seen));
+        const out = new MapCtor();
+        mapSet(seen, v, out);
+        mapForEach(v, (x, k) => { mapSet(out, copyIn(k, seen), copyIn(x, seen)); });
         return out;
       }
       case "[object Set]": {
-        const out = new Set();
-        seen.set(v, out);
-        for (const x of v) out.add(copyIn(x, seen));
+        const out = new SetCtor();
+        mapSet(seen, v, out);
+        setForEach(v, (x) => { setAdd(out, copyIn(x, seen)); });
         return out;
       }
       case "[object Uint8Array]":
-        return new Uint8Array(v);
+        return new Uint8ArrayCtor(v);
     }
     const out = {};
-    seen.set(v, out);
-    for (const k of Object.keys(v)) out[k] = copyIn(v[k], seen);
-    return out;
+    mapSet(seen, v, out);
+    return copyKeys(v, out, seen);
   };
-  // A host function called from here: what it returns, throws, or settles to is this realm's.
-  const call = (fn, args) => {
+  // What a failed host call throws, as this realm's. The copy reads only data properties of an
+  // ordinary error, so it runs no host code; anything else that goes wrong in it is replaced rather
+  // than rethrown, because what it threw could be the host's.
+  const settle = (e) => {
     try {
-      return copyIn(fn(...args));
-    } catch (e) {
-      throw copyIn(e);
+      return copyIn(e);
+    } catch {
+      return new ErrorCtor("a host error could not be copied");
     }
   };
-  const callAsync = (fn, args) =>
-    new Promise((resolve, reject) => {
-      let pending;
-      try {
-        pending = fn(...args);
-      } catch (e) {
-        reject(copyIn(e));
-        return;
-      }
-      Promise.resolve(pending).then((v) => resolve(copyIn(v)), (e) => reject(copyIn(e)));
-    });
+  // A host function called from here: what it returns, throws, or settles to is this realm's.
+  // \`await\` resolves through the engine's own promise machinery, not \`Promise.resolve\` or
+  // \`.then\` looked up here.
+  const call = (thunk) => {
+    try {
+      return copyIn(thunk());
+    } catch (e) {
+      throw settle(e);
+    }
+  };
+  const callAsync = async (thunk) => {
+    try {
+      return copyIn(await thunk());
+    } catch (e) {
+      throw settle(e);
+    }
+  };
   // The read-only client: every method call goes to the host client and its result comes back
   // copied. A property that is not a function (chain, batch) is copied; one the client does not
   // have is absent here too -- \`then\` in particular, or this would be a thenable. The arguments
   // go out as they are and the host side copies them (hostReadClient below): copying them here
   // would build the copy with this realm's functions, which is no protection against this realm.
+  // The handler has no prototype, so a trap it does not define is not looked up on Object.prototype.
   const wrapClient = (host) =>
-    new Proxy({}, {
+    new ProxyCtor({}, {
+      __proto__: null,
       get(_, key) {
-        const v = host[key];
-        return typeof v === "function"
-          ? (...args) => callAsync((...a) => v.apply(host, a), args)
-          : copyIn(v);
+        let v;
+        try {
+          v = host[key];
+        } catch (e) {
+          throw settle(e);
+        }
+        if (typeof v === "function") return (...args) => callAsync(() => apply(v, host, args));
+        return call(() => v);
       },
       has(_, key) {
-        return key in host;
+        try {
+          return key in host;
+        } catch (e) {
+          throw settle(e);
+        }
       },
     });
   const wrapContext = (host) => ({
-    agentId: host.agentId,
-    address: host.address,
+    agentId: copyIn(host.agentId),
+    address: copyIn(host.address),
     config: copyIn(host.config),
     publicClient: wrapClient(host.publicClient),
-    latestObservation: () => call(() => host.latestObservation(), []),
+    latestObservation: () => call(() => host.latestObservation()),
     // The host calls back into a function of this realm, never the strategy's own: the callback
     // would otherwise be handed a host observation, and its constructor is the host's.
-    onObservation: (cb) => call((f) => host.onObservation(f), [(o) => { cb(copyIn(o)); }]),
-    submit: (action) => call((a) => host.submit(a), [action]),
-    log: (entry) => call((e) => host.log(e), [entry]),
+    onObservation: (cb) => call(() => host.onObservation((o) => { cb(copyIn(o)); })),
+    submit: (action) => call(() => host.submit(action)),
+    log: (entry) => call(() => host.log(entry)),
   });
-  return { copyIn, wrapContext };
+  // The one way the host calls generated code. The call is made from this realm, so whatever it
+  // reaches is handed this realm's values (a callable Proxy's apply trap gets its arguments array
+  // from the realm that calls it), and the host only ever holds the promise of this async arrow.
+  const invoke = async (decide, obs, host) => decide(copyIn(obs), wrapContext(host));
+  return { invoke };
 })()`;
 
 type ExecutorBridge = {
-  copyIn<T>(value: T): T;
-  wrapContext(host: AgentContext): AgentContext;
+  invoke(decide: unknown, obs: AgentObservation, host: AgentContext): Promise<unknown>;
 };
+
+// Run in the context after the bridge has taken what it needs and before generated code is compiled
+// into it. Freezing alone would leave the globals rebindable (`globalThis.Uint8Array = evil`); the
+// capture above alone would leave the lookups a built-in makes on its receiver. So both, and the
+// lockdown also closes what a built-in hands generated code later: `Error.prepareStackTrace` (Node
+// asks the error's own realm for it), a `then` on Object.prototype, the iterator prototypes that
+// only syntax reaches.
+//
+// What stays open, on purpose: the global object itself is extensible, so a strategy can keep state
+// across calls on `globalThis` (the context lives as long as the worker). V8 also refuses to freeze
+// a contextified global ("Cannot freeze"), so the bindings are made non-writable and non-configurable
+// one by one instead, which it does allow. A binding that cannot be fixed fails the compile.
+//
+// The override mistake: a frozen `Error.prototype.name` makes `this.name = "X"` in an Error
+// subclass throw (class bodies are strict), and `o.toString = f` on a plain object fail. Those few,
+// on Object, Function and the Error prototypes, become accessors whose setter defines the property
+// on the receiver instead, the way SES's lockdown handles it. Any other built-in property is
+// read-only on instances too: `arr.filter = f` is ignored (or throws, in strict code), while
+// `Object.defineProperty(arr, "filter", ...)` still works.
+const EXECUTOR_LOCKDOWN = `(() => {
+  "use strict";
+  const { freeze, getOwnPropertyDescriptor, getPrototypeOf } = Object;
+  const { defineProperty, ownKeys } = Reflect;
+  const TypeErrorCtor = TypeError;
+  const overridable = (proto, names) => {
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      const desc = getOwnPropertyDescriptor(proto, name);
+      if (desc === undefined || !("value" in desc) || !desc.configurable) continue;
+      const value = desc.value;
+      defineProperty(proto, name, {
+        __proto__: null,
+        get() {
+          return value;
+        },
+        set(next) {
+          if (this === proto)
+            throw new TypeErrorCtor("Cannot assign to read only property '" + name + "' of a built-in prototype");
+          if (this === null || (typeof this !== "object" && typeof this !== "function")) return;
+          const own = { __proto__: null, value: next, writable: true, enumerable: true, configurable: true };
+          if (!defineProperty(this, name, own))
+            throw new TypeErrorCtor("Cannot assign to read only property '" + name + "'");
+        },
+        enumerable: desc.enumerable,
+        configurable: false,
+      });
+    }
+  };
+  overridable(Object.prototype, ["constructor", "toString", "valueOf", "toLocaleString"]);
+  overridable(Function.prototype, ["constructor", "toString"]);
+  const errors = [Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, AggregateError];
+  if (typeof SuppressedError === "function") errors.push(SuppressedError);
+  for (let i = 0; i < errors.length; i++) overridable(errors[i].prototype, ["constructor", "name", "message"]);
+
+  // Everything reachable from the global object, plus the intrinsics only syntax or an instance
+  // reaches. A feature the engine lacks has nothing to freeze.
+  const roots = [globalThis];
+  const anonymous = [
+    () => getPrototypeOf(function* () {}),
+    () => getPrototypeOf(async function () {}),
+    () => getPrototypeOf(async function* () {}),
+    () => getPrototypeOf([][Symbol.iterator]()),
+    () => getPrototypeOf(new Map()[Symbol.iterator]()),
+    () => getPrototypeOf(new Set()[Symbol.iterator]()),
+    () => getPrototypeOf(""[Symbol.iterator]()),
+    () => getPrototypeOf(/x/[Symbol.matchAll]("")),
+    () => getPrototypeOf(Iterator.from({ next() {} })),
+    () => getPrototypeOf([].values().map((x) => x)),
+    () => getPrototypeOf(new Intl.Segmenter().segment("")),
+    () => getPrototypeOf(new Intl.Segmenter().segment("")[Symbol.iterator]()),
+  ];
+  for (let i = 0; i < anonymous.length; i++) {
+    let found;
+    try {
+      found = anonymous[i]();
+    } catch {
+      continue;
+    }
+    roots.push(found);
+  }
+  const visited = new Set();
+  while (roots.length > 0) {
+    const o = roots.pop();
+    if ((typeof o !== "object" && typeof o !== "function") || o === null || visited.has(o)) continue;
+    visited.add(o);
+    if (o !== globalThis) freeze(o);
+    roots.push(getPrototypeOf(o));
+    const ks = ownKeys(o);
+    for (let i = 0; i < ks.length; i++) {
+      const d = getOwnPropertyDescriptor(o, ks[i]);
+      if (d === undefined) continue;
+      if ("value" in d) roots.push(d.value);
+      else roots.push(d.get, d.set);
+    }
+  }
+
+  // The descriptor is given in full: Node's interceptor for a contextified global copies a
+  // definition onto the context object, and a data descriptor without a value would copy undefined.
+  const names = ownKeys(globalThis);
+  for (let i = 0; i < names.length; i++) {
+    const d = getOwnPropertyDescriptor(globalThis, names[i]);
+    if (d === undefined) continue;
+    const data = "value" in d;
+    if (!d.configurable && (!data || !d.writable)) continue;
+    const fixed = data
+      ? { __proto__: null, value: d.value, writable: false, enumerable: d.enumerable, configurable: false }
+      : { __proto__: null, get: d.get, set: d.set, enumerable: d.enumerable, configurable: false };
+    if (!defineProperty(globalThis, names[i], fixed))
+      throw new TypeErrorCtor("could not fix the global binding " + String(names[i]));
+  }
+})()`;
+
+// The source runs only inside the bridge's invoke, as the body of an async function. It is compiled
+// as a function body (vm.compileFunction), not evaluated as an expression: with a Script the body
+// could close the wrapper with `});` and put statements after it, and those ran at compile time --
+// in the parent process, which compiles every revision to validate it and holds the wallet key.
+const executorBody = (source: string) =>
+  `return (async function decide(obs, ctx) {\n${source}\n})(obs, ctx);`;
+
+// `import()` rejects with an error Node creates in its own realm, so the rejection reason of a
+// dynamic import is a host object in any context: `e.constructor.constructor("return process")()`.
+// Node only calls a context's own import hook behind --experimental-vm-modules, so the word is
+// refused in the source instead. The keyword cannot be written with escapes, and with code
+// generation from strings off in the context, eval and the Function constructors cannot assemble it.
+// Matched anywhere, comments and strings included: telling those apart reliably is a JavaScript
+// tokenizer, and a false positive costs one revision where a false negative costs the realm.
+const IMPORT_WORD = /(?<![\w$])import(?![\w$])/;
+
+function findImport(source: string): number | null {
+  const lines = source.split("\n");
+  for (let i = 0; i < lines.length; i++) if (IMPORT_WORD.test(lines[i])) return i + 1;
+  return null;
+}
 
 // A value the generated code built, brought into this realm before anyone downstream touches it.
 // Actions, log entries and submissions are plain data by contract, so a structural clone loses
@@ -497,15 +711,19 @@ function hostReadClient(client: AgentContext["publicClient"]): AgentContext["pub
 // Be clear about what this does and does not contain. The vm removes *ambient* capability: there is
 // no require, no process, no fs, no fetch in scope, and since issue #215 nothing of this realm in
 // the context's either -- the context is created empty, the observation and the context are copied
-// into it, and what a read returns is copied on the way back (EXECUTOR_BRIDGE above). It does not
-// sandbox the agent from the chain, because `ctx` is passed in and carries a read-only publicClient
-// and submit() -- generated code can trade exactly as freely as the hand-written strategy it
-// replaces. That is intentional (it is the same capability, not an escalation), but it means the
-// vm is a guard against a model reaching for something outside the trading interface, not a
-// containment boundary (ADR 0024): the worker it runs in also carries no secret in its environment
+// into it, and what a read returns is copied on the way back (EXECUTOR_BRIDGE above), and the
+// context's built-ins are frozen before generated code is compiled into it (EXECUTOR_LOCKDOWN). It
+// does not sandbox the agent from the chain, because `ctx` is passed in and carries a read-only
+// publicClient and submit() -- generated code can trade exactly as freely as the hand-written
+// strategy it replaces. That is intentional (it is the same capability, not an escalation), but it
+// means the vm is a guard against a model reaching for something outside the trading interface, not
+// a containment boundary (ADR 0024): the worker it runs in also carries no secret in its environment
 // (strategyEnv.ts), so that an escape nobody has thought of finds nothing to take. The cheatcode
 // check below is the part that addresses intent, and it is what stops generated code from calling
 // the privileged RPCs that a participant's own code is also forbidden from calling.
+//
+// Compiling runs nothing from the source, which matters because the parent process (it holds the
+// wallet key) compiles every revision to validate it; the code itself only ever runs in the worker.
 export function compileExecutor(source: string): CompileResult {
   const findings = findCheatcodeUsage(source);
   if (findings.length > 0)
@@ -517,12 +735,16 @@ export function compileExecutor(source: string): CompileResult {
           .map((f) => `${f.rule} "${f.match}" (line ${f.line})`)
           .join("; "),
     };
+  const importLine = findImport(source);
+  if (importLine !== null)
+    return {
+      ok: false,
+      reason:
+        `generated code uses the word "import" (line ${importLine}): there is no module system ` +
+        `in the strategy's sandbox, and the word is refused anywhere in the body, comments included`,
+    };
 
   try {
-    // The source is the *body* of decide(obs, ctx). Wrapping it here rather than asking the model to
-    // emit a complete module keeps the contract small and means there is no import syntax to parse.
-    const wrapped = `(async function decide(obs, ctx) {\n${source}\n})`;
-    const script = new Script(wrapped, { filename: "generated-executor.js" });
     // Empty: the context's own Math, JSON, Object, Array, BigInt, Map, Set and the rest are what a
     // strategy legitimately needs, and they are the context's. The host's used to be handed in
     // here, and `Object.constructor("return process")()` was the host's Function constructor.
@@ -530,13 +752,21 @@ export function compileExecutor(source: string): CompileResult {
     // the context's global proxy consults first, prototype chain included, so with a plain `{}`
     // `this.constructor` at the top of the strategy is the host's Object and
     // `this.constructor.constructor("return process")()` is the host's process.
-    const sandbox = createContext(Object.create(null));
-    const bridge = new Script(EXECUTOR_BRIDGE, {
+    // No code from strings: eval and the Function constructors throw an EvalError of the context,
+    // so the source is all the code there is (see IMPORT_WORD).
+    const sandbox = createContext(Object.create(null), {
+      codeGeneration: { strings: false },
+    });
+    const { invoke } = new Script(EXECUTOR_BRIDGE, {
       filename: "executor-bridge.js",
     }).runInContext(sandbox) as ExecutorBridge;
-    const fn = script.runInContext(sandbox, { timeout: 1000 }) as Executor;
-    if (typeof fn !== "function")
-      return { ok: false, reason: "compiled value is not a function" };
+    new Script(EXECUTOR_LOCKDOWN, { filename: "executor-lockdown.js" }).runInContext(sandbox);
+    // The source is the *body* of decide(obs, ctx). Wrapping it here rather than asking the model to
+    // emit a complete module keeps the contract small and means there is no import syntax to parse.
+    const decide = compileFunction(executorBody(source), ["obs", "ctx"], {
+      parsingContext: sandbox,
+      filename: "generated-executor.js",
+    });
 
     // Both directions cross the realm boundary as copies. In: the observation and the context
     // (EXECUTOR_BRIDGE). Out: the action, and what the strategy logs or submits -- an object built
@@ -554,17 +784,19 @@ export function compileExecutor(source: string): CompileResult {
         log: (entry) => ctx.log(toHostRealm("a log entry", entry)),
       };
       const result = await withDecideTimeout(
-        fn(bridge.copyIn(obs), bridge.wrapContext(hostFacing)),
+        invoke(decide, obs, hostFacing),
         obs.round,
       );
       if (result === null || result === undefined) return null;
-      return toHostRealm("the executor's return value", result);
+      return toHostRealm("the executor's return value", result) as AgentAction;
     };
     return { ok: true, executor: normalized };
   } catch (error) {
+    // A syntax error from compileFunction is the context's SyntaxError, not `instanceof Error` here.
+    const message = (error as { message?: unknown } | null)?.message;
     return {
       ok: false,
-      reason: `compile failed: ${error instanceof Error ? error.message : String(error)}`,
+      reason: `compile failed: ${typeof message === "string" ? message : String(error)}`,
     };
   }
 }
@@ -651,8 +883,9 @@ export function buildRevisionSystem(
       `Do not install packages during a revision. ctx exposes agent_id, address, log and submit; no viem client or wallet.`,
       `The host signs all returned/submitted actions. Privileged RPC calls (anvil_*, evm_*, hardhat_*) are`,
     ] : [
-      `The body may use only: obs, ctx, and the standard JavaScript built-ins. There is no require,`,
-      `no import, no process, no network. Privileged RPC calls (anvil_*, evm_*, hardhat_*) are`,
+      `The body may use only: obs, ctx, and the standard JavaScript built-ins, which are frozen. There`,
+      `is no require, no eval or new Function, no import (the word is refused anywhere in the body,`,
+      `even in a comment), no process, no network. Privileged RPC calls (anvil_*, evm_*, hardhat_*) are`,
     ]),
     `rejected before installation.`,
     ...pythonVocabulary,

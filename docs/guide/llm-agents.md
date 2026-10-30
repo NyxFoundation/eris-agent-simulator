@@ -138,7 +138,9 @@ ambient capability (`require`, `process`, `fetch`), not the trading interface, s
 read the chain exactly as your hand-written strategy can. Reads through it are ordinary RPC and are
 not cheatcodes. The sandbox is its own realm: the observation and the context are copied into it and
 every read's result is copied back, so generated code holds no object of the runtime's (there is no
-`obs.constructor.constructor("return process")` route to `process.env`). And the worker the strategy
+`obs.constructor.constructor("return process")` route to `process.env`). The copying is done by
+built-ins taken before generated code exists, and those are frozen before it is compiled, so
+replacing one cannot hand the strategy what it was copying. And the worker the strategy
 runs in — generated or hand-written, TypeScript or Python — carries no secret in its environment:
 not the wallet key, not the inference token, not an API key (`runtime/strategyEnv.ts`). Signing and
 the revision call are the parent's; the strategy parameters from your roster's `env` still arrive.
@@ -172,9 +174,26 @@ hand-written strategy (it is handed the same `ctx`), and the same prohibitions: 
 run through the cheatcode static check before it is installed**, so `anvil_*` / `evm_*` /
 `hardhat_*` and the privileged chain helpers are refused exactly as they are in a submission.
 
-Code that fails the check or fails to compile is not installed — the previous strategy keeps running
-and the reason is logged. Once installed, every call is bounded at 5 seconds (rules §2.3, the same
-bound a hand-written `decide()` gets); past it the block is no action.
+What else differs from a hand-written strategy, because each was a way out of the sandbox:
+
+- **The word `import` is refused anywhere in the body**, comments and strings included. A dynamic
+  `import()` rejects with an error Node creates in its own realm, and from that error the host's
+  `process` is one `constructor.constructor` away. Telling a comment from code would take a
+  tokenizer; a false positive costs one revision.
+- **No code from strings.** `eval` and `new Function` throw an `EvalError`, so the source is all the
+  code there is (otherwise `"imp" + "ort"` would get past the check above).
+- **The built-ins are frozen.** `Array.prototype.sum = …` throws, and so does replacing a global such
+  as `globalThis.Map`. Assigning over a built-in method on your own object (`arr.filter = f`) is
+  ignored, or throws in strict code; use `Object.defineProperty` if you mean it. The usual cases
+  still work: `this.name = "MyError"` in an `Error` subclass, and your own `toString`, `valueOf` or
+  `constructor` on a plain object or a function. The global object itself is not frozen, so state
+  kept on `globalThis` lasts across calls (until the worker is replaced).
+
+Nothing in the body runs when it is compiled: the parent process compiles every revision to validate
+it, and only the worker ever runs one. Code that fails a check or fails to compile is not installed —
+the previous strategy keeps running and the reason is logged. Once installed, every call is bounded
+at 5 seconds (rules §2.3, the same bound a hand-written `decide()` gets); past it the block is no
+action.
 
 ## Guards
 
@@ -216,8 +235,8 @@ An agent can now be given a **persistent directory that only it can see**, at
 The reference runtime (`runtime/state.ts`) writes that file atomically on every accept and revert,
 and on start it:
 
-1. loads it, and **re-runs the cheatcode static check and the vm compile on every carried version**.
-   A strategy that compiled last epoch is untrusted input this epoch;
+1. loads it, and **re-runs the static checks (cheatcodes, the word `import`) and the vm compile on
+   every carried version**. A strategy that compiled last epoch is untrusted input this epoch;
 2. starts from the newest version that survived re-validation, or from `agent.ts` if the newest did
    not — logging `revision_resume_failed` with the reason, because an agent that silently forgot
    everything looks exactly like one that had nothing to remember;

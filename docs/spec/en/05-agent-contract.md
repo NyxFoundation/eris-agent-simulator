@@ -213,14 +213,18 @@ The body: the improvement policy (when, on what evidence, and how to change it)
 ### Three gates (`compileExecutor`)
 
 ```
-1. Cheatcode static check   any hit from findCheatcodeUsage rejects it
-2. Compilation              vm.Script. The sandbox holds only Math/JSON/Number/String/Boolean/
-                            Array/Object/BigInt/Map/Set/isFinite/isNaN/parseFloat/parseInt
-                            (no require, no process, no fs, no fetch)
-3. Wall-clock bound         one call is cut off at 2,000ms
+1. Static checks            any hit from findCheatcodeUsage rejects it; so does the word `import`
+                            anywhere in the body (comments and strings included)
+2. Compilation              into an empty context (createContext(Object.create(null)), no code
+                            generation from strings): the bridge is evaluated, the built-ins are
+                            frozen, then vm.compileFunction parses the source as a function body.
+                            None of the body runs here (the parent process compiles to validate too)
+3. Wall-clock bound         one call is cut off at 5,000ms in the worker (DECIDE_TIMEOUT_MS, rules §2.3)
 ```
 
-**The vm is not a sandbox** (`improve.ts:228-237`). Because `ctx` is passed in, generated code can trade exactly as freely as the hand-written strategy it replaces. What the vm removes is *ambient capability*; what addresses intent is the cheatcode check.
+**The vm is not a sandbox** (the comment above `compileExecutor` in `improve.ts`; ADR 0024). Because `ctx` is passed in, generated code can trade exactly as freely as the hand-written strategy it replaces. What the vm removes is *ambient capability* and any host-realm object generated code could reach; what addresses intent is the cheatcode check.
+
+Three things keep host-realm objects out. (1) The observation and the context are copied in, and every read's result is copied back (`EXECUTOR_BRIDGE`). The bridge takes the built-ins it uses into constants when it is evaluated and never looks them up when it runs; every read that runs host code is inside a try, and what it throws (a RangeError at the stack limit included) comes back as a copy. (2) Before generated code is compiled, every built-in is frozen and the global bindings are made non-writable (`EXECUTOR_LOCKDOWN`); the global object itself stays extensible, so state can be kept across calls. (3) `eval` / `Function` throw an EvalError and `import` is refused statically (the rejection reason of `import()` is an error of Node's realm, one `constructor.constructor` from the host's `process`).
 
 The return value is brought back into the host realm with `structuredClone` (an object built inside the vm is not `instanceof Object` outside it, and that difference surfaces far from its cause — in validation or logging).
 

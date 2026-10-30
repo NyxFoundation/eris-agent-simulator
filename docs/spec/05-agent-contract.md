@@ -213,14 +213,17 @@ model: <モデル名>          # 任意（ロスターの ERIS_LLM_MODEL より�
 ### 3 段のゲート（`compileExecutor`）
 
 ```
-1. cheatcode 静的検査   findCheatcodeUsage が 1 件でも当たれば拒否
-2. コンパイル            vm.Script。sandbox は Math/JSON/Number/String/Boolean/Array/Object/
-                        BigInt/Map/Set/isFinite/isNaN/parseFloat/parseInt のみ
-                        （require / process / fs / fetch は無い）
-3. 実行時間の上限        1 回の呼び出しを 2,000ms で打ち切る
+1. 静的検査              findCheatcodeUsage が 1 件でも当たれば拒否。`import` の語が本体のどこかに
+                        あれば拒否（コメント・文字列の中も）
+2. コンパイル            空のコンテキスト（createContext(Object.create(null))、文字列からのコード生成なし）
+                        にブリッジを評価 → 組み込みを凍結 → vm.compileFunction で関数本体として
+                        パース。本体はここでは 1 行も実行しない（親プロセスも検証のためにコンパイルする）
+3. 実行時間の上限        worker で 1 回の呼び出しを 5,000ms で打ち切る（DECIDE_TIMEOUT_MS、規約 §2.3）
 ```
 
-**vm はサンドボックスではない**（`improve.ts:228-237`）。`ctx` が渡される以上、生成コードは手書き戦略とまったく同じ自由度でチェーンを触れる。vm が取り除くのは*環境能力*だけで、意図に対処するのは cheatcode 検査の方である。
+**vm はサンドボックスではない**（`improve.ts` の `compileExecutor` 冒頭のコメント、ADR 0024）。`ctx` が渡される以上、生成コードは手書き戦略とまったく同じ自由度でチェーンを触れる。vm が取り除くのは*環境能力*と、生成コードから辿れるホスト realm のオブジェクトで、意図に対処するのは cheatcode 検査の方である。
+
+ホスト realm のオブジェクトを渡さない仕組みは 3 つ。(1) obs / ctx はコピーして渡し、読取結果もコピーで戻す（`EXECUTOR_BRIDGE`）。ブリッジが使う組み込みは評価時に定数へ取り、呼び出し時に引かない。ホストのコードが走る読取は全部 try の中にあり、投げられたもの（スタック上限の RangeError を含む）もコピーで返す。(2) 生成コードのコンパイル前に組み込みを全部凍結し、グローバルの束縛を書換不可にする（`EXECUTOR_LOCKDOWN`）。グローバル自体は拡張可能のままで、呼び出しをまたぐ状態を置ける。(3) `eval` / `Function` は EvalError、`import` は静的に拒否（`import()` の reject 理由は Node の realm の Error で、そこからホストの `process` に届くため）。
 
 戻り値は `structuredClone` で自分の realm に持ち帰る（vm 内で作ったオブジェクトは `instanceof Object` に失敗し、検証やログの遠い場所で問題が出る）。
 

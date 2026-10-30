@@ -384,3 +384,33 @@ test("the worker sees the strategy's parameters but not the parent's secrets", a
     path: "string",
   });
 });
+
+// Audit #4a, in the worker where installed revisions actually run: generated code that replaces a
+// built-in the executor bridge uses must not be handed the worker's observation. The worker carries
+// no key in its environment, but its process can load any builtin module (and read the process's own
+// files), so a host object reachable from the vm is the worker's process.
+test("a generated revision in the worker cannot reach the worker's process through the bridge", async (t) => {
+  const { runner } = fixture(t, `export function decide() { return { type: 'noop' }; }`, 1000);
+  runner.setSource({
+    kind: "executor",
+    source: `
+      const kept = [];
+      const keys = Object.keys;
+      try { Object.keys = function (v) { kept[kept.length] = v; return keys(v); }; } catch (e) {}
+      const round = ctx.latestObservation().round;
+      let reached = "nothing kept";
+      for (let i = 0; i < kept.length; i++) {
+        try {
+          const p = kept[i].constructor.constructor("return process")();
+          reached = typeof p.getBuiltinModule;
+        } catch (e) { reached = "refused"; }
+      }
+      return { type: 'noop', round, reached };
+    `,
+  });
+  assert.deepEqual((await runner.decide(obs(3))).action, {
+    type: "noop",
+    round: 3,
+    reached: "nothing kept",
+  });
+});
