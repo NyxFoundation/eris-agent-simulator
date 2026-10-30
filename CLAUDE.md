@@ -1083,8 +1083,29 @@ ours なのは 2 つだけ（core は無改変）:
   - **codehash は登録時のものだけ。更新しない。**ラウンドトリップ規則の下では差し替え proxy は
     「抜け出せなかった」の一形態なので環境が取り締まる必要がなく、気づくかどうかが技能差になる
   - **登録は毎ブロック上限つき・環境負担**（`agentMarkets.registrationsPerBlock`、既定 8）。あふれは
-    次ブロックへ繰り越し、factory 由来を先に。**書き込みは admin ではなく setup 鍵**（oracle 更新が
+    次ブロックへ繰り越す。**書き込みは admin ではなく setup 鍵**（oracle 更新が
     毎ブロック admin から出ているので、同じ鍵に 2 送信者を置くと nonce を奪い合う）
+  - **待ち行列は作成者ごとに公平**（`core/src/realtime/marketRegistry.ts` の `fairOrder` / `capByCreator`）。
+    書く順は **環境の上場**（launcher の `Launched` 由来の token と、launch wallet が作成者の pool。
+    `PendingEntry.environment`）→ factory 由来の kind → erc20 → unknown の段で、**各段の中は作成者の
+    round-robin**。判定待ち（`MAX_CLASSIFY_PER_SWEEP` = 64 / sweep）も同じ round-robin。待ち行列は
+    **作成者 1 人あたり `MAX_PENDING_PER_CREATOR` = 64**（判定待ち・書き込み待ちの各段）で、超えた分は
+    **その作成者自身の、最後に書かれる側**（低い段・新しい順）だけを捨てる。全体の上限 `MAX_PENDING_ENTRIES` = 2,048
+    は backstop で（64 × 32 = 2,048 なので作成者が 33 人以上いないと効かない）、一番多く持つ作成者から削る。**環境の上場はどの上限でも
+    捨てない**。捨てたら `market_registration_dropped`（`stage` = `classify` / `publish`、`byCreator`）。捨てた
+    key は `seen` に残るので後から公開されることはない。以前は 1 本のリストを (kind, 経過) で並べて末尾から
+    切っていた（コメントは「古いものを捨てる」と書いていたが、実際は新しいもの）。10 バイトの
+    `[0x20, 0]` を返すコントラクト（name "" / symbol "" / decimals 32 = erc20 と判定される。1 本 ~56k gas、
+    10M の予算で 1 ブロック ~150 本）を毎ブロック deploy すると、同じ erc20 段にいる launch token が波の後まで
+    遅れるか永久に捨てられ、正直な作成者の token も同じだった（fake chain で 20 ブロック回すと旧実装は launch token も
+    正直な token も 1 度も公開せず、待ちは 1,122 件）。**残る穴は sybil**: 作成者 = tx の送信者なので、資金を
+    分けた複数の EOA は別人として round-robin に並ぶ（環境の上場は影響を受けない）
+  - **観測は最新 128 件 + 環境の上場**（`sdk/src/agentMarkets.ts`。`REGISTRY_OBSERVATION_LIMIT` /
+    `REGISTRY_PINNED_LIMIT` = 32）。`verified` の `erc20` エントリは launcher からしか作られないので、その
+    作成者（launch wallet）と、同じ作成者のエントリ（launcher が作った pool）を古さに関係なく載せる。
+    `verified` だけで選ばないのは、参加者の Uniswap pool や貸出市場も `verified` だから。並びは newest-first の
+    まま、`dropped` は載らなかった件数。以前は 16 ブロック分の spam（128 / 8）で上場が全員の観測から落ち、
+    `launchPools` が見つけられなかった
   - **読み手は `all()` を呼ばない**（`count()` + `entriesFrom` を 256 件ずつ。`sdk/src/marketRegistry.ts`）。
     `all()` のガスは件数に比例し（cold storage で 1,500 件 ~29.5M、**1,600 件で 30M の call 上限を超えて out of gas**）、
     件数は誰でも安く積める（`createMarket` は permissionless、環境は毎ブロック 8 件登録 = 200 ブロック）。以前は全 agent の
@@ -1171,8 +1192,8 @@ ours なのは 2 つだけ（core は無改変）:
   coordinator は答えなかったアドレスを `unknown` として登録し `agent_market_read_failed`（out-of-gas / timeout /
   error。revert は「token でない」の通常回答なので出さない）を**アドレスごとに 1 回**出す。ただし timeout / error は
   ノードが答えなかっただけでコントラクトの答えではないので、**次の sweep で再判定**し（`CLASSIFY_ATTEMPTS` = 3 回まで。
-  `seen` にはまだ入れない）、1 sweep の判定は `MAX_CLASSIFY_PER_SWEEP` = 64 件まで（残りは繰り越し。期限は batch 全体で
-  1 つなので、CREATE を大量に積んだブロックで同じブロックの正直な token まで `unknown` に固定されていた）。singleton 経由の
+  `seen` にはまだ入れない）、1 sweep の判定は `MAX_CLASSIFY_PER_SWEEP` = 64 件まで（残りは繰り越し、作成者の round-robin で選ぶ。
+  期限は batch 全体で 1 つなので、CREATE を大量に積んだブロックで同じブロックの正直な token まで `unknown` に固定されていた）。singleton 経由の
   `isHealthy` / `expectedPosition` はコントラクト側の staticcall 上限で既に守られているので multicall のまま
 - 参照 agent は 6 体: `market-launcher`（正直な作成者。immutable オラクルで作って鐘の前に withdraw）/
   `market-taker`（利用者。`oracleOwner` を読んでから入る）/ `trap-launcher`（自分が握るオラクルで
@@ -1251,7 +1272,9 @@ gas は pin（9M、実測 5.6M）。翌ブロックにレジストリへ `uniswa
   `launchTokenCodehash`（repo の `AgentERC20` artifact を `to` 無しの `eth_call` で走らせた runtime code の keccak。
   CREATE2 で deploy しても runtime code は同じ = anvil で一致を実測。artifact が無ければ null = 形だけで判定し
   agent ログに 1 回残す）が取れていれば一致。launch wallet のアドレスは観測にもマニフェストにも無い。
-  以前は「同じ bytecode を同じ鍵から deploy した参加者のプール」が通っていたが、今は参加者の上場は 1 つも通らない
+  以前は「同じ bytecode を同じ鍵から deploy した参加者のプール」が通っていたが、今は参加者の上場は 1 つも通らない。
+  **上場は spam に埋もれない**: registry は環境の上場を他の全エントリより先に書き（見つけたブロックの書き込み）、
+  観測は最新 128 件の外でも載せる（上の「エージェントが作る市場」の待ち行列と観測の項）
 - **実測（seed 101, 2026-09-12, main + PR #81 の burst 吸収を手元適用）**は PR #29 の本文。**main の anvil backlog
   burst（PR #81 で修正中）がある環境では最初の ~200 ブロックが 1 秒で流れて窓ごと飛ぶ**。この regime だけの
   問題ではなく windowFrac を持つ全イベントが同じ目に遭う

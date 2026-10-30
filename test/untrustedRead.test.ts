@@ -343,6 +343,7 @@ test("sweepMarkets: a run without the lending singleton scans no CreateMarket an
     uniswapFactory: undefined,
     registrarPk: `0x${"1".repeat(64)}`,
     registrarAddress: AGENT,
+    environmentCreators: new Set(),
     pending: [],
     seen: new Set(),
     readFailuresReported: new Set(),
@@ -394,6 +395,7 @@ test("sweepMarkets: an unreadable contract is published as unknown and reported 
     uniswapFactory: undefined,
     registrarPk: `0x${"1".repeat(64)}`,
     registrarAddress: AGENT,
+    environmentCreators: new Set(),
     pending: [],
     seen: new Set(),
     readFailuresReported: new Set(),
@@ -431,6 +433,8 @@ test("sweepMarkets: an unreadable contract is published as unknown and reported 
 function sweepFixture(opts: {
   creator: Address;
   nonces: number[];
+  // Instead of creator/nonces: the first block's CREATEs from several senders, in block order.
+  txs?: Array<{ from: Address; nonce: number }>;
   behaviour: (address: string, functionName: string) => unknown;
   recorded: Recorded[];
 }) {
@@ -444,7 +448,9 @@ function sweepFixture(opts: {
     getBlock: async () => {
       const transactions = scanned
         ? []
-        : opts.nonces.map((nonce) => ({ to: null, from: opts.creator, nonce }));
+        : (opts.txs ?? opts.nonces.map((nonce) => ({ from: opts.creator, nonce }))).map(
+            (tx) => ({ to: null, ...tx }),
+          );
       scanned = true;
       return { transactions };
     },
@@ -456,6 +462,7 @@ function sweepFixture(opts: {
     uniswapFactory: undefined,
     registrarPk: `0x${"1".repeat(64)}`,
     registrarAddress: AGENT,
+    environmentCreators: new Set(),
     pending: [],
     seen: new Set(),
     readFailuresReported: new Set(),
@@ -512,12 +519,18 @@ test("sweepMarkets: a node that never answers is published as unknown after the 
 });
 
 test("sweepMarkets: one sweep probes at most MAX_CLASSIFY_PER_SWEEP contracts; the rest carry", async () => {
-  const CREATOR = "0x00000000000000000000000000000000000000f9" as Address;
+  // Two creators, so that what is published stays inside each one's share of the backlog
+  // (MAX_PENDING_PER_CREATOR); the per-creator cap has its own tests in registryQueue.test.ts.
+  const CREATORS = [
+    "0x00000000000000000000000000000000000000f9",
+    "0x00000000000000000000000000000000000000fa",
+  ] as Address[];
   const n = MAX_CLASSIFY_PER_SWEEP + 5;
   const recorded: Recorded[] = [];
   const { runtime, logger, ctx } = sweepFixture({
-    creator: CREATOR,
-    nonces: Array.from({ length: n }, (_, i) => i),
+    creator: CREATORS[0],
+    nonces: [],
+    txs: Array.from({ length: n }, (_, i) => ({ from: CREATORS[i % 2], nonce: i })),
     recorded,
     behaviour: (_address, functionName) => (functionName === "decimals" ? 18 : "TOKEN"),
   });

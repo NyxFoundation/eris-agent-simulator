@@ -881,7 +881,8 @@ export type RegistryObservation = {
   }>;
   strandedUnknown: StrandedHoldingObservation[];
   // Registry entries that exist and are not in `entries`. Deployment is permissionless, so the count
-  // is somebody's choice; one observation carries a bounded, newest-first slice of it, and the
+  // is somebody's choice; one observation carries a bounded, newest-first slice of it (the newest
+  // 128, plus the environment's own token listings and their pools whatever their age), and the
   // number dropped is reported rather than left to be inferred from a list that looks complete.
   dropped: number;
   // Present only when this block's registry read failed. The rest of the section is then the last
