@@ -110,6 +110,9 @@ function uniAnswer(tick: number) {
     if (is(read, "slot0")) return [getSqrtRatioAtTick(0), 0, 0, 0, 0, 0, true];
     if (is(read, "balanceOf")) return 1n;
     if (is(read, "tokenOfOwnerByIndex")) return TOKEN_ID;
+    // The scoring paths value the positions the LP ownership ledger names, each checked to still be
+    // the agent's (uniswapLpOwnership.ts).
+    if (is(read, "ownerOf")) return AGENT.address;
     if (is(read, "positions")) return uniPosition();
     if (is(read, "feeGrowthGlobal0X128") || is(read, "feeGrowthGlobal1X128"))
       return 0n;

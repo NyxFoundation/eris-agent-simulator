@@ -49,6 +49,10 @@ import type { BalanceSnapshot, ProtocolId } from "@eris/sdk/types.js";
 import { firstBoundaryV0, type V0Rule } from "../scoring/endowmentV0.js";
 import type { GmxInsolvencyLedger } from "@eris/sdk/protocols/gmxInsolvency.js";
 import { GmxShortfallTracker } from "./gmxShortfall.js";
+import {
+  LpOwnershipTracker,
+  type LpOwnershipLedger,
+} from "@eris/sdk/protocols/uniswapLpOwnership.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
 import { readRegistryEntries } from "@eris/sdk/marketRegistry.js";
 import { readIsolated, splitIsolatedReads } from "./isolatedReads.js";
@@ -395,6 +399,10 @@ export async function readValueSnapshotAtBlock(opts: {
   // GMX insolvent closes, fed through blockNumber (GmxShortfallTracker.syncTo). Given, a straddle's
   // liquidation shortfall is charged to its winning leg (sdk protocols/gmxInsolvency.ts).
   gmxInsolvency?: GmxInsolvencyLedger;
+  // Which Uniswap V3 positions each agent obtained itself, fed through blockNumber
+  // (LpOwnershipTracker.syncTo). Given, only those are valued (sdk protocols/uniswapLpOwnership.ts);
+  // every scoring path passes it.
+  uniswapLp?: LpOwnershipLedger;
 }): Promise<ValueSnapshot> {
   const { publicClient, agents, enabledIds, activeStables, priceFeed } = opts;
   let failedReads = 0;
@@ -524,6 +532,7 @@ export async function readValueSnapshotAtBlock(opts: {
     stablePrices: () => stablePrices,
     medianWindow: opts.medianWindow ?? [],
     ...(opts.gmxInsolvency ? { gmxInsolvency: opts.gmxInsolvency } : {}),
+    ...(opts.uniswapLp ? { uniswapLp: opts.uniswapLp } : {}),
     readAt: (reads, block) =>
       call(reads as MulticallContract[], BigInt(block)),
   };
@@ -1224,6 +1233,9 @@ export async function reconstructValueSeries(opts: {
   // How V_0 treats a measured value above the endowment (scoring/endowmentV0.ts): the live
   // scorer's rule, so the two series still agree at the first boundary. Default floor.
   v0Rule?: V0Rule;
+  // The live scorer's lpLedgerFromBlock (the block the agents could first act at): the LP ownership
+  // ledger reads Transfer logs from it and seeds what is held before it. Default fromBlock.
+  lpLedgerFromBlock?: number;
 }): Promise<ReconstructionMeta> {
   const {
     publicClient,
@@ -1239,6 +1251,7 @@ export async function reconstructValueSeries(opts: {
     markMedianBlocks = 0,
     marketRegistry,
     v0Rule,
+    lpLedgerFromBlock,
   } = opts;
   const started = Date.now();
   let failedReads = 0;
@@ -1261,9 +1274,20 @@ export async function reconstructValueSeries(opts: {
       })
     : undefined;
   await gmxShortfall?.syncTo(toBlock);
-  const gmxInsolvency = gmxShortfall
-    ? { gmxInsolvency: gmxShortfall.ledger }
-    : {};
+  // Which LP positions are each agent's own, the same way: one sync over the window from the block the
+  // live scorer's ledger started at, and each cross-section asks for the holdings at its own block.
+  const lpOwnership = enabledIds.includes("uniswap")
+    ? new LpOwnershipTracker({
+        publicClient,
+        accounts: agents.map((a) => a.address),
+        fromBlock: lpLedgerFromBlock ?? fromBlock,
+      })
+    : undefined;
+  await lpOwnership?.syncTo(toBlock);
+  const ledgers = {
+    ...(gmxShortfall ? { gmxInsolvency: gmxShortfall.ledger } : {}),
+    ...(lpOwnership ? { uniswapLp: lpOwnership.ledger } : {}),
+  };
 
   // The fixed reference fair for α uses the fair at run end (toBlock) across all bases. Read toBlock first,
   // set that fairByBase as the reference, then evaluate fromBlock..toBlock (removing β across the whole run).
@@ -1275,7 +1299,7 @@ export async function reconstructValueSeries(opts: {
     priceFeed,
     blockNumber: toBlock,
     horizonBlock: toBlock,
-    ...gmxInsolvency,
+    ...ledgers,
   });
   failedReads += refSnapshot.failedReads;
   mergeFailedReads(failedReadTargets, refSnapshot.failedReadTargets);
@@ -1354,7 +1378,7 @@ export async function reconstructValueSeries(opts: {
       blockNumber: b,
       horizonBlock: toBlock,
       refFairByBase,
-      ...gmxInsolvency,
+      ...ledgers,
       ...(boundaryIndex.has(b) ? { medianWindow: markMedian.window(b) } : {}),
       ...(stablePricesOverride ? { stablePricesOverride } : {}),
     });
@@ -1509,10 +1533,18 @@ export async function reconstructValueSeries(opts: {
     const atPar = unpricedHoldings.filter(
       (h) => h.reason === "par-fallback" || h.reason === "mid-fallback",
     ).length;
+    // Excluded by rule: LP NFTs another address put in the agent's hands (uniswapLpOwnership.ts).
+    const received = unpricedHoldings.filter(
+      (h) => h.reason === "received",
+    ).length;
     const excluded = unpricedHoldings.length - atPar;
     console.warn(
       `[reconstruct] ${excluded} holding(s) excluded from agent value ` +
-        `(${excluded - unreadable} unpriceable, ${unreadable} unreadable)` +
+        `(${excluded - unreadable - received} unpriceable, ${unreadable} unreadable` +
+        (received > 0
+          ? `, ${received} LP NFT holding(s) received from another address`
+          : "") +
+        ")" +
         (atPar > 0
           ? `, ${atPar} stable holding(s) marked at par or at the probe mid because their market did not quote`
           : "") +

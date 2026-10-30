@@ -153,6 +153,11 @@ Things to watch when reading:
   read failed** — treat a missing value as "unknown", never as an empty book. Non-WETH markets carry their own under
   `protocols.uniswap.markets["WBTC/USDC"].liquidity`. Balancer and Curve expose depth as `reserves` instead, and today
   they keep their block-0 depth for the whole run
+- **`protocols.uniswap.positions` lists the LP positions you obtained yourself** — minted (or pulled) in a transaction
+  your address sent — at most 128, which is exactly the set your score values ([scoring](scoring.md)). A position
+  NFT someone else minted or sent to you is neither listed nor valued, and cannot crowd yours out of the list; how
+  many such NFTs you hold is `unlistedPositionCount` (absent when there are none). `removeLiquidity` / `collectFees`
+  are validated against this list
 
 ## Step 3: Return an action
 

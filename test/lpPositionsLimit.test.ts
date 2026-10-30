@@ -1,6 +1,10 @@
 // Issue #196: the LP valuation enumerated every NFT an agent holds, and an agent can mint as many
 // as it likes for gas. Past LP_POSITIONS_LIMIT the positions are not read, and the agent's value
 // says so (`uniswap-lp-unscanned`), the way the lending valuation reports `lending-unscanned`.
+//
+// This is the holder-enumeration path a caller without the LP ownership ledger takes. Every scoring
+// path passes the ledger, under which the bound counts only positions the agent obtained itself
+// (test/lpOwnership.test.ts).
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { Address } from "viem";
