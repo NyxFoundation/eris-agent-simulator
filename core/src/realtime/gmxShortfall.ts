@@ -90,6 +90,17 @@ export class GmxShortfallTracker {
     return { scannedThrough: this.scannedThrough, ledger: this.ledger.snapshot() };
   }
 
+  /**
+   * Begin reading after `block` instead of from the run's first block: a resumed period whose
+   * checkpoint predates this ledger. Its insolvent closes before that point were never charged,
+   * and charging them now would land weeks of them on the day of the restart; and the logs back
+   * to the period's start (a practice node keeps them) would be read before the first boundary.
+   * Positions opened before it are handled as opened before the ledger began.
+   */
+  startAfter(block: number): void {
+    this.scannedThrough = Math.max(this.scannedThrough, block);
+  }
+
   restore(state: GmxShortfallTrackerState): void {
     this.scannedThrough = state.scannedThrough;
     this.ledger.restore(state.ledger);

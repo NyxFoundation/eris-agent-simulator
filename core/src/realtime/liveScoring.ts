@@ -436,6 +436,10 @@ export class LiveScorer {
     for (const [id, v0] of Object.entries(snapshot.firstBoundaryByAgent))
       this.firstBoundaryByAgent.set(id, v0);
     if (snapshot.gmxShortfall) this.gmxShortfall?.restore(snapshot.gmxShortfall);
+    // A checkpoint from before the ledger existed: charge from where this start picks up, not
+    // from the period's first block (GmxShortfallTracker.startAfter).
+    else if (snapshot.lastAttempted !== null)
+      this.gmxShortfall?.startAfter(snapshot.lastAttempted);
   }
 
   /** The block the first boundary was read at, or null before it was. */

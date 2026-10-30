@@ -340,6 +340,39 @@ test("live (per-block sync) and sweep (one sync) agree at every boundary", async
   assert.equal(sweep.ledger.chargesAt(160, []).get(ALICE.toLowerCase())?.chargedUsd, 50_000);
 });
 
+// A practice period resumed from a checkpoint written before the ledger existed: the node still
+// has the period's logs, and reading them from its first block would charge weeks of insolvent
+// closes at the restart's first boundary.
+test("startAfter: a pre-ledger checkpoint charges from the resume point, not the period start", async () => {
+  const logs = [
+    increase(ALICE, true, 101, 234_000),
+    increase(ALICE, false, 101, 234_000),
+    ...insolventLiquidation(ALICE, false, 120, 50_000, -62_000),
+  ].map((l) => ({
+    ...l,
+    blockNumber: `0x${Number(l.blockNumber).toString(16)}`,
+    logIndex: `0x${(l.logIndex ?? 0).toString(16)}`,
+  }));
+  const asked: number[] = [];
+  const client = {
+    request: async ({ params }: { params: [{ fromBlock: Hex; toBlock: Hex }] }) => {
+      const from = Number(params[0].fromBlock);
+      const to = Number(params[0].toBlock);
+      asked.push(from);
+      return logs.filter((l) => Number(l.blockNumber) >= from && Number(l.blockNumber) <= to);
+    },
+  } as unknown as PublicClient;
+  const tracker = new GmxShortfallTracker({ publicClient: client, fromBlock: 100, accounts: [ALICE] });
+  tracker.startAfter(150);
+  await tracker.syncTo(160);
+  assert.deepEqual(asked, [151]);
+  assert.equal(tracker.ledger.chargesAt(160, [openPnl(ALICE, true, 70_000)]).size, 0);
+  // Never moves the cursor back.
+  tracker.startAfter(120);
+  await tracker.syncTo(160);
+  assert.deepEqual(asked, [151]);
+});
+
 test("leverage cap: the factor is 0.198 (5.05x) and the key is Keys.minCollateralFactorKey", () => {
   assert.equal(GMX_MIN_COLLATERAL_FACTOR, 198n * 10n ** 27n);
   assert.equal(gmxMaxLeverageFromFactor(GMX_MIN_COLLATERAL_FACTOR), 5.05);
