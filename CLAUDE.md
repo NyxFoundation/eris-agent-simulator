@@ -236,8 +236,8 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   （見込み利益の 80%）まで入札して、必要な tip の約 2 倍を払っていた（2026-10-08 の calm 150 ブロック 2 本の実測）
 - **環境のイベント取引**（launch の波・depeg の売買・流動性の引き抜き・whale）は**普通の手数料**（`flatBid`: 対数正規、
   中央値 1.4 gwei、平均約 1.5 gwei。`core/src/realtime/envBid.ts`、鍵付きストリーム `env-bid:<種類>`、練習期間のチェックポイントに
-  位置を保存）。先回りの価値に比例して入札する U×V 方式（PR #287）は、被害者が searcher の値段を払う形になり、自分の大きい gas で
-  V 以上を払っていたので廃止した（ADR 0011 §1c）。V は記録だけする（`frontRunValueUsd`）。先回りの競争は参加者どうしに任せる。
+  位置を保存）。フロントランニングの価値に比例して入札する U×V 方式（PR #287）は、被害者が searcher の値段を払う形になり、自分の大きい gas で
+  V 以上を払っていたので廃止した（ADR 0011 §1c）。V は記録だけする（`frontRunValueUsd`）。フロントランニングの競争は参加者どうしに任せる。
   環境の取引の slippage の許容幅は whale 0.5% 固定、launch の波 3〜6%・depeg 1〜2% は取引ごとに乱数で、
   サンドイッチで取れる額はこれで上が決まる。whale の旧 `minAmountOut: "0"` はどのアダプタも読まず、実際は既定 50 bps だった。
   **whale は revert したら次の pass で出し直す**（`WhaleResubmits`。最大 3 回）。一発の事象なので出し直さないと
