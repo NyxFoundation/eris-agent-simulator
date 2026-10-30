@@ -5,8 +5,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { Address, Hex } from "viem";
-import { gmxLiquidatablePositions } from "@eris/sdk/protocols/gmx.js";
-import { GMX_MARKETS, TOKENS } from "@eris/sdk/constants.js";
+import { gmxAdapter, gmxLiquidatablePositions } from "@eris/sdk/protocols/gmx.js";
+import {
+  DEFAULT_ANVIL_PRIVATE_KEYS,
+  GMX,
+  GMX_MARKETS,
+  TOKENS,
+} from "@eris/sdk/constants.js";
+import { gmxMarketAddresses } from "@eris/sdk/markets.js";
+import { makeChain } from "@eris/sdk/chain.js";
 
 const MARKET = GMX_MARKETS.ETH_USD;
 const marketProps = {
@@ -113,4 +120,44 @@ test("no fair price for the market's tokens means no check, not a liquidation at
   );
   assert.deepEqual(found, []);
   assert.equal(seen.checks.length, 0);
+});
+
+// The scan runs on every keeper pass, not only on a pass that executes an order. afterMine used to
+// return before it whenever no order was executable, so in a block without order flow (about half of
+// them under the background flow's calibration) no position was liquidated however far it had sunk.
+test("a pass with no orders still runs the liquidation scan and sends the liquidation", async () => {
+  const seen = { checks: [] as unknown[][] };
+  const sent: Array<{ to: string }> = [];
+  const scan = client([position(1, 10n ** 34n)], [true], seen) as unknown as Record<
+    string,
+    unknown
+  >;
+  const ctx = {
+    publicClient: {
+      ...scan,
+      getLogs: async () => [],
+      getBlock: async () => ({ baseFeePerGas: 0n }),
+    },
+    walletClient: {
+      sendTransaction: async (tx: { to: string }) => {
+        sent.push(tx);
+        return `0x${"22".repeat(32)}` as Hex;
+      },
+    },
+    chain: makeChain(31337),
+    keeperPk: DEFAULT_ANVIL_PRIVATE_KEYS[2],
+    fairPrices: { WETH: 3000 },
+    gmx: {
+      market: MARKET,
+      markets: gmxMarketAddresses(),
+      mockProvider: `0x${"0f".repeat(20)}` as Address,
+      oracleTokens: [],
+    },
+  } as never;
+  await gmxAdapter.afterMine!(ctx, { noMine: true, fromBlock: 500n, toBlock: 500n });
+  assert.equal(seen.checks.length, 1, "the scan asked the reader about the open position");
+  assert.deepEqual(
+    sent.map((t) => t.to),
+    [GMX.LiquidationHandler],
+  );
 });

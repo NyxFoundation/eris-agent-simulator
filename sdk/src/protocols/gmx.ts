@@ -2685,25 +2685,6 @@ export const gmxAdapter: ProtocolAdapter = {
       .map((l) => l.topics[2] as Hex);
     // Orders deferred by an earlier pass go first (arrival order), then this range's.
     const keys = [...new Set([...deferredOrderKeys.splice(0), ...created])];
-    if (keys.length === 0) return;
-    const plan = await keeperOrderPlan(
-      ctx,
-      keys,
-      MAX_ORDER_FILLS_PER_BLOCK,
-      opts?.onOrderRefused,
-    );
-    const executable = plan.execute;
-    if (plan.defer.length > 0) {
-      deferredOrderKeys.push(...plan.defer);
-      opts?.onOrdersDeferred?.({
-        sent: executable.length,
-        deferred: plan.defer.length,
-        ...(plan.deferredSamePosition > 0
-          ? { samePosition: plan.deferredSamePosition }
-          : {}),
-      });
-    }
-    if (executable.length === 0) return;
 
     const keeper = privateKeyToAccount(ctx.keeperPk);
     // Every token any configured market needs, not just the order's own: GMX reverts the whole
@@ -2711,6 +2692,29 @@ export const gmxAdapter: ProtocolAdapter = {
     const oracleParams = gmxKeeperOracleParams(ctx);
     const fee = opts?.priorityFeeWei ?? 1_000_000_000n;
     const executeGas = opts?.executeGas ?? GMX_KEEPER_EXECUTE_GAS;
+    // No early return when there is nothing to execute: the liquidation scan below has to run every
+    // block. It used to return here, so positions were only checked in blocks that also carried an
+    // order, and a crash in a quiet block went unliquidated until somebody traded.
+    let executable: Hex[] = [];
+    if (keys.length > 0) {
+      const plan = await keeperOrderPlan(
+        ctx,
+        keys,
+        MAX_ORDER_FILLS_PER_BLOCK,
+        opts?.onOrderRefused,
+      );
+      executable = plan.execute;
+      if (plan.defer.length > 0) {
+        deferredOrderKeys.push(...plan.defer);
+        opts?.onOrdersDeferred?.({
+          sent: executable.length,
+          deferred: plan.defer.length,
+          ...(plan.deferredSamePosition > 0
+            ? { samePosition: plan.deferredSamePosition }
+            : {}),
+        });
+      }
+    }
     for (const key of executable) {
       try {
         if (opts?.noMine) {
