@@ -2,8 +2,9 @@
 #
 # Every entry is a model participants may name in prompt.md (rules §2.5 publishes this list). The
 # proxy refuses any other `model`, and any request that names something it cannot pin at the freeze
-# (a stored prompt, a previous response, tools, a container). Upstream keys are read from the proxy
-# process's environment, never handed to an agent.
+# (a stored prompt, a previous response, tools, a container) or has the provider fetch content by
+# reference at any depth (an image / file URL, a stored file id; README "Content goes inline").
+# Upstream keys are read from the proxy process's environment, never handed to an agent.
 #
 #   npm run inference-proxy -- --models infra/inference-proxy/models.yaml --listen 0.0.0.0:8790 \
 #       --record runs/<competition>/inference

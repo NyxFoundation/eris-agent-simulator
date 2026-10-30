@@ -322,7 +322,12 @@ API keys in `.env.local` ([Configuration](configuration.md)).
 `ERIS_INFERENCE_BASE_URL` (the operator's inference proxy, rules §2.3 / §2.5) and a per-agent
 `ERIS_INFERENCE_TOKEN`; the Ollama, OpenAI-compatible and Anthropic families then all route through
 the proxy, which holds the upstream keys, enforces the published model list and records every
-exchange for replay (`infra/inference-proxy/README.md`). The CLI providers are a local-development
+exchange for replay (`infra/inference-proxy/README.md`). **Content goes in the body, not by
+reference:** a request that has the provider fetch something — an image or file by URL
+(`image_url`, `input_file.file_url`, an Anthropic `source` of type `url`), a stored file
+(`file_id`), a stored item, web search — is refused with 403 naming the field's path, at any depth.
+Text (including a URL your prompt mentions), `data:` URIs and base64 pass; the reference runtime
+sends only text. The CLI providers are a local-development
 convenience: an agent container has no `codex` or `claude` binary and no network to log in with.
 
 **How long a call may wait there.** A call that is not streamed waits at most **5 minutes** for the
@@ -342,7 +347,8 @@ completes — you just get no revisions.
 ## Limits on a revision call
 
 **The operator caps neither input nor output.** The inference proxy forwards your request body as
-written, so what bounds a revision call is the model, the service, and what your runtime sends. A
+written (once it passes the refusals above), so what bounds a revision call is the model, the
+service, and what your runtime sends. A
 revision's reply is the **whole strategy source**, and the context is ~10k tokens today, so the
 defaults matter. The reference runtime sends:
 

@@ -45,7 +45,13 @@ prompt.md は**起動時に fail-fast**（黙って読むと、取引指示が�
   `openai:<m>` / `gpt-*` は OpenAI 互換 chat completions。**本番は運営の推論プロキシ経由**
   （`ERIS_INFERENCE_BASE_URL` + agent ごとの `ERIS_INFERENCE_TOKEN` = HMAC(ERIS_INFERENCE_SECRET, agentId)。
   agent は鍵を持たない。`npm run inference-proxy`、`core/src/inference/proxy.ts`、規約 §2.3/§2.5。
-  許可パス 3 本・モデル一覧・保存済み参照の拒否・全記録と `--replay`）。**記録の失敗でプロキシは落ちない**
+  許可パス 4 本・モデル一覧・保存済み参照の拒否・全記録と `--replay`）。**参照による取得は body のどの深さでも拒否**
+  （`core/src/inference/fetchByReference.ts`。以前は最上位のキーしか見ず、`image_url` / `input_file.file_url` /
+  Anthropic の `source: {type: "url"}` / `file_id` を素通しして、プロバイダが参加者の鍵で任意の URL を取りに行った =
+  クエリ文字列で外へ出し、URL の中身を差し替えて凍結後の agent を操れる双方向の経路。`file_id(s)`・名前が
+  `url`/`uri` で終わるフィールドの `data:` 以外の文字列・`source.type` の `url`/`file`・`item_reference`・
+  `web_search_options` を 403 で最初のパスを名指す。本文中の URL・`data:`・base64 は通る。深さ 64 / 値 100,000 超は
+  検査せず拒否。拒否は呼び出しに数えない）。**記録の失敗でプロキシは落ちない**
   （issue #215。以前は `appendFileSync` の失敗が async ハンドラの未処理 rejection になって exit 1 = 全員の改訂が
   止まった）。書けなかった記録は stderr に agent ごと 1 行 + `/healthz` の `recording.failures`、呼び出しは通す。
   記録量は `maxRecordBytesPerAgent`（既定 256 MiB）/ `maxRecordBytesTotal`（既定 8 GiB、プロセス単位）で頭打ち

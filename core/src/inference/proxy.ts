@@ -12,7 +12,13 @@
 //                              otherwise be a dead-drop for a human to feed a frozen agent.
 //   2. models from a list      the request's `model` must be in models.yaml, and the list is what
 //                              §2.5 publishes. A reference the operator cannot pin (a stored prompt
-//                              id, a previous response, a container) is refused.
+//                              id, a previous response, a container) is refused -- and so, at any
+//                              depth, is anything that has the provider fetch content by reference:
+//                              a URL (`image_url`, `file_url`, an Anthropic `source` of type `url`)
+//                              or a stored file (`file_id`). Otherwise the provider is the door: a
+//                              URL carries data out in its query string, and whoever controls what it
+//                              points at writes what a frozen agent's model reads next. The rule and
+//                              its bounds are in fetchByReference.ts.
 //   3. keys stay here          the agent authenticates with a per-agent token (HMAC of its id under a
 //                              secret only the coordinator and this proxy hold); the upstream key is
 //                              attached here, from the proxy's own environment.
@@ -40,8 +46,10 @@
 // the write rate by four orders of magnitude; what it no longer cuts is the evidence. Replay reads
 // stubs too and answers 409 at one, rather than serving the next call's answer in its place.
 //
-// The request body is forwarded as the agent wrote it (model name aside). Rebuilding it would fight
-// the self-improvement design, where the model's brief is the agent's own prompt.md (ADR 0018).
+// The request body is forwarded as the agent wrote it (model name aside), once it has passed the
+// refusals above; content goes inline (text, base64, a `data:` URI) and a URL a message merely
+// mentions is text like any other. Rebuilding it would fight the self-improvement design, where the
+// model's brief is the agent's own prompt.md (ADR 0018).
 //
 // Streaming (issue #166). A streamed response (SSE from the OpenAI-compatible and Anthropic paths,
 // NDJSON from Ollama) is relayed chunk by chunk as it arrives, under the upstream's status and
@@ -57,6 +65,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
+import { findFetchByReference } from "./fetchByReference.js";
 
 export type Provider = "ollama" | "openai" | "anthropic";
 
@@ -289,6 +298,8 @@ const REJECTED_KEYS: Record<Provider, string[]> = {
     "attachments",
     "tools",
     "tool_resources",
+    // The search models' built-in web search: the provider fetches pages the agent's query chose.
+    "web_search_options",
   ],
   anthropic: ["container", "mcp_servers", "tools"],
   ollama: [],
@@ -644,6 +655,24 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
           "request names something the operator cannot pin at the freeze (a stored prompt, a " +
           "previous response, tools, a container); send the whole conversation in the body instead",
         rejected,
+      });
+    // The same refusal one level down, at any depth: a content part that has the provider fetch a
+    // URL or a stored file (fetchByReference.ts). Like the keys above, it is refused before the
+    // credential, the rate limit and the call count, so it is not a call the agent made.
+    const reference = findFetchByReference(body);
+    if (reference?.kind === "uninspectable")
+      return send(res, 403, {
+        error:
+          `request nests deeper than ${reference.maxDepth} levels or holds more than ` +
+          `${reference.maxNodes} values: refused without being inspected`,
+      });
+    if (reference)
+      return send(res, 403, {
+        error:
+          `request has the provider fetch something by reference at ${reference.path} ` +
+          `(${reference.reason}); send the content inline in the body instead -- a data: URI, ` +
+          "base64 or text",
+        rejected: [reference.path],
       });
 
     // ---- whose key goes upstream ----

@@ -30,12 +30,44 @@ routes the Ollama, OpenAI-compatible and Anthropic providers through the base UR
 
 | check | response |
 |---|---|
-| path other than `/api/chat`, `/v1/chat/completions`, `/v1/messages` (`GET /v1/models`, `/healthz` read-only) | 404 |
+| path other than `/api/chat`, `/v1/chat/completions`, `/v1/responses`, `/v1/messages` (`GET /v1/models`, `/healthz` read-only) | 404 |
 | `GET /admin/recording` without the operator's token, or at all when `ERIS_INFERENCE_STATS_TOKEN` is unset | 401 / 404 |
 | missing or wrong `x-eris-agent` + bearer token (when a secret is set) | 401 |
 | `model` not in the list, or on the wrong provider's path | 403 with the allowed names |
-| a stored/previous reference: OpenAI `previous_response_id` `prompt` `store` `metadata` `file_ids` `attachments` `tools` `tool_resources`; Anthropic `container` `mcp_servers` `tools` | 403 naming the key |
+| a stored/previous reference: OpenAI `previous_response_id` `conversation` `prompt` `prompt_cache_key` `store` `metadata` `file_ids` `attachments` `tools` `tool_resources` `web_search_options`; Anthropic `container` `mcp_servers` `tools` | 403 naming the key |
+| anything, at any depth, that has the provider fetch content by reference — a URL or a stored file (below) | 403 naming the JSON path of the first such field (`"rejected":["messages[0].content[1].image_url.url"]`) |
+| a body nested deeper than 64 levels or holding more than 100,000 values | 403, not inspected |
 | more than `maxCallsPerMinute` per agent | 429 |
+
+Every refusal above comes before the credential, the rate limit and the call count: a refused request
+reaches no provider, spends nothing of the agent's minute, and does not move the record's numbering
+(a replay refuses it the same way, before its queue).
+
+### Content goes inline, not by reference
+
+The top-level keys stop at the top. A content part can still name a URL for the provider to download
+(OpenAI `image_url` and `input_file.file_url`, Anthropic `source: {"type":"url"}`) or a file stored
+on the provider's side (`file_id`), and in the live week the provider does so with the participant's
+own credential. That is a two-way channel through the one door that is meant to have none: data leaves
+in the URL's query string, and whoever controls what the URL points at — an image or a PDF whose text
+the model transcribes — writes what a frozen agent's model reads next, mid-week and outside the record.
+So the proxy walks the whole body (`core/src/inference/fetchByReference.ts`) and refuses:
+
+| field, at any depth | refused when |
+|---|---|
+| `file_id` / `file_ids` (any case; `_` and `-` ignored, so `fileId` too) | always |
+| a name that is `url` / `uri` or ends in one: `image_url`, `file_url`, `video_url`, `fileUri`, `image_urls`, … | its value is a string — or an array holding strings — that does not start with `data:`. An object is looked into instead (`image_url: {url, detail}` is decided at its `url`); a number or null names nothing |
+| `source` (Anthropic image / document blocks) | its `type` is `url` or `file`; or, in a typed block, anything but the inline `base64` / `text` / `content` |
+| an object with `"type": "item_reference"` (OpenAI Responses) | always: it is an input item fetched from what the provider stored |
+
+What passes: text (a URL a message merely mentions is text — the rule reads field *names*, never the
+words inside `content` / `text` / `system`), `data:` URIs, Anthropic base64 / text / content sources,
+OpenAI `file_data`, and Ollama's `images` (base64 by the API's definition). The reference runtime
+(`example/agents/runtime/llm.ts`) sends only strings and passes on every family. The rule follows the
+reference rather than listing content types, so a part type added later is caught by the field that
+carries its reference; the price is that a JSON schema (structured output, Ollama `format`) with a
+property named `file_id`, or a `url` property whose value is a string instead of a schema, is refused
+too — the 403 names the path, so rename it.
 
 ## Waiting, and streaming (issue #166)
 
@@ -57,7 +89,7 @@ answer is complete — its own timeout, or the epoch ending — the proxy aborts
 streamed or not. The participant pays for the tokens (rules §2.5). The record says so
 (`"error": "client disconnected"`; status 499 when no answer had started).
 
-The operator caps neither input nor output tokens: the body is forwarded as written, so the limits are
+The operator caps neither input nor output tokens: a body that passes the checks above is forwarded as written, so the limits are
 the model's and the service's, plus whatever the agent's client asks for.
 
 ## Participant credentials (rules §2.5, issue #260)

@@ -910,3 +910,337 @@ test("/v1/responses forwards to the upstream's /responses; stored references are
     assert.equal(seen.length, 1);
   });
 });
+
+// ---- fetch by reference (rules §2.3: the proxy is the agent's only door, and the provider must not
+// become a second one) ----
+
+const PNG_DATA_URI =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+const PNG_BASE64 = PNG_DATA_URI.slice("data:image/png;base64,".length);
+// Data out in the query string, and whatever the image says back in.
+const EXFIL = "https://dead-drop.example/p.png?leak=0xabc";
+
+const REFERENCE_CASES: Array<{ name: string; path: string; body: Record<string, unknown>; rejected: string }> = [
+  {
+    name: "openai chat: an image_url part with an https url",
+    path: "/v1/chat/completions",
+    body: {
+      model: "gpt-x",
+      messages: [{ role: "user", content: [{ type: "text", text: "describe" }, { type: "image_url", image_url: { url: EXFIL, detail: "high" } }] }],
+    },
+    rejected: "messages[0].content[1].image_url.url",
+  },
+  {
+    name: "openai chat: an image_url given as a bare string",
+    path: "/v1/chat/completions",
+    body: { model: "gpt-x", messages: [{ role: "user", content: [{ type: "image_url", image_url: EXFIL }] }] },
+    rejected: "messages[0].content[0].image_url",
+  },
+  {
+    name: "openai chat: a file part naming a stored file",
+    path: "/v1/chat/completions",
+    body: { model: "gpt-x", messages: [{ role: "user", content: [{ type: "file", file: { file_id: "file-abc123" } }] }] },
+    rejected: "messages[0].content[0].file.file_id",
+  },
+  {
+    name: "openai responses: an input_image by URL",
+    path: "/v1/responses",
+    body: { model: "gpt-x", input: [{ role: "user", content: [{ type: "input_image", image_url: EXFIL }] }] },
+    rejected: "input[0].content[0].image_url",
+  },
+  {
+    name: "openai responses: an input_image by stored file",
+    path: "/v1/responses",
+    body: { model: "gpt-x", input: [{ role: "user", content: [{ type: "input_image", file_id: "file-abc123" }] }] },
+    rejected: "input[0].content[0].file_id",
+  },
+  {
+    name: "openai responses: an input_file by URL",
+    path: "/v1/responses",
+    body: { model: "gpt-x", input: [{ role: "user", content: [{ type: "input_file", file_url: "https://dead-drop.example/orders.pdf" }] }] },
+    rejected: "input[0].content[0].file_url",
+  },
+  {
+    name: "openai responses: an input_file by stored file",
+    path: "/v1/responses",
+    body: { model: "gpt-x", input: [{ role: "user", content: [{ type: "input_file", file_id: "file-abc123" }] }] },
+    rejected: "input[0].content[0].file_id",
+  },
+  {
+    name: "openai responses: an item fetched from what the provider stored",
+    path: "/v1/responses",
+    body: { model: "gpt-x", input: [{ role: "user", content: "hi" }, { type: "item_reference", id: "msg_abc" }] },
+    rejected: "input[1].type",
+  },
+  {
+    name: "anthropic: an image block with a url source",
+    path: "/v1/messages",
+    body: { model: "claude-y", max_tokens: 64, messages: [{ role: "user", content: [{ type: "image", source: { type: "url", url: EXFIL } }] }] },
+    rejected: "messages[0].content[0].source.type",
+  },
+  {
+    name: "anthropic: a document block with a stored-file source",
+    path: "/v1/messages",
+    body: { model: "claude-y", max_tokens: 64, messages: [{ role: "user", content: [{ type: "document", source: { type: "file", file_id: "file_011abc" } }] }] },
+    rejected: "messages[0].content[0].source.type",
+  },
+  {
+    name: "anthropic: a url source nested inside a tool_result",
+    path: "/v1/messages",
+    body: {
+      model: "claude-y",
+      max_tokens: 64,
+      messages: [
+        { role: "user", content: "go" },
+        { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "look", input: {} }] },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_1", content: [{ type: "document", source: { type: "url", url: "https://dead-drop.example/a.pdf" } }] }],
+        },
+      ],
+    },
+    rejected: "messages[2].content[0].content[0].source.type",
+  },
+  {
+    name: "anthropic: a source type that is not one of the inline ones",
+    path: "/v1/messages",
+    body: { model: "claude-y", max_tokens: 64, messages: [{ role: "user", content: [{ type: "image", source: { type: "s3", bucket: "b", key: "k" } }] }] },
+    rejected: "messages[0].content[0].source.type",
+  },
+  {
+    name: "anthropic: a stored file at the top level (not on this provider's key list; the walk catches it)",
+    path: "/v1/messages",
+    body: { model: "claude-y", max_tokens: 64, file_ids: ["file_011abc"], messages: [{ role: "user", content: "hi" }] },
+    rejected: "file_ids",
+  },
+  {
+    name: "a URL-named field a self-hosted server fetches (vLLM's video_url), whatever the part's type",
+    path: "/v1/chat/completions",
+    body: { model: "gpt-x", messages: [{ role: "user", content: [{ type: "video_url", video_url: { url: EXFIL } }] }] },
+    rejected: "messages[0].content[0].video_url.url",
+  },
+  {
+    name: "a camelCase stored-file id",
+    path: "/v1/chat/completions",
+    body: { model: "gpt-x", messages: [{ role: "user", content: [{ type: "file", file: { fileId: "file-abc" } }] }] },
+    rejected: "messages[0].content[0].file.fileId",
+  },
+  {
+    name: "URLs in an array under a URL-named field",
+    path: "/api/chat",
+    body: { model: "local-z", messages: [{ role: "user", content: "hi", image_urls: [PNG_DATA_URI, EXFIL] }] },
+    rejected: "messages[0].image_urls[1]",
+  },
+  {
+    name: "a URL behind whitespace (only a string that starts with data: is inline)",
+    path: "/v1/chat/completions",
+    body: { model: "gpt-x", messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: ` ${EXFIL}` } }] }] },
+    rejected: "messages[0].content[0].image_url.url",
+  },
+];
+
+test("anything that has the provider fetch by reference is refused at any depth, naming the first such field", async () => {
+  await withProxy({ config: unlimited }, async (base, seen) => {
+    for (const c of REFERENCE_CASES) {
+      const r = await post(base, c.path, c.body, { "x-eris-agent": "alice" });
+      assert.equal(r.status, 403, c.name);
+      const body = (await r.json()) as { error: string; rejected: string[] };
+      assert.deepEqual(body.rejected, [c.rejected], c.name);
+      assert.match(body.error, /fetch something by reference/, c.name);
+      assert.ok(body.error.includes(c.rejected), `${c.name}: the error names the path`);
+    }
+    assert.equal(seen.length, 0, "a refused request reaches no upstream");
+  });
+});
+
+test("the first offending field is named in document order", async () => {
+  await withProxy({ config: unlimited }, async (base) => {
+    const r = await post(base, "/v1/chat/completions", {
+      model: "gpt-x",
+      messages: [
+        { role: "user", content: [{ type: "image_url", image_url: { url: EXFIL } }] },
+        { role: "user", content: [{ type: "file", file: { file_id: "file-abc" } }] },
+      ],
+    });
+    assert.deepEqual(((await r.json()) as { rejected: string[] }).rejected, ["messages[0].content[0].image_url.url"]);
+  });
+});
+
+test("openai's built-in web search is refused like the other top-level keys", async () => {
+  await withProxy({ config: unlimited }, async (base, seen) => {
+    const r = await post(base, "/v1/chat/completions", {
+      model: "gpt-x",
+      web_search_options: {},
+      messages: [{ role: "user", content: "what is the price of ETH" }],
+    });
+    assert.equal(r.status, 403);
+    assert.deepEqual(((await r.json()) as { rejected: string[] }).rejected, ["web_search_options"]);
+    assert.equal(seen.length, 0);
+  });
+});
+
+test("inline content passes untouched: data: URIs, base64 sources, Ollama images, and text that mentions a URL", async () => {
+  const MENTION = "Read the docs at https://docs.example/strategy?x=1 before you revise.";
+  const allowed: Array<{ path: string; body: Record<string, unknown> }> = [
+    // Exactly what the reference runtime sends (example/agents/runtime/llm.ts), with a URL in the text.
+    {
+      path: "/v1/chat/completions",
+      body: {
+        model: "gpt-x",
+        messages: [{ role: "system", content: `brief ${MENTION}` }, { role: "user", content: MENTION }],
+        response_format: { type: "json_object" },
+        max_completion_tokens: 16000,
+      },
+    },
+    {
+      path: "/v1/responses",
+      body: {
+        model: "gpt-x",
+        instructions: MENTION,
+        input: [{ role: "user", content: MENTION }],
+        text: { format: { type: "json_object" } },
+        max_output_tokens: 16000,
+      },
+    },
+    {
+      path: "/api/chat",
+      body: {
+        model: "local-z",
+        stream: false,
+        format: "json",
+        messages: [{ role: "system", content: MENTION }, { role: "user", content: MENTION }],
+        options: { num_ctx: 32768, num_predict: 16000 },
+      },
+    },
+    {
+      path: "/v1/messages",
+      body: { model: "claude-y", max_tokens: 16000, system: MENTION, messages: [{ role: "user", content: MENTION }] },
+    },
+    // A message that is nothing but a URL is still text: the provider does not fetch it.
+    { path: "/v1/chat/completions", body: { model: "gpt-x", messages: [{ role: "user", content: EXFIL }] } },
+    // Inline images and files.
+    {
+      path: "/v1/chat/completions",
+      body: {
+        model: "gpt-x",
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: MENTION },
+            { type: "image_url", image_url: { url: PNG_DATA_URI, detail: "low" } },
+            { type: "file", file: { filename: "a.pdf", file_data: "data:application/pdf;base64,JVBERi0=" } },
+          ],
+        }],
+      },
+    },
+    {
+      path: "/v1/responses",
+      body: {
+        model: "gpt-x",
+        input: [{
+          role: "user",
+          content: [
+            { type: "input_text", text: MENTION },
+            { type: "input_image", image_url: PNG_DATA_URI },
+            { type: "input_file", filename: "a.pdf", file_data: "data:application/pdf;base64,JVBERi0=" },
+          ],
+        }],
+      },
+    },
+    {
+      path: "/v1/messages",
+      body: {
+        model: "claude-y",
+        max_tokens: 64,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/png", data: PNG_BASE64 } },
+            { type: "document", source: { type: "text", media_type: "text/plain", data: MENTION } },
+            { type: "document", source: { type: "content", content: [{ type: "text", text: MENTION }] } },
+            // A search result's `source` is a string it is attributed to, not a block to fetch.
+            { type: "search_result", source: "https://docs.example/a", title: "a", content: [{ type: "text", text: "x" }] },
+            { type: "text", text: MENTION },
+          ],
+        }],
+      },
+    },
+    { path: "/api/chat", body: { model: "local-z", stream: false, messages: [{ role: "user", content: MENTION, images: [PNG_BASE64] }] } },
+    // A JSON schema may describe a url field: its value is a schema (an object), not a reference.
+    {
+      path: "/v1/chat/completions",
+      body: {
+        model: "gpt-x",
+        messages: [{ role: "user", content: "hi" }],
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "out",
+            schema: {
+              $schema: "http://json-schema.org/draft-07/schema#",
+              type: "object",
+              properties: { url: { type: "string", format: "uri" }, source: { type: "string" } },
+            },
+          },
+        },
+      },
+    },
+  ];
+  await withProxy({ config: unlimited }, async (base, seen) => {
+    for (const [i, c] of allowed.entries()) {
+      const r = await post(base, c.path, c.body, { "x-eris-agent": "alice" });
+      assert.equal(r.status, 200, `case ${i} (${c.path}): ${await r.clone().text()}`);
+      // Forwarded as written, the model name aside.
+      assert.deepEqual({ ...seen[i].body, model: c.body.model }, c.body, `case ${i} is forwarded unchanged`);
+    }
+  });
+});
+
+test("a body nested past the bound, or holding too many values, is refused without being inspected", async () => {
+  let deep: unknown = "x";
+  for (let i = 0; i < 70; i++) deep = [deep];
+  const wide = Array.from({ length: 100_001 }, () => 0);
+  const manyKeys = Object.fromEntries(Array.from({ length: 100_001 }, (_, i) => [`k${i}`, 0]));
+  // Many small containers: each fits, the sum does not.
+  const spread = Array.from({ length: 30_000 }, () => [0, 0, 0]);
+  await withProxy({ config: unlimited }, async (base, seen) => {
+    for (const content of [deep, wide, manyKeys, spread]) {
+      const r = await post(base, "/v1/chat/completions", { model: "gpt-x", messages: [{ role: "user", content }] });
+      assert.equal(r.status, 403);
+      assert.match(((await r.json()) as { error: string }).error, /deeper than 64 levels or holds more than 100000 values/);
+    }
+    // Just inside the bound is inspected, and passes.
+    let ok: unknown = "x";
+    for (let i = 0; i < 60; i++) ok = [ok];
+    assert.equal((await post(base, "/v1/chat/completions", { model: "gpt-x", messages: [{ role: "user", content: ok }] })).status, 200);
+    assert.equal(seen.length, 1);
+  });
+});
+
+test("a reference refusal is not a call: it spends no rate limit, takes no number, and leaves replay in step", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-proxy-ref-"));
+  const limited = { ...config, maxCallsPerMinute: 2 };
+  let n = 0;
+  const numbered: Upstream = () =>
+    new Response(JSON.stringify({ call: ++n }), { status: 200, headers: { "content-type": "application/json" } });
+  const h = { "x-eris-agent": "alice" };
+  const refused = REFERENCE_CASES[0];
+  const ok = { model: "gpt-x", messages: [{ role: "user", content: "hi" }] };
+  await withProxy({ recordDir: dir, config: limited, upstream: numbered }, async (base, seen) => {
+    for (let i = 0; i < 3; i++) assert.equal((await post(base, refused.path, refused.body, h)).status, 403);
+    assert.equal((await post(base, "/v1/chat/completions", ok, h)).status, 200, "the minute is untouched");
+    assert.equal((await post(base, refused.path, refused.body, h)).status, 403);
+    assert.equal((await post(base, "/v1/chat/completions", ok, h)).status, 200);
+    assert.equal((await post(base, "/v1/chat/completions", ok, h)).status, 429, "two real calls spend it");
+    assert.equal(seen.length, 2);
+    assert.deepEqual(recorded(dir, "alice").map((l) => l.seq), [1, 2], "refusals take no number and leave no record");
+  });
+  // Replay refuses the same request the same way, before the queue, so the recorded answers stay in order.
+  await withProxy({ replayDir: dir, config: unlimited }, async (base, seen) => {
+    assert.equal((await post(base, refused.path, refused.body, h)).status, 403);
+    assert.deepEqual(await (await post(base, "/v1/chat/completions", ok, h)).json(), { call: 1 });
+    assert.equal((await post(base, refused.path, refused.body, h)).status, 403);
+    assert.deepEqual(await (await post(base, "/v1/chat/completions", ok, h)).json(), { call: 2 });
+    assert.equal(seen.length, 0);
+  });
+});
