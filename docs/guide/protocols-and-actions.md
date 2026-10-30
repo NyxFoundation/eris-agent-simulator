@@ -84,7 +84,7 @@ Mock oracles (`contracts/MockAggregator.sol` / `contracts/MockOracleProvider.sol
 
 GMX is async (order creation → keeper execution). In realtime, each block advances via interval mining, and after each block (`afterMine`) the coordinator reads the `OrderCreated` logs of the latest block and executes each order as the keeper. Intra-block ordering is determined by anvil's `--order fees` (descending priority fee). GMX position changes become visible to agents about one block late. GMX actions can only be sent alone (no bundling).
 
-The keeper executes **market orders only** (`MarketSwap` / `MarketIncrease` / `MarketDecrease`, what `gmxIncrease` / `gmxDecrease` create). It also does not execute an order that sets a `callbackContract`. A limit, stop or stop-loss order sent with `rawTx` is read, refused and recorded as a `keeper_order_refused` event. It is never executed or retried, even after its trigger price is reached. Its collateral and execution fee stay in GMX's OrderVault, count for nothing while they sit there, and come back only when you cancel the order yourself (`ExchangeRouter.cancelOrder`; GMX allows a non-market order to be cancelled at any time). Why: the keeper tries each order once, in the next block, at a price written before that block is mined, so a stop re-armed every block would fill at the first price of a move that every other order sees a block late.
+The keeper executes **market orders only** (`MarketSwap` / `MarketIncrease` / `MarketDecrease`, what `gmxIncrease` / `gmxDecrease` create). It also does not execute an order that sets a `callbackContract`, or one that would leave a position over the leverage line ([below](#gmx-leverage-cap-and-liquidation-shortfalls)). A limit, stop or stop-loss order sent with `rawTx` is read, refused and recorded as a `keeper_order_refused` event. It is never executed or retried, even after its trigger price is reached. Its collateral and execution fee stay in GMX's OrderVault, count for nothing while they sit there, and come back only when you cancel the order yourself (`ExchangeRouter.cancelOrder`; GMX allows a non-market order to be cancelled at any time). Why: the keeper tries each order once, in the next block, at a price written before that block is mined, so a stop re-armed every block would fill at the first price of a move that every other order sees a block late.
 
 ```mermaid
 sequenceDiagram
@@ -102,15 +102,45 @@ sequenceDiagram
 
 **Leverage is capped at ~5.05x** (`MIN_COLLATERAL_FACTOR` = 0.198 for every market; the manifest's
 `limits.gmxMaxLeverage` and `obs.protocols.gmx.maxLeverage` / `markets[*].maxLeverage` carry it).
-GMX itself enforces it inside the keeper's `executeOrder`, measured as size / equity (collateral +
-PnL + price impact − fees) at the oracle price:
+It is measured as size / equity (collateral + PnL + price impact − fees; for an increase or a
+withdrawal also size / collateral alone, PnL not counted) at the **execution price**: the oracle price
+of the block your order executes in, a block or two after the price you acted on.
 
-- An increase that would leave the position above the cap is **cancelled by GMX, with the collateral
-  and the execution fee refunded in the same transaction**. Leave room for the opening fee
-  (0.04–0.06% of size): an order at exactly 5.00x passes, one at 5.05x does not.
-- A decrease that withdraws collateral below the cap has the withdrawal set to zero (with no size,
-  the order is cancelled). A partial decrease that would leave the rest above the cap is cancelled.
-  **A full close always executes.**
+**The keeper checks it before GMX does, at 98% of the cap (~4.95x; the manifest's
+`limits.gmxKeeperMaxLeverage`).** For every order it is about to execute, it computes the position
+the order would leave at the execution price, fees on both ends included. It does not execute:
+
+- an increase (either collateral) that would leave the position above that line;
+- a decrease that withdraws collateral and would leave the rest above it (collateral alone is
+  counted, so being in profit does not help a withdrawal);
+- a partial decrease that would leave the rest above it.
+
+**An order the keeper does not execute is not refunded.** Like a refused limit order (above), it
+stays in GMX's OrderVault, counts for nothing while it sits there, and is recorded as a
+`keeper_order_refused` event. A market order can only be cancelled after `requestExpirationTime`
+(**300 s = 150 blocks**): call `ExchangeRouter.cancelOrder` then to get the collateral and the
+execution fee back. For example, a WETH-collateral long sized near the cap at the price you observed
+is refused if a down gap hits before it executes: the collateral is worth less and the position is
+already losing, so the same order is well over the line, and your WETH is locked for 300 s.
+
+Why not let GMX handle it: GMX cancels an over-cap market order and refunds everything in the same
+transaction, at no cost (the minimum execution fee is 0 at a tip of 0). An order sized just over the
+cap was therefore a free stop order, filled only after the price had moved in its favour and handed
+back otherwise, to be sent again the next block. The 2% margin keeps GMX's own check (still there as
+a backstop) from ever being the one that decides.
+
+- **The reference runtime does not send** an increase or a collateral withdrawal above **90% of the
+  cap (~4.5x) at the price in your observation** (`validate` rejects it with the leverage it computed).
+  Leave that room: the price moves between your observation and the execution, by 10% a block inside a
+  crash or spike gap. A partial decrease is sent regardless; if it is refused only its execution fee
+  waits 300 s.
+- **One order per position per block.** A second order on the same position (account, market,
+  collateral token, side) in the same block waits for the next block, and is checked against the
+  position the first one left.
+- An increase with a `swapPath` (collateral swapped on the way in) is refused: the keeper cannot check
+  collateral it cannot price before the swap. Post the market's long token or USDC directly.
+- Not held to the cap: adding collateral (an increase of size 0) and **a full close, which always
+  executes.**
 - Liquidation is unchanged: at 1% equity.
 
 Why 5x: the official regimes gap the price by up to 32% (spike, over a 2–3 block ramp, never

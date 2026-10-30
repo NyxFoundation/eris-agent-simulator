@@ -44,7 +44,9 @@
  *                                below the per-round cap
  *   ERIS_BASIS_HEDGE_TOL_USD     leave the hedge alone while the gap is under this (default 200)
  *   ERIS_BASIS_HEDGE_LEVERAGE    perp size / collateral (default 2). The perp is liquidated on its
- *                                own numbers -- GMX cannot see that the spot leg offsets it.
+ *                                own numbers -- GMX cannot see that the spot leg offsets it. Keep it
+ *                                under ~4.5: the runtime does not send an increase over 90% of the
+ *                                ~5.05x cap, and the keeper does not execute one over 98%.
  *   ERIS_BASIS_HEDGE_INVENTORY   "1" = also hedge the funded basket, not just what was acquired
  *   ERIS_BASIS_BLOCK_SECONDS     seconds per block, for the funding rate conversion (default 2)
  */

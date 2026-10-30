@@ -246,7 +246,8 @@ export interface ProtocolAdapter {
       fromBlock?: bigint;
       toBlock?: bigint;
       // A keeper that read an order and declined to execute it says so here (gmx: an order with a
-      // participant callback, or one that is not a market order). Without it the adapter writes to stderr.
+      // participant callback, one that is not a market order, an increase with a swap path, or one
+      // over the leverage cap at the execution price). Without it the adapter writes to stderr.
       onOrderRefused?: (refusal: {
         key: string;
         account: string;
@@ -255,10 +256,19 @@ export interface ProtocolAdapter {
         // GMX Order.OrderType; -1 when the order could not be read.
         orderType: number;
         reason: string;
+        // A refusal for the leverage cap: the share of the cap and the leverage the order would
+        // have left at the execution price (gmx: protocols/gmxLeverage.ts).
+        capUse?: number;
+        leverage?: number;
       }) => void;
-      // Issue #225: the GMX keeper had more executable orders than MAX_ORDER_FILLS_PER_BLOCK; how
-      // many went this pass and how many wait for the next.
-      onOrdersDeferred?: (report: { sent: number; deferred: number }) => void;
+      // The GMX keeper left orders for the next pass: more were executable than
+      // MAX_ORDER_FILLS_PER_BLOCK (issue #225), or `samePosition` of them touch a position an earlier
+      // order of the pass already does. How many went this pass and how many wait.
+      onOrdersDeferred?: (report: {
+        sent: number;
+        deferred: number;
+        samePosition?: number;
+      }) => void;
     },
   ): Promise<void>;
 

@@ -580,11 +580,13 @@ export type GmxMarketObservation = {
   // strategy — or the revision loop — would draw the wrong conclusion from a pre-funding state
   // dump.
   fundingModeled?: boolean;
-  // The highest leverage this market accepts (size / equity at the oracle price; ~5.05 in the
-  // official regimes, sdk protocols/gmxKeys.ts GMX_MAX_LEVERAGE). GMX cancels an increase that would
-  // leave the position above it -- collateral and execution fee refunded in the same transaction --
-  // and a partial decrease that would; a full close always goes through. Read from the DataStore;
-  // absent when the read failed.
+  // GMX's leverage cap for this market (size / equity at the oracle price; ~5.05 in the official
+  // regimes, sdk protocols/gmxKeys.ts GMX_MAX_LEVERAGE). Read from the DataStore; absent when the read
+  // failed. The keeper does not execute an increase, a collateral withdrawal or a partial decrease
+  // that would leave the position over 98% of it (~4.95x) at the execution price, and does not
+  // refund it: the order stays in the OrderVault until you cancel it after 300 s (sdk
+  // protocols/gmxLeverage.ts). The reference runtime does not send one over 90% at the price you
+  // observed. A full close always goes through.
   maxLeverage?: number;
 };
 

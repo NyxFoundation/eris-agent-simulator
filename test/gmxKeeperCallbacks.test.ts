@@ -67,12 +67,39 @@ const executeOrderAbi = [
 ] as const;
 
 type StubOrder = {
-  account: Address;
+  // Omitted = an account of the order's own: the keeper executes one order per position a block
+  // (keeperOrderPlan), and these tests are about which orders run, not about positions.
+  account?: Address;
   callbackContract: Address;
   callbackGasLimit: bigint;
   // Omitted = MarketIncrease, the type every SDK action creates.
   orderType?: number;
 };
+
+// Order.Props as Reader.getOrder returns it. A collateral deposit (no size) on the ETH/USD market:
+// GMX does not apply the leverage cap to one, so the keeper reads nothing more before executing it
+// (gmxKeeperLeverage.test.ts drives the cap check).
+function orderProps(key: Hex, order: StubOrder) {
+  return {
+    addresses: {
+      account: order.account ?? getAddress(`0x${key.slice(-40)}`),
+      receiver: zeroAddress,
+      cancellationReceiver: zeroAddress,
+      callbackContract: order.callbackContract,
+      uiFeeReceiver: zeroAddress,
+      market: MARKETS.WETH,
+      initialCollateralToken: zeroAddress,
+      swapPath: [],
+    },
+    numbers: {
+      orderType: order.orderType ?? GMX_ORDER_TYPE.MarketIncrease,
+      sizeDeltaUsd: 0n,
+      initialCollateralDeltaAmount: 0n,
+      callbackGasLimit: order.callbackGasLimit,
+    },
+    flags: { isLong: true },
+  };
+}
 
 function stubCtx(orders: Map<Hex, StubOrder | Error>): {
   ctx: SimContext;
@@ -99,21 +126,14 @@ function stubCtx(orders: Map<Hex, StubOrder | Error>): {
         assert.equal(call.functionName, "getOrder");
         const order = orders.get(call.args[1]);
         if (order === undefined)
-          return {
-            addresses: { account: zeroAddress, callbackContract: zeroAddress },
-            numbers: { callbackGasLimit: 0n, orderType: 0 },
-          };
+          return orderProps(call.args[1], {
+            account: zeroAddress,
+            callbackContract: zeroAddress,
+            callbackGasLimit: 0n,
+            orderType: 0,
+          });
         if (order instanceof Error) throw order;
-        return {
-          addresses: {
-            account: order.account,
-            callbackContract: order.callbackContract,
-          },
-          numbers: {
-            callbackGasLimit: order.callbackGasLimit,
-            orderType: order.orderType ?? GMX_ORDER_TYPE.MarketIncrease,
-          },
-        };
+        return orderProps(call.args[1], order);
       },
     },
     walletClient: {
@@ -167,12 +187,11 @@ test("the keeper executes only the orders without a callback, and reports the re
   const orders = new Map<Hex, StubOrder | Error>([
     [
       key(1),
-      { account: ACCOUNT, callbackContract: zeroAddress, callbackGasLimit: 0n },
+      { callbackContract: zeroAddress, callbackGasLimit: 0n },
     ],
     [
       key(2),
       {
-        account: ACCOUNT,
         callbackContract: CALLBACK,
         callbackGasLimit: 2_000_000n,
       },
@@ -180,7 +199,7 @@ test("the keeper executes only the orders without a callback, and reports the re
     [key(3), new Error("rpc timeout\nmore")],
     [
       key(5),
-      { account: ACCOUNT, callbackContract: zeroAddress, callbackGasLimit: 0n },
+      { callbackContract: zeroAddress, callbackGasLimit: 0n },
     ],
   ]);
   // key(4): created and already gone (executed or cancelled) -- Reader returns an empty order.
@@ -254,7 +273,7 @@ test("market swaps, increases and decreases pass; limit, stop and liquidation or
 
 test("the keeper sends no executeOrder for a stop or limit order and reports it", async () => {
   resetKeeperOrderQueue();
-  const plain = { account: ACCOUNT, callbackContract: zeroAddress, callbackGasLimit: 0n };
+  const plain = { callbackContract: zeroAddress, callbackGasLimit: 0n };
   const orders = new Map<Hex, StubOrder | Error>([
     [key(1), { ...plain, orderType: GMX_ORDER_TYPE.StopIncrease }],
     [key(2), { ...plain, orderType: GMX_ORDER_TYPE.MarketIncrease }],
@@ -341,7 +360,7 @@ test("the keeper fills at most MAX_ORDER_FILLS_PER_BLOCK orders a pass and carri
   resetKeeperOrderQueue();
   const orders = new Map<Hex, StubOrder | Error>();
   for (let n = 1; n <= MAX_ORDER_FILLS_PER_BLOCK + 2; n++)
-    orders.set(key(n), { account: ACCOUNT, callbackContract: zeroAddress, callbackGasLimit: 0n });
+    orders.set(key(n), { callbackContract: zeroAddress, callbackGasLimit: 0n });
   const { ctx, executed } = stubCtx(orders);
   const deferred: Array<{ sent: number; deferred: number }> = [];
   await gmxAdapter.afterMine!(ctx, {
@@ -370,7 +389,7 @@ test("an order deferred and cancelled before its turn is dropped, not filled lat
   resetKeeperOrderQueue();
   const orders = new Map<Hex, StubOrder | Error>();
   for (let n = 1; n <= MAX_ORDER_FILLS_PER_BLOCK + 1; n++)
-    orders.set(key(n), { account: ACCOUNT, callbackContract: zeroAddress, callbackGasLimit: 0n });
+    orders.set(key(n), { callbackContract: zeroAddress, callbackGasLimit: 0n });
   const { ctx, executed } = stubCtx(orders);
   await gmxAdapter.afterMine!(ctx, { noMine: true, fromBlock: 10n, toBlock: 10n });
   assert.equal(executed.length, MAX_ORDER_FILLS_PER_BLOCK);

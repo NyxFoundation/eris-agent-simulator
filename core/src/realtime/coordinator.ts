@@ -4819,16 +4819,23 @@ export async function runRealtimeSimulation(
                       // -1 when the order could not be read.
                       orderType: refusal.orderType,
                       reason: refusal.reason,
+                      // A refusal for the leverage cap: the share of the cap and the leverage the
+                      // order would have left at the execution price (sdk gmxLeverage.ts).
+                      ...(refusal.capUse !== undefined
+                        ? { capUse: refusal.capUse, leverage: refusal.leverage }
+                        : {}),
                     }),
                   // Issue #225: fills past the per-block bound wait for the next pass. Recorded so a
-                  // run can say how often the bound bit and how long the queue got.
-                  onOrdersDeferred: ({ sent, deferred }) =>
+                  // run can say how often the bound bit and how long the queue got. `samePosition`:
+                  // how many waited because an earlier order of the pass touches their position.
+                  onOrdersDeferred: ({ sent, deferred, samePosition }) =>
                     logger.event({
                       type: "keeper_orders_deferred",
                       protocol: adapter.id,
                       blockNumber: bn,
                       sent,
                       deferred,
+                      ...(samePosition !== undefined ? { samePosition } : {}),
                     }),
                 });
               } catch (error) {

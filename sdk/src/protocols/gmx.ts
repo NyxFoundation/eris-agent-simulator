@@ -35,12 +35,26 @@ import {
   gmxSavedFundingKey,
   gmxSideCapUsd,
   gmxMaxLeverageFromFactor,
+  gmxMaxPositionImpactFactorForLiquidationsKey,
+  gmxMinCollateralFactorForOiMultiplierKey,
   gmxMinCollateralFactorKey,
+  gmxPositionFeeFactorKey,
+  gmxPositionKey,
   GMX_MAX_LEVERAGE,
+  GMX_MAX_UI_FEE_FACTOR_KEY,
   GMX_MIN_COLLATERAL_FACTOR,
   type GmxFundingFields,
 } from "./gmxKeys.js";
 import type { GmxOpenPositionPnl } from "./gmxInsolvency.js";
+import {
+  gmxCapRefusal,
+  gmxCapUse,
+  GMX_ASSUMED_POSITION_FEE_FACTOR,
+  GMX_KEEPER_CAP_USE,
+  GMX_RUNTIME_CAP_USE,
+  type GmxCapPosition,
+  type GmxCapUse,
+} from "./gmxLeverage.js";
 import {
   accountAddress,
   increaseTime,
@@ -315,8 +329,9 @@ const exchangeRouterAbi = [
   },
 ] as const;
 
-// Order.Props as Reader.getOrder returns it (gmx-synthetics contracts/order/Order.sol). Only the
-// account, callback and order type are read (gmxKeeperRefusal); the rest is declared so the tuple decodes.
+// Order.Props as Reader.getOrder returns it (gmx-synthetics contracts/order/Order.sol). The keeper
+// reads the account, callback and order type (gmxKeeperRefusal) and the position the order touches
+// and by how much (keeperOrderPlan); the rest is declared so the tuple decodes.
 const orderPropsComponents = [
   {
     name: "addresses",
@@ -393,8 +408,16 @@ export type GmxKeeperOrder = {
   orderType: number;
 };
 
-/** An order the keeper read and did not execute, and why. */
-export type GmxKeeperRefusal = GmxKeeperOrder & { key: Hex; reason: string };
+/**
+ * An order the keeper read and did not execute, and why. A refusal for the leverage cap also says
+ * how much of the cap the order would have used at the execution price (gmxLeverage.ts).
+ */
+export type GmxKeeperRefusal = GmxKeeperOrder & {
+  key: Hex;
+  reason: string;
+  capUse?: number;
+  leverage?: number;
+};
 
 /**
  * Why the keeper must not execute this order, or null if it may.
@@ -444,17 +467,77 @@ export function gmxKeeperRefusal(order: GmxKeeperOrder): string | null {
   return null;
 }
 
+/** Order.Props narrowed to what the keeper reads: GmxKeeperOrder plus the position the order touches. */
+type GmxKeeperReadOrder = GmxKeeperOrder & {
+  key: Hex;
+  market: Address;
+  // The position's collateral token, for an order with no swap path (the only kind executed).
+  collateralToken: Address;
+  swapPath: readonly Address[];
+  isLong: boolean;
+  sizeDeltaUsd: bigint;
+  // Increase: the collateral in the OrderVault. Decrease: the collateral to withdraw.
+  collateralDeltaAmount: bigint;
+};
+
+function isPositionOrder(orderType: number): boolean {
+  return (
+    orderType === GMX_ORDER_TYPE.MarketIncrease ||
+    orderType === GMX_ORDER_TYPE.MarketDecrease
+  );
+}
+
 /**
- * The keys the keeper may execute, in order. Each order is read before it is executed; one that
- * cannot be read is not executed either (fail closed: it is usually an order already cancelled or
- * executed, which executeOrder would revert on anyway, and otherwise an order whose callback the
- * keeper cannot rule out).
+ * Why the keeper refuses an increase that swaps its collateral on the way in, or null. GMX posts
+ * whatever the swap path yields, and that amount -- after the swap's fee and impact -- is not known
+ * until the swap executes, so the leverage the order would leave cannot be checked before GMX checks
+ * it (gmxLeverage.ts). The SDK never builds one; post the market's long token or USDC directly. A
+ * decrease's swap path only converts what it pays out, so it is not refused.
  */
-async function keeperExecutableKeys(
+export function gmxKeeperSwapPathRefusal(order: {
+  orderType: number;
+  swapPath: readonly Address[];
+}): string | null {
+  if (order.orderType !== GMX_ORDER_TYPE.MarketIncrease || order.swapPath.length === 0)
+    return null;
+  return (
+    `increase swaps its collateral through ${order.swapPath.length} market(s): the keeper cannot ` +
+    `check the leverage cap on collateral it cannot price before the swap, so it does not execute ` +
+    `it (post the market's long token or USDC directly; the collateral stays in the OrderVault ` +
+    `until the account cancels the order)`
+  );
+}
+
+/** What the keeper does with a pass's orders: execute these now, carry those to the next pass. */
+type GmxKeeperPlan = {
+  execute: Hex[];
+  defer: Hex[];
+  // Of `defer`, those held back because an earlier order of this pass touches the same position.
+  deferredSamePosition: number;
+};
+
+/**
+ * Which orders the keeper executes this pass, in arrival order, and which wait for the next.
+ *
+ * Each order is read before it is executed; one that cannot be read is not executed either (fail
+ * closed: it is usually an order already cancelled or executed, which executeOrder would revert on
+ * anyway, and otherwise an order whose callback the keeper cannot rule out). Refused outright: what
+ * gmxKeeperRefusal refuses, an increase with a swap path, and an order that would leave its position
+ * over GMX_KEEPER_CAP_USE of the leverage cap at the prices it executes at (keeperCapChecks). A
+ * refused order is reported and never retried.
+ *
+ * At most `limit` execute (issue #225), and at most one per position: the cap check reads the
+ * position as it stands, so a second order on it in the same block would be judged against a
+ * position the first one has already changed -- and GMX, which judges it after the first, could then
+ * reach its own cancel-and-refund. It waits a block and is checked against the position the first
+ * left. Swaps touch no position.
+ */
+async function keeperOrderPlan(
   ctx: SimContext,
   keys: readonly Hex[],
+  limit: number,
   onRefused?: (refusal: GmxKeeperRefusal) => void,
-): Promise<Hex[]> {
+): Promise<GmxKeeperPlan> {
   const report = (refusal: GmxKeeperRefusal): void => {
     if (onRefused) onRefused(refusal);
     else
@@ -483,7 +566,7 @@ async function keeperExecutableKeys(
       }
     }),
   );
-  const out: Hex[] = [];
+  const live: GmxKeeperReadOrder[] = [];
   for (const r of reads) {
     if (!("order" in r) || r.order === undefined) {
       report({
@@ -504,9 +587,324 @@ async function keeperExecutableKeys(
     };
     // Reader.getOrder returns an empty struct for a key with no order (already executed or cancelled).
     if (order.account === zeroAddress) continue;
-    const reason = gmxKeeperRefusal(order);
+    const read: GmxKeeperReadOrder = {
+      ...order,
+      key: r.key,
+      market: r.order.addresses.market,
+      collateralToken: r.order.addresses.initialCollateralToken,
+      swapPath: r.order.addresses.swapPath,
+      isLong: r.order.flags.isLong,
+      sizeDeltaUsd: r.order.numbers.sizeDeltaUsd,
+      collateralDeltaAmount: r.order.numbers.initialCollateralDeltaAmount,
+    };
+    const reason = gmxKeeperRefusal(order) ?? gmxKeeperSwapPathRefusal(read);
     if (reason) report({ key: r.key, ...order, reason });
-    else out.push(r.key);
+    else live.push(read);
+  }
+
+  const caps = await keeperCapChecks(ctx, live);
+  const plan: GmxKeeperPlan = { execute: [], defer: [], deferredSamePosition: 0 };
+  const touched = new Set<Hex>();
+  for (const order of live) {
+    if (plan.execute.length >= limit) {
+      plan.defer.push(order.key);
+      continue;
+    }
+    const position = isPositionOrder(order.orderType)
+      ? gmxPositionKey(order.account, order.market, order.collateralToken, order.isLong)
+      : undefined;
+    if (position && touched.has(position)) {
+      plan.defer.push(order.key);
+      plan.deferredSamePosition += 1;
+      continue;
+    }
+    const refusal = {
+      key: order.key,
+      account: order.account,
+      callbackContract: order.callbackContract,
+      callbackGasLimit: order.callbackGasLimit,
+      orderType: order.orderType,
+    };
+    const cap = caps.get(order.key);
+    if (cap && "error" in cap) {
+      report({
+        ...refusal,
+        reason: `leverage could not be checked, so the order is not executed: ${cap.error}`,
+      });
+      continue;
+    }
+    const reason =
+      cap &&
+      gmxCapRefusal(cap.use, {
+        maxUse: GMX_KEEPER_CAP_USE,
+        maxLeverage: cap.maxLeverage,
+        where: "the execution price",
+      });
+    if (reason && cap.use) {
+      report({
+        ...refusal,
+        reason:
+          `${reason}; not executed (GMX's own check would hand an order over the cap back at no ` +
+          `cost), and not refunded: the collateral and execution fee stay in the OrderVault until ` +
+          `the account cancels the order (requestExpirationTime, 300 s)`,
+        ...(Number.isFinite(cap.use.capUse)
+          ? {
+              capUse: Math.round(cap.use.capUse * 1e4) / 1e4,
+              leverage: Math.round(cap.use.leverage * 100) / 100,
+            }
+          : {}),
+      });
+      continue;
+    }
+    plan.execute.push(order.key);
+    if (position) touched.add(position);
+  }
+  return plan;
+}
+
+// The inputs of the cap check the keeper reads per order (gmxLeverage.ts): an order GMX does not
+// check against the cap has no entry, one whose inputs could not be read has an error.
+type GmxKeeperCapCheck =
+  | { use: GmxCapUse | null; maxLeverage: number }
+  | { error: string };
+
+// Reader.getPositionInfo, narrowed to what the cap check reads.
+type GmxCapPositionInfo = {
+  fees: {
+    funding: { fundingFeeAmount: bigint };
+    borrowing: { borrowingFeeAmount: bigint };
+  };
+  executionPriceResult: { totalImpactUsd: bigint };
+  basePnlUsd: bigint;
+};
+
+/** An order whose execution GMX checks against the cap (gmxCapUse returns non-null for it). */
+function needsCapCheck(order: GmxKeeperReadOrder): boolean {
+  if (order.orderType === GMX_ORDER_TYPE.MarketIncrease)
+    return order.sizeDeltaUsd > 0n;
+  if (order.orderType === GMX_ORDER_TYPE.MarketDecrease)
+    return order.sizeDeltaUsd > 0n || order.collateralDeltaAmount > 0n;
+  return false;
+}
+
+/**
+ * How much of the leverage cap each order would use, at the prices the keeper will execute it at.
+ *
+ * Those are ctx.fairPrices: the coordinator sets them for the next block before the keeper runs and
+ * writes the same numbers into the mock oracle provider (gmxOracleStorageWrites / updateGmxOracle),
+ * which is what GMX reads inside executeOrder. One batch: per market the factors GMX applies, per
+ * order its position as the Reader prices it at those prices (PnL as GMX caps it, the borrowing and
+ * funding it owes, the impact a close would realize). Fail closed: a market, price or position that
+ * cannot be read is an error, and the order is not executed.
+ */
+async function keeperCapChecks(
+  ctx: SimContext,
+  orders: readonly GmxKeeperReadOrder[],
+): Promise<Map<Hex, GmxKeeperCapCheck>> {
+  const out = new Map<Hex, GmxKeeperCapCheck>();
+  const checked = orders.filter(needsCapCheck);
+  if (checked.length === 0) return out;
+  const fail = (order: GmxKeeperReadOrder, error: string): void => {
+    out.set(order.key, { error });
+  };
+  let props: Map<string, MarketProps>;
+  try {
+    props = await resolveMarketProps(ctx.publicClient, [
+      ...new Set(checked.map((o) => o.market)),
+    ]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
+    for (const order of checked) fail(order, `markets could not be read: ${message}`);
+    return out;
+  }
+  const fairByBase = { ...(ctx.fairPrices ?? {}) };
+  const same = (a: Address, b: Address) => a.toLowerCase() === b.toLowerCase();
+
+  const calls: unknown[] = [];
+  const call = (c: unknown): number => calls.push(c) - 1;
+  const getUint = (key: Hex): number =>
+    call({
+      address: GMX.DataStore,
+      abi: gmxDataStoreReadAbi,
+      functionName: "getUint",
+      args: [key],
+    });
+  const uiFeeAt = getUint(GMX_MAX_UI_FEE_FACTOR_KEY);
+  type MarketReads = {
+    minCollateralFactor: number;
+    positionFee: [number, number];
+    impactForLiquidations: number;
+    // By side: [long, short].
+    oiMultiplier: [number, number];
+    openInterest: [[number, number], [number, number]];
+  };
+  const marketReads = new Map<string, MarketReads>();
+  const pending: Array<{
+    order: GmxKeeperReadOrder;
+    reads: MarketReads;
+    collateralPrice: bigint;
+    position: number;
+    info: number;
+  }> = [];
+  for (const order of checked) {
+    const market = props.get(order.market.toLowerCase());
+    if (!market) {
+      fail(order, `market ${order.market} could not be read`);
+      continue;
+    }
+    const index = gmxTokenPrice(market.indexToken, fairByBase);
+    const long = gmxTokenPrice(market.longToken, fairByBase);
+    const short = gmxTokenPrice(market.shortToken, fairByBase);
+    if (!index || !long || !short) {
+      fail(order, `no execution price for a token of market ${order.market}`);
+      continue;
+    }
+    const collateralPrice = same(order.collateralToken, market.longToken)
+      ? long.min
+      : same(order.collateralToken, market.shortToken)
+        ? short.min
+        : undefined;
+    if (collateralPrice === undefined) {
+      // Not one of the market's tokens: GMX cancels it at any price, which conditions on nothing.
+      out.set(order.key, { use: null, maxLeverage: GMX_MAX_LEVERAGE });
+      continue;
+    }
+    const m = market.marketToken;
+    let reads = marketReads.get(m.toLowerCase());
+    if (!reads) {
+      const side = (isLong: boolean): [number, number] => [
+        getUint(gmxOpenInterestKey(m, market.longToken, isLong)),
+        getUint(gmxOpenInterestKey(m, market.shortToken, isLong)),
+      ];
+      reads = {
+        minCollateralFactor: getUint(gmxMinCollateralFactorKey(m)),
+        positionFee: [
+          getUint(gmxPositionFeeFactorKey(m, true)),
+          getUint(gmxPositionFeeFactorKey(m, false)),
+        ],
+        impactForLiquidations: getUint(gmxMaxPositionImpactFactorForLiquidationsKey(m)),
+        oiMultiplier: [
+          getUint(gmxMinCollateralFactorForOiMultiplierKey(m, true)),
+          getUint(gmxMinCollateralFactorForOiMultiplierKey(m, false)),
+        ],
+        openInterest: [side(true), side(false)],
+      };
+      marketReads.set(m.toLowerCase(), reads);
+    }
+    const positionKey = gmxPositionKey(
+      order.account,
+      order.market,
+      order.collateralToken,
+      order.isLong,
+    );
+    const prices = {
+      indexTokenPrice: index,
+      longTokenPrice: long,
+      shortTokenPrice: short,
+    };
+    pending.push({
+      order,
+      reads,
+      collateralPrice,
+      position: call({
+        address: GMX.Reader,
+        abi: readerAbi,
+        functionName: "getPosition",
+        args: [GMX.DataStore, positionKey],
+      }),
+      // Reverts (EmptyPosition) when there is none, which getPosition tells apart.
+      info: call({
+        address: GMX.Reader,
+        abi: readerAbi,
+        functionName: "getPositionInfo",
+        args: [GMX.DataStore, zeroAddress, positionKey, prices, 0n, zeroAddress, true],
+      }),
+    });
+  }
+  if (pending.length === 0) return out;
+
+  let results: Array<{ status: "success" | "failure"; result?: unknown; error?: unknown }>;
+  try {
+    results = (await ctx.publicClient.multicall({
+      contracts: calls as never,
+      allowFailure: true,
+    })) as typeof results;
+  } catch (error) {
+    const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
+    for (const p of pending) fail(p.order, `cap inputs could not be read: ${message}`);
+    return out;
+  }
+  const uint = (i: number): bigint | undefined => {
+    const r = results[i];
+    return r?.status === "success" && typeof r.result === "bigint" ? r.result : undefined;
+  };
+  const uiFee = uint(uiFeeAt);
+  for (const { order, reads, collateralPrice, position, info } of pending) {
+    const sideAt = order.isLong ? 0 : 1;
+    const factor = uint(reads.minCollateralFactor);
+    const feeImproved = uint(reads.positionFee[0]);
+    const feeWorsened = uint(reads.positionFee[1]);
+    const impactForLiquidations = uint(reads.impactForLiquidations);
+    const oiMultiplier = uint(reads.oiMultiplier[sideAt]);
+    const oiCells = reads.openInterest[sideAt].map(uint);
+    if (
+      factor === undefined ||
+      feeImproved === undefined ||
+      feeWorsened === undefined ||
+      uiFee === undefined ||
+      impactForLiquidations === undefined ||
+      oiMultiplier === undefined ||
+      oiCells.some((v) => v === undefined)
+    ) {
+      fail(order, `the market's cap factors could not be read (${order.market})`);
+      continue;
+    }
+    const positionRead = results[position];
+    if (positionRead?.status !== "success") {
+      fail(order, "the position could not be read");
+      continue;
+    }
+    const current = positionRead.result as Position;
+    let capPosition: GmxCapPosition | undefined;
+    if (current.numbers.sizeInUsd > 0n) {
+      const infoRead = results[info];
+      if (infoRead?.status !== "success") {
+        fail(order, "the position could not be priced");
+        continue;
+      }
+      const priced = infoRead.result as GmxCapPositionInfo;
+      capPosition = {
+        sizeInUsd: current.numbers.sizeInUsd,
+        collateralAmount: current.numbers.collateralAmount,
+        pnlUsd: priced.basePnlUsd,
+        pendingFeeAmount:
+          priced.fees.borrowing.borrowingFeeAmount + priced.fees.funding.fundingFeeAmount,
+        closeImpactUsd: priced.executionPriceResult.totalImpactUsd,
+      };
+    }
+    const use = gmxCapUse(
+      {
+        kind:
+          order.orderType === GMX_ORDER_TYPE.MarketIncrease ? "increase" : "decrease",
+        sizeDeltaUsd: order.sizeDeltaUsd,
+        collateralDeltaAmount: order.collateralDeltaAmount,
+      },
+      capPosition,
+      {
+        collateralPrice,
+        minCollateralFactor: factor,
+        oiMultiplierFactor: oiMultiplier,
+        openInterestUsd: (oiCells as bigint[]).reduce((a, b) => a + b, 0n),
+        // The larger of the two position fees (which one applies depends on the skew the order
+        // leaves), plus the most a UI fee receiver can add; no referral discount.
+        feeFactor: (feeImproved > feeWorsened ? feeImproved : feeWorsened) + uiFee,
+        maxImpactFactorForLiquidations: impactForLiquidations,
+      },
+    );
+    out.set(order.key, {
+      use,
+      maxLeverage: gmxMaxLeverageFromFactor(factor) ?? GMX_MAX_LEVERAGE,
+    });
   }
   return out;
 }
@@ -861,6 +1259,22 @@ const readerAbi = [
       { name: "end", type: "uint256" },
     ],
     outputs: [{ type: "tuple[]", components: positionInfoComponents }],
+  },
+  {
+    // One position by key, priced at the given prices (the keeper's cap check, keeperCapChecks).
+    type: "function",
+    name: "getPositionInfo",
+    stateMutability: "view",
+    inputs: [
+      { name: "dataStore", type: "address" },
+      { name: "referralStorage", type: "address" },
+      { name: "positionKey", type: "bytes32" },
+      { name: "prices", type: "tuple", components: marketPricesComponents },
+      { name: "sizeDeltaUsd", type: "uint256" },
+      { name: "uiFeeReceiver", type: "address" },
+      { name: "usePositionSizeAsSizeDeltaUsd", type: "bool" },
+    ],
+    outputs: [{ type: "tuple", components: positionInfoComponents }],
   },
 ] as const;
 
@@ -1261,14 +1675,7 @@ function validate(
 ): ValidationResult {
   if (action.type !== "gmxIncrease" && action.type !== "gmxDecrease")
     return { ok: false, reason: "not a gmx action" };
-  const a = action as {
-    type: string;
-    base?: TokenSymbol;
-    collateral: TokenSymbol;
-    sizeDeltaUsd: string;
-    collateralAmount?: string;
-    collateralDeltaAmount?: string;
-  };
+  const a = action as GmxOrderAction;
   // A decrease names its position by (market, collateral, side), so the same rule applies to it.
   const rejection = gmxCollateralRejection(a.base ?? "WETH", a.collateral);
   if (rejection) return { ok: false, reason: rejection };
@@ -1299,7 +1706,91 @@ function validate(
       };
     }
   }
+  const capRefusal = observedCapRefusal(a, obs);
+  if (capRefusal) return { ok: false, reason: capRefusal };
   return { ok: true };
+}
+
+type GmxOrderAction = {
+  type: string;
+  base?: TokenSymbol;
+  isLong: boolean;
+  collateral: TokenSymbol;
+  sizeDeltaUsd: string;
+  collateralAmount?: string;
+  collateralDeltaAmount?: string;
+};
+
+/**
+ * Why the reference runtime does not send this order: an increase, or a decrease that withdraws
+ * collateral, that would leave the position over GMX_RUNTIME_CAP_USE (90%) of the leverage cap at the
+ * price the agent observed. The keeper decides at the execution price and does not execute an order
+ * over 98% (keeperCapChecks); one it refuses stays in the OrderVault for 300 s. The price moves a
+ * block or two in between -- a WETH-collateral long near the cap loses on both its collateral and its
+ * PnL in a down gap -- so an honest order is held well under the line. A plain partial decrease is
+ * left to the keeper: it only brings the position down, and a refusal locks just its execution fee.
+ *
+ * Judged from the observation: the market's mark and maxLeverage, the held position on the same side
+ * and collateral (its PnL less the funding it owes; borrowing is not observed), and the deploy's
+ * larger position fee. Null when the observation has no market to judge by.
+ */
+function observedCapRefusal(
+  a: GmxOrderAction,
+  obs: AgentObservation,
+): string | null {
+  const base = a.base ?? "WETH";
+  const gmxObs = obs.protocols?.gmx;
+  if (!gmxObs) return null;
+  const marketObs: GmxMarketObservation | undefined =
+    base === "WETH"
+      ? gmxObs
+      : gmxObs.markets?.[marketFor("gmx", base)?.key ?? `${base}/USDC`];
+  if (!marketObs || !(marketObs.marketPriceUsd > 0)) return null;
+  const isIncrease = a.type === "gmxIncrease";
+  const collateralDeltaAmount = BigInt(
+    (isIncrease ? a.collateralAmount : a.collateralDeltaAmount) ?? "0",
+  );
+  if (!isIncrease && collateralDeltaAmount === 0n) return null;
+  const collateral = tokenInfo(a.collateral);
+  // The market's long token is its base, so a non-stable collateral is marked at the market's price.
+  const collateralUsd = collateral.kind === "stable" ? 1 : marketObs.marketPriceUsd;
+  const held = marketObs.position;
+  const usd = (v: number): bigint =>
+    Number.isFinite(v) ? BigInt(Math.round(v * 1e6)) * 10n ** 24n : 0n;
+  const position: GmxCapPosition | undefined =
+    held && held.isLong === a.isLong && held.collateral === a.collateral
+      ? {
+          sizeInUsd: BigInt(held.sizeUsd),
+          collateralAmount: BigInt(held.collateralAmount),
+          pnlUsd: usd(held.pnlUsd - (held.fundingOwedUsd ?? 0)),
+          pendingFeeAmount: 0n,
+        }
+      : undefined;
+  const maxLeverage = marketObs.maxLeverage ?? GMX_MAX_LEVERAGE;
+  const use = gmxCapUse(
+    {
+      kind: isIncrease ? "increase" : "decrease",
+      sizeDeltaUsd: BigInt(a.sizeDeltaUsd),
+      collateralDeltaAmount,
+    },
+    position,
+    {
+      collateralPrice: toGmxPrice(collateralUsd, collateral.decimals),
+      minCollateralFactor: BigInt(Math.round(1e12 / maxLeverage)) * 10n ** 18n,
+      feeFactor: GMX_ASSUMED_POSITION_FEE_FACTOR,
+    },
+  );
+  const reason = gmxCapRefusal(use, {
+    maxUse: GMX_RUNTIME_CAP_USE,
+    maxLeverage,
+    where: "the observed price",
+  });
+  if (!reason) return null;
+  return (
+    `gmx ${isIncrease ? "increase" : "collateral withdrawal"} ${reason}. The keeper does not ` +
+    `execute an order over ${Math.round(GMX_KEEPER_CAP_USE * 100)}% of the cap at the execution ` +
+    `price, and one it refuses stays in the OrderVault for 300 s: leave room for the price to move`
+  );
 }
 
 // Read all of the account's positions in one call (source data for scanning markets).
@@ -2159,11 +2650,17 @@ export const gmxAdapter: ProtocolAdapter = {
       blockNumber?: bigint;
       fromBlock?: bigint;
       toBlock?: bigint;
-      // Told about every order the keeper read and did not execute (gmxKeeperRefusal), or could not read.
+      // Told about every order the keeper read and did not execute (gmxKeeperRefusal, an increase
+      // with a swap path, or over the leverage cap at the execution price), or could not read.
       onOrderRefused?: (refusal: GmxKeeperRefusal) => void;
-      // Told when more orders were executable than MAX_ORDER_FILLS_PER_BLOCK: how many went now,
-      // how many wait for the next pass (issue #225).
-      onOrdersDeferred?: (report: { sent: number; deferred: number }) => void;
+      // Told when orders wait for the next pass: more than MAX_ORDER_FILLS_PER_BLOCK were executable
+      // (issue #225), or `samePosition` of them touch a position an earlier order of the pass
+      // already does (keeperOrderPlan). How many went now, how many wait.
+      onOrdersDeferred?: (report: {
+        sent: number;
+        deferred: number;
+        samePosition?: number;
+      }) => void;
     },
   ): Promise<void> {
     if (!ctx.gmx.mockProvider) return;
@@ -2189,16 +2686,22 @@ export const gmxAdapter: ProtocolAdapter = {
     // Orders deferred by an earlier pass go first (arrival order), then this range's.
     const keys = [...new Set([...deferredOrderKeys.splice(0), ...created])];
     if (keys.length === 0) return;
-    const readable = await keeperExecutableKeys(
+    const plan = await keeperOrderPlan(
       ctx,
       keys,
+      MAX_ORDER_FILLS_PER_BLOCK,
       opts?.onOrderRefused,
     );
-    const executable = readable.slice(0, MAX_ORDER_FILLS_PER_BLOCK);
-    const deferred = readable.slice(MAX_ORDER_FILLS_PER_BLOCK);
-    if (deferred.length > 0) {
-      deferredOrderKeys.push(...deferred);
-      opts?.onOrdersDeferred?.({ sent: executable.length, deferred: deferred.length });
+    const executable = plan.execute;
+    if (plan.defer.length > 0) {
+      deferredOrderKeys.push(...plan.defer);
+      opts?.onOrdersDeferred?.({
+        sent: executable.length,
+        deferred: plan.defer.length,
+        ...(plan.deferredSamePosition > 0
+          ? { samePosition: plan.deferredSamePosition }
+          : {}),
+      });
     }
     if (executable.length === 0) return;
 
@@ -2754,9 +3257,10 @@ export const gmxAdapter: ProtocolAdapter = {
     );
 
     // The leverage cap (gmxKeys.ts GMX_MIN_COLLATERAL_FACTOR): written straight to the DataStore,
-    // because Config refuses a factor above 5%. GMX then cancels and refunds an order that would
-    // leave a position over the cap, inside the keeper's executeOrder. Read back: a cap that did not
-    // land would be a rule the manifest states and the venue does not apply.
+    // because Config refuses a factor above 5%. The keeper reads it back per order and does not
+    // execute one over 98% of it (keeperCapChecks); GMX's own check inside executeOrder is the
+    // backstop. Read back here: a cap that did not land would be a rule the manifest states and the
+    // venue does not apply.
     for (const { market } of layouts) {
       const key = gmxMinCollateralFactorKey(market);
       const current = (await ctx.publicClient.readContract({
