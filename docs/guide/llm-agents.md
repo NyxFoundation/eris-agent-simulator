@@ -257,6 +257,18 @@ and reaches the next revision like any other rejection. **The strategy you shipp
 not restricted**: it is your code. The restriction lives in `runtime/rawTxGuard.ts`; a runtime of
 your own is yours to guard.
 
+**What that check does not look at: the arguments.** It checks where a call goes, not who the call
+pays. A call to a venue the run lists passes whatever its recipient argument says — a swap with
+`recipient` set to someone else, an Aave `supply` or `repay` `onBehalfOf` someone else, a GMX order
+or `sendTokens` to someone else's address, an `approve` of a contract that will forward
+`transferFrom` for anyone (Multicall3). Value that leaves that way goes through a pool or a venue, so
+it reads as a trade and the operator's transfer check (`rosterTransfers`) does not flag it. Text in a
+revert reason that talks the model into writing such a call is part of the field, like any other
+trap (ADR 0022): the environment does not police it, and guarding against it is yours. The cheapest
+guard is in `prompt.md` (tell the model that every recipient, receiver and `onBehalfOf` is your own
+address, and to prefer the registered actions, which are built that way); a stricter one is a check
+of your own in the runtime you submit.
+
 ### What the model sees differently
 
 Two lines are added to the revision context when state is being carried:
