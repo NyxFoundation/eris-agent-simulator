@@ -159,13 +159,23 @@ test("the keeper hands executeOrder a price for every oracle token, WBTC include
         },
       ],
       getBlock: async () => ({ baseFeePerGas: 0n }),
-      // Reader.getOrder: an ordinary market increase (no callback), which the keeper executes.
+      // Reader.getOrder: an ordinary market increase (no callback) that only adds collateral, which
+      // the keeper executes without a leverage check (GMX applies no cap to a deposit).
       readContract: async () => ({
         addresses: {
           account: getAddress(`0x${"a1".repeat(20)}`),
           callbackContract: zeroAddress,
+          market: MARKETS.WBTC,
+          initialCollateralToken: USDC,
+          swapPath: [],
         },
-        numbers: { callbackGasLimit: 0n, orderType: gmx.GMX_ORDER_TYPE.MarketIncrease },
+        numbers: {
+          callbackGasLimit: 0n,
+          orderType: gmx.GMX_ORDER_TYPE.MarketIncrease,
+          sizeDeltaUsd: 0n,
+          initialCollateralDeltaAmount: 10n ** 6n,
+        },
+        flags: { isLong: true },
       }),
     },
     walletClient: {

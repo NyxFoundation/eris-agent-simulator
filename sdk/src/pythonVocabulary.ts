@@ -11,6 +11,7 @@ export const PYTHON_ACTION_VOCABULARY: Readonly<Record<string, string>> = {
   "stableSwap": "stable_swap(*, stable: str, token_in: str, amount_in: str, slippage_bps: int | None = None, max_priority_fee_per_gas_wei: str | None = None)",
   "gmxIncrease": "gmx_increase(*, is_long: bool, base: str | None = None, collateral: str, collateral_amount: str, size_delta_usd: str, acceptable_price: str | None = None, max_priority_fee_per_gas_wei: str | None = None)",
   "gmxDecrease": "gmx_decrease(*, is_long: bool, base: str | None = None, collateral: str, collateral_delta_amount: str, size_delta_usd: str, acceptable_price: str | None = None, max_priority_fee_per_gas_wei: str | None = None)",
+  "gmxCancelOrder": "gmx_cancel_order(*, key: str, max_priority_fee_per_gas_wei: str | None = None)",
   "aaveSupply": "aave_supply(*, asset: str, amount: str, max_priority_fee_per_gas_wei: str | None = None)",
   "aaveWithdraw": "aave_withdraw(*, asset: str, amount: str, max_priority_fee_per_gas_wei: str | None = None)",
   "aaveBorrow": "aave_borrow(*, asset: str, amount: str, max_priority_fee_per_gas_wei: str | None = None)",

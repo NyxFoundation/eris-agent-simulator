@@ -173,6 +173,18 @@ export const gmxDecreaseSchema = z.object({
   ...priorityFee,
 });
 
+export const gmxCancelOrderSchema = z.object({
+  type: z.literal("gmxCancelOrder"),
+  key: z
+    .string()
+    .regex(/^0x[0-9a-fA-F]{64}$/, "must be a 32-byte hex string")
+    .describe(
+      "The order to cancel, as obs.protocols.gmx.orders[].key. A market order can be cancelled " +
+        "300 s after it was created; GMX returns its collateral and execution fee.",
+    ),
+  ...priorityFee,
+});
+
 // LST venue (issue #38). The market is LST/WETH, so there is no `base` market selector here.
 export const lstDepositSchema = z.object({
   type: z.literal("lstDeposit"),
@@ -457,7 +469,7 @@ const LEAF_SCHEMAS_BY_PROTOCOL: Record<ProtocolId, z.ZodTypeAny[]> = {
     aaveBorrowSchema,
     aaveRepaySchema,
   ],
-  gmx: [gmxIncreaseSchema, gmxDecreaseSchema],
+  gmx: [gmxIncreaseSchema, gmxDecreaseSchema, gmxCancelOrderSchema],
   lst: [
     lstDepositSchema,
     lstSwapSchema,

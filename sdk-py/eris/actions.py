@@ -11,6 +11,7 @@ from .action import (
     StableSwapAction as stable_swap,
     GmxIncreaseAction as gmx_increase,
     GmxDecreaseAction as gmx_decrease,
+    GmxCancelOrderAction as gmx_cancel_order,
     AaveSupplyAction as aave_supply,
     AaveWithdrawAction as aave_withdraw,
     AaveBorrowAction as aave_borrow,
@@ -40,4 +41,4 @@ from .action import (
     RawBundleAction as raw_bundle,
 )
 
-__all__ = ["noop","swap","mint_liquidity","remove_liquidity","collect_fees","create_pool","balancer_swap","curve_swap","stable_swap","gmx_increase","gmx_decrease","aave_supply","aave_withdraw","aave_borrow","aave_repay","lst_deposit","lst_swap","lst_request_withdraw","lst_claim_withdraw","liquity_open_trove","liquity_adjust_trove","liquity_close_trove","liquity_redeem","liquity_provide_to_sp","liquity_withdraw_from_sp","liquity_liquidate","liquity_swap_eusd","create_lending_market","lending_supply","lending_withdraw","lending_supply_collateral","lending_withdraw_collateral","lending_borrow","lending_repay","lending_liquidate","bundle","raw_tx","raw_bundle"]
+__all__ = ["noop","swap","mint_liquidity","remove_liquidity","collect_fees","create_pool","balancer_swap","curve_swap","stable_swap","gmx_increase","gmx_decrease","gmx_cancel_order","aave_supply","aave_withdraw","aave_borrow","aave_repay","lst_deposit","lst_swap","lst_request_withdraw","lst_claim_withdraw","liquity_open_trove","liquity_adjust_trove","liquity_close_trove","liquity_redeem","liquity_provide_to_sp","liquity_withdraw_from_sp","liquity_liquidate","liquity_swap_eusd","create_lending_market","lending_supply","lending_withdraw","lending_supply_collateral","lending_withdraw_collateral","lending_borrow","lending_repay","lending_liquidate","bundle","raw_tx","raw_bundle"]

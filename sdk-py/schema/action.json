@@ -35,6 +35,9 @@
       "$ref": "#/$defs/GmxDecreaseAction"
     },
     {
+      "$ref": "#/$defs/GmxCancelOrderAction"
+    },
+    {
       "$ref": "#/$defs/AaveSupplyAction"
     },
     {
@@ -563,6 +566,30 @@
       ],
       "additionalProperties": false,
       "title": "GmxDecreaseAction"
+    },
+    "GmxCancelOrderAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "gmxCancelOrder"
+        },
+        "key": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{64}$",
+          "description": "The order to cancel, as obs.protocols.gmx.orders[].key. A market order can be cancelled 300 s after it was created; GMX returns its collateral and execution fee."
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "key"
+      ],
+      "additionalProperties": false,
+      "title": "GmxCancelOrderAction"
     },
     "AaveSupplyAction": {
       "type": "object",

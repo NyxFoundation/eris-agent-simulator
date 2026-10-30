@@ -572,11 +572,23 @@
             "$ref": "#/definitions/GmxMarketObservation"
           }
         },
+        "orders": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GmxOrderObservation"
+          }
+        },
         "marketPriceUsd": {
           "type": "number"
         },
         "position": {
           "$ref": "#/definitions/GmxPositionObservation"
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GmxPositionObservation"
+          }
         },
         "longOiUsd": {
           "type": "number"
@@ -606,6 +618,12 @@
         },
         "position": {
           "$ref": "#/definitions/GmxPositionObservation"
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GmxPositionObservation"
+          }
         },
         "longOiUsd": {
           "type": "number"
@@ -669,6 +687,61 @@
     },
     "TokenSymbol": {
       "type": "string"
+    },
+    "GmxOrderObservation": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "orderType": {
+          "type": "number"
+        },
+        "market": {
+          "type": "string"
+        },
+        "base": {
+          "$ref": "#/definitions/TokenSymbol"
+        },
+        "isLong": {
+          "type": "boolean"
+        },
+        "sizeDeltaUsd": {
+          "type": "string"
+        },
+        "collateral": {
+          "$ref": "#/definitions/TokenSymbol"
+        },
+        "collateralAmount": {
+          "type": "string"
+        },
+        "executionFeeWei": {
+          "type": "string"
+        },
+        "updatedAtTime": {
+          "type": "number"
+        },
+        "cancellableAtTime": {
+          "type": "number"
+        },
+        "cancellable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key",
+        "orderType",
+        "market",
+        "isLong",
+        "sizeDeltaUsd",
+        "collateral",
+        "collateralAmount",
+        "executionFeeWei",
+        "updatedAtTime",
+        "cancellableAtTime",
+        "cancellable"
+      ],
+      "additionalProperties": false
     },
     "AaveObservation": {
       "type": "object",

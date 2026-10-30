@@ -323,20 +323,28 @@ function round6(v: number): number {
 // block after the keeper sees it, so that needs the leg to be liquidatable after the ramp's first
 // step of three: loss >= ~1/leverage - 1.1% at a first step of at most 10.7% (spike 32% / 3; crash
 // 22% / 3 = 7.3%), i.e. leverage >= ~8.4x. On a 2-step ramp the liquidation lands at the full gap.
-// MIN_COLLATERAL_FACTOR = 0.198 caps it at 1/0.198 = 5.05x -- an order at 5.00x passes with its
-// opening fee (0.04-0.06% of size) taken out. The margin to 8.4x rests on the gap shape (step size
-// and ramp length): recalibrating crash / spike means re-deriving this. What is left at 5x is the
-// one-sided limited liability: a 5x short through a 24-32% spike loses up to 12% of size beyond its
-// collateral, ~3% of collateral per epoch in expectation over the 12 regimes (0 at <= 3x).
+// MIN_COLLATERAL_FACTOR = 0.198 caps it at 1/0.198 = 5.05x. The margin to 8.4x rests on the gap
+// shape (step size and ramp length): recalibrating crash / spike means re-deriving this. What is
+// left at 5x is the one-sided limited liability: a 5x short through a 24-32% spike loses up to 12%
+// of size beyond its collateral, ~3% of collateral per epoch in expectation over the 12 regimes
+// (0 at <= 3x).
 //
-// GMX enforces the factor itself, which is why it lives in the DataStore and not in the keeper: an
-// increase that would leave equity (collateral + PnL + impact - fees) or collateral under 19.8% of
-// size fails inside executeOrder and GMX cancels the order and refunds the collateral and the
-// execution fee in the same transaction. A decrease that withdraws collateral below it has the
-// withdrawal zeroed (or, with no size, is cancelled); a partial decrease that would leave the rest
-// over the cap is cancelled; a full close always goes through. Config.setUint caps the factor at 5%
-// (ConfigUtils.validateRange), so the environment writes the DataStore directly as CONTROLLER.
-// Liquidation still triggers at MIN_COLLATERAL_FACTOR_FOR_LIQUIDATION (1%), unchanged.
+// Two checks, the keeper's first. GMX applies the factor inside executeOrder: an increase that would
+// leave equity (collateral + PnL + impact - fees) or collateral under 19.8% of size fails, and GMX
+// cancels the market order and refunds the collateral and the execution fee in the same
+// transaction; a decrease that withdraws collateral below it has the withdrawal zeroed (or, with no
+// size, is cancelled); a partial decrease that would leave the rest over the cap is cancelled. Both
+// are judged at the execution price, and the minimum execution fee is 0 at a tip of 0, so an order
+// sized just over the cap was a free stop order: a WETH-collateral long at ~1.03x the cap executed
+// only if the price had risen ~3%, and was otherwise handed back at no cost, to be re-sent next
+// block. So the keeper decides first (gmxLeverage.ts): it computes the position each order would
+// leave at the prices it will execute at, and does not execute one above GMX_KEEPER_CAP_USE (98%)
+// of the cap. A refused order is not refunded -- it stays in the OrderVault, counted as nothing,
+// until its account cancels it after requestExpirationTime (300 s) -- so a miss costs a lockup
+// instead of nothing. GMX's own check stays as the backstop. A full close always goes through.
+// Config.setUint caps the factor at 5% (ConfigUtils.validateRange), so the environment writes the
+// DataStore directly as CONTROLLER. Liquidation still triggers at
+// MIN_COLLATERAL_FACTOR_FOR_LIQUIDATION (1%), unchanged.
 
 /** The highest leverage GMX accepts here: size / equity, at the oracle (fair) price. */
 export const GMX_MAX_LEVERAGE = 1 / 0.198;
@@ -351,6 +359,70 @@ export function gmxMinCollateralFactorKey(market: Address): Hex {
     encodeAbiParameters(
       [{ type: "bytes32" }, { type: "address" }],
       [MIN_COLLATERAL_FACTOR, market],
+    ),
+  );
+}
+
+// The other inputs of GMX's cap check (PositionUtils.willPositionCollateralBeSufficient and
+// isPositionLiquidatable), which the keeper reads before it executes an order (gmxLeverage.ts).
+const MIN_COLLATERAL_FACTOR_FOR_OPEN_INTEREST_MULTIPLIER = hashString(
+  "MIN_COLLATERAL_FACTOR_FOR_OPEN_INTEREST_MULTIPLIER",
+);
+const POSITION_FEE_FACTOR = hashString("POSITION_FEE_FACTOR");
+const MAX_POSITION_IMPACT_FACTOR_FOR_LIQUIDATIONS = hashString(
+  "MAX_POSITION_IMPACT_FACTOR_FOR_LIQUIDATIONS",
+);
+/** Keys.MAX_UI_FEE_FACTOR: the most a UI fee receiver can charge on top of the position fee (global). */
+export const GMX_MAX_UI_FEE_FACTOR_KEY = hashString("MAX_UI_FEE_FACTOR");
+
+/** Keys.minCollateralFactorForOpenInterestMultiplierKey: raises the factor with a side's OI (0 here). */
+export function gmxMinCollateralFactorForOiMultiplierKey(
+  market: Address,
+  isLong: boolean,
+): Hex {
+  return marketSideKey(
+    MIN_COLLATERAL_FACTOR_FOR_OPEN_INTEREST_MULTIPLIER,
+    market,
+    isLong,
+  );
+}
+
+/** Keys.positionFeeFactorKey: the position fee, by whether the order improves the skew. */
+export function gmxPositionFeeFactorKey(
+  market: Address,
+  balanceWasImproved: boolean,
+): Hex {
+  return marketSideKey(POSITION_FEE_FACTOR, market, balanceWasImproved);
+}
+
+/** Keys.maxPositionImpactFactorForLiquidationsKey: the negative impact the cap check may count. */
+export function gmxMaxPositionImpactFactorForLiquidationsKey(
+  market: Address,
+): Hex {
+  return keccak256(
+    encodeAbiParameters(
+      [{ type: "bytes32" }, { type: "address" }],
+      [MAX_POSITION_IMPACT_FACTOR_FOR_LIQUIDATIONS, market],
+    ),
+  );
+}
+
+/** Position.getPositionKey: one position per (account, market, collateral token, side). */
+export function gmxPositionKey(
+  account: Address,
+  market: Address,
+  collateralToken: Address,
+  isLong: boolean,
+): Hex {
+  return keccak256(
+    encodeAbiParameters(
+      [
+        { type: "address" },
+        { type: "address" },
+        { type: "address" },
+        { type: "bool" },
+      ],
+      [account, market, collateralToken, isLong],
     ),
   );
 }

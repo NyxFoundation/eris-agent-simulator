@@ -46,6 +46,7 @@ export const VENUE_BY_ACTION: Record<string, string> = {
 
   gmxIncrease: "gmx",
   gmxDecrease: "gmx",
+  gmxCancelOrder: "gmx",
 
   aaveSupply: "aave",
   aaveWithdraw: "aave",

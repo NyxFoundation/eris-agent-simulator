@@ -32,6 +32,10 @@ import {
 } from "@eris/sdk/constants.js";
 import { ACTION_TYPES_BY_PROTOCOL } from "@eris/sdk/action.js";
 import { GMX_MAX_LEVERAGE } from "@eris/sdk/protocols/gmxKeys.js";
+import {
+  GMX_KEEPER_CAP_USE,
+  GMX_RUNTIME_CAP_USE,
+} from "@eris/sdk/protocols/gmxLeverage.js";
 import { baseTokens, stableTokens } from "@eris/sdk/markets.js";
 import { type ManifestPeriod, scoredDayHours } from "@eris/sdk/periodClock.js";
 import type { ProtocolId } from "@eris/sdk/types.js";
@@ -310,19 +314,28 @@ export function buildManifest(opts: {
         (protocols.includes("gmx")
           ? " GMX caps leverage instead (`gmxMaxLeverage`)."
           : ""),
-      // Leverage, not size: GMX refuses (cancels and refunds, inside the keeper's executeOrder) an
-      // order that would leave a position over this, so a participant must be able to read it before
-      // sending one (sdk protocols/gmxKeys.ts GMX_MAX_LEVERAGE; also obs.protocols.gmx.maxLeverage).
+      // Leverage, not size: the keeper does not execute an order that would leave a position over
+      // gmxKeeperMaxLeverage at the execution price, and such an order stays locked in the OrderVault,
+      // so a participant must be able to read both before sending one (sdk protocols/gmxKeys.ts
+      // GMX_MAX_LEVERAGE, gmxLeverage.ts GMX_KEEPER_CAP_USE; also obs.protocols.gmx.maxLeverage).
       ...(protocols.includes("gmx")
         ? {
             gmxMaxLeverage: Math.round(GMX_MAX_LEVERAGE * 100) / 100,
+            gmxKeeperMaxLeverage:
+              Math.round(GMX_KEEPER_CAP_USE * GMX_MAX_LEVERAGE * 100) / 100,
             gmxLeverageNote:
-              "size / equity (collateral + PnL + price impact - fees) at the oracle price. An increase " +
-              "that would leave the position above it is cancelled by GMX with the collateral and " +
-              "execution fee refunded; so is a partial decrease that would; a full close always " +
-              "executes. Liquidation is still at 1% equity. A liquidation GMX closes below zero is " +
-              "charged to the same account's opposite-side PnL in that market (a hedged pair is " +
-              "cross-margined); a one-sided position loses at most its collateral.",
+              "size / equity (collateral + PnL + price impact - fees; collateral alone when it is " +
+              "smaller) at the execution price, which is the oracle price of the block the order " +
+              "executes in. The keeper does not execute an increase, a collateral withdrawal or a " +
+              "partial decrease that would leave the position above gmxKeeperMaxLeverage " +
+              `(${Math.round(GMX_KEEPER_CAP_USE * 100)}% of gmxMaxLeverage): the order is not ` +
+              "refunded, and its collateral and execution fee stay in GMX's OrderVault, counted as " +
+              "nothing, until you cancel it after requestExpirationTime (300 s). The reference " +
+              `runtime does not send one above ${Math.round(GMX_RUNTIME_CAP_USE * 100)}% at the ` +
+              "observed price. A collateral deposit and a full close are not held to the cap. Liquidation " +
+              "is still at 1% equity. A liquidation GMX closes below zero is charged to the same " +
+              "account's opposite-side PnL in that market (a hedged pair is cross-margined); a " +
+              "one-sided position loses at most its collateral.",
           }
         : {}),
       defaultPriorityFeeWei: config.defaultPriorityFeeWei.toString(),

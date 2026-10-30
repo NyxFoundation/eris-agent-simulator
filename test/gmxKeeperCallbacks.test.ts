@@ -67,12 +67,39 @@ const executeOrderAbi = [
 ] as const;
 
 type StubOrder = {
-  account: Address;
+  // Omitted = an account of the order's own: the keeper executes one order per position a block
+  // (keeperOrderPlan), and these tests are about which orders run, not about positions.
+  account?: Address;
   callbackContract: Address;
   callbackGasLimit: bigint;
   // Omitted = MarketIncrease, the type every SDK action creates.
   orderType?: number;
 };
+
+// Order.Props as Reader.getOrder returns it. A collateral deposit (no size) on the ETH/USD market:
+// GMX does not apply the leverage cap to one, so the keeper reads nothing more before executing it
+// (gmxKeeperLeverage.test.ts drives the cap check).
+function orderProps(key: Hex, order: StubOrder) {
+  return {
+    addresses: {
+      account: order.account ?? getAddress(`0x${key.slice(-40)}`),
+      receiver: zeroAddress,
+      cancellationReceiver: zeroAddress,
+      callbackContract: order.callbackContract,
+      uiFeeReceiver: zeroAddress,
+      market: MARKETS.WETH,
+      initialCollateralToken: zeroAddress,
+      swapPath: [],
+    },
+    numbers: {
+      orderType: order.orderType ?? GMX_ORDER_TYPE.MarketIncrease,
+      sizeDeltaUsd: 0n,
+      initialCollateralDeltaAmount: 0n,
+      callbackGasLimit: order.callbackGasLimit,
+    },
+    flags: { isLong: true },
+  };
+}
 
 function stubCtx(orders: Map<Hex, StubOrder | Error>): {
   ctx: SimContext;
@@ -99,21 +126,14 @@ function stubCtx(orders: Map<Hex, StubOrder | Error>): {
         assert.equal(call.functionName, "getOrder");
         const order = orders.get(call.args[1]);
         if (order === undefined)
-          return {
-            addresses: { account: zeroAddress, callbackContract: zeroAddress },
-            numbers: { callbackGasLimit: 0n, orderType: 0 },
-          };
+          return orderProps(call.args[1], {
+            account: zeroAddress,
+            callbackContract: zeroAddress,
+            callbackGasLimit: 0n,
+            orderType: 0,
+          });
         if (order instanceof Error) throw order;
-        return {
-          addresses: {
-            account: order.account,
-            callbackContract: order.callbackContract,
-          },
-          numbers: {
-            callbackGasLimit: order.callbackGasLimit,
-            orderType: order.orderType ?? GMX_ORDER_TYPE.MarketIncrease,
-          },
-        };
+        return orderProps(call.args[1], order);
       },
     },
     walletClient: {
@@ -167,12 +187,11 @@ test("the keeper executes only the orders without a callback, and reports the re
   const orders = new Map<Hex, StubOrder | Error>([
     [
       key(1),
-      { account: ACCOUNT, callbackContract: zeroAddress, callbackGasLimit: 0n },
+      { callbackContract: zeroAddress, callbackGasLimit: 0n },
     ],
     [
       key(2),
       {
-        account: ACCOUNT,
         callbackContract: CALLBACK,
         callbackGasLimit: 2_000_000n,
       },
@@ -180,32 +199,85 @@ test("the keeper executes only the orders without a callback, and reports the re
     [key(3), new Error("rpc timeout\nmore")],
     [
       key(5),
-      { account: ACCOUNT, callbackContract: zeroAddress, callbackGasLimit: 0n },
+      { callbackContract: zeroAddress, callbackGasLimit: 0n },
     ],
   ]);
   // key(4): created and already gone (executed or cancelled) -- Reader returns an empty order.
   const withGone = new Map(orders);
   withGone.set(key(4), undefined as never);
+  resetKeeperOrderQueue();
   const { ctx, executed } = stubCtx(withGone);
   const refused: Array<{
     key: string;
     reason: string;
     callbackContract: string;
   }> = [];
-  await gmxAdapter.afterMine!(ctx, {
-    noMine: true,
-    fromBlock: 10n,
-    toBlock: 10n,
-    onOrderRefused: (r) => refused.push(r),
-  });
+  const retried: Array<{ key: string; attempt: number; reason: string }> = [];
+  const pass = (block: bigint) =>
+    gmxAdapter.afterMine!(ctx, {
+      noMine: true,
+      fromBlock: block,
+      toBlock: block,
+      onOrderRefused: (r) => refused.push(r),
+      onOrderReadRetry: (r) => retried.push(r),
+    });
+  await pass(10n);
   assert.deepEqual(executed, [key(1), key(5)]);
+  assert.deepEqual(
+    refused.map((r) => r.key),
+    [key(2)],
+  );
+  assert.equal(refused[0].callbackContract, CALLBACK);
+  // An order that could not be read is not executed, and not refused either: a failed read is the
+  // environment's fault, so it is read again next pass (the reason is one line).
+  assert.deepEqual(retried.map((r) => [r.key, r.attempt]), [[key(3), 1]]);
+  assert.match(retried[0].reason, /could not be read: rpc timeout$/);
+  // Still unreadable: refused (fail closed) on the GMX_KEEPER_READ_ATTEMPTS-th pass in a row.
+  (ctx.publicClient as unknown as { getLogs: () => Promise<unknown[]> }).getLogs = async () => [];
+  await pass(11n);
+  await pass(12n);
+  assert.deepEqual(
+    retried.map((r) => [r.key, r.attempt]),
+    [
+      [key(3), 1],
+      [key(3), 2],
+    ],
+  );
   assert.deepEqual(
     refused.map((r) => r.key),
     [key(2), key(3)],
   );
-  assert.equal(refused[0].callbackContract, CALLBACK);
-  // An order that could not be read is not executed (fail closed), and the reason is one line.
-  assert.match(refused[1].reason, /could not be read: rpc timeout$/);
+  assert.match(
+    refused[1].reason,
+    /could not be read in 3 passes in a row, so the order is not executed: rpc timeout$/,
+  );
+  assert.deepEqual(executed, [key(1), key(5)]);
+  resetKeeperOrderQueue();
+});
+
+test("an order whose read fails once is executed when the next pass reads it", async () => {
+  resetKeeperOrderQueue();
+  const orders = new Map<Hex, StubOrder | Error>([
+    [key(1), new Error("rpc timeout")],
+  ]);
+  const { ctx, executed } = stubCtx(orders);
+  const refused: string[] = [];
+  const pass = (block: bigint) =>
+    gmxAdapter.afterMine!(ctx, {
+      noMine: true,
+      fromBlock: block,
+      toBlock: block,
+      onOrderRefused: (r) => refused.push(r.key),
+      onOrderReadRetry: () => {},
+    });
+  await pass(10n);
+  assert.deepEqual(executed, []);
+  orders.set(key(1), { callbackContract: zeroAddress, callbackGasLimit: 0n });
+  (ctx.publicClient as unknown as { getLogs: () => Promise<unknown[]> }).getLogs = async () => [];
+  await pass(11n);
+  assert.deepEqual(executed, [key(1)]);
+  assert.deepEqual(refused, []);
+  resetKeeperOrderQueue();
 });
 
 // ---- market orders only ----
@@ -254,7 +326,7 @@ test("market swaps, increases and decreases pass; limit, stop and liquidation or
 
 test("the keeper sends no executeOrder for a stop or limit order and reports it", async () => {
   resetKeeperOrderQueue();
-  const plain = { account: ACCOUNT, callbackContract: zeroAddress, callbackGasLimit: 0n };
+  const plain = { callbackContract: zeroAddress, callbackGasLimit: 0n };
   const orders = new Map<Hex, StubOrder | Error>([
     [key(1), { ...plain, orderType: GMX_ORDER_TYPE.StopIncrease }],
     [key(2), { ...plain, orderType: GMX_ORDER_TYPE.MarketIncrease }],
@@ -341,7 +413,7 @@ test("the keeper fills at most MAX_ORDER_FILLS_PER_BLOCK orders a pass and carri
   resetKeeperOrderQueue();
   const orders = new Map<Hex, StubOrder | Error>();
   for (let n = 1; n <= MAX_ORDER_FILLS_PER_BLOCK + 2; n++)
-    orders.set(key(n), { account: ACCOUNT, callbackContract: zeroAddress, callbackGasLimit: 0n });
+    orders.set(key(n), { callbackContract: zeroAddress, callbackGasLimit: 0n });
   const { ctx, executed } = stubCtx(orders);
   const deferred: Array<{ sent: number; deferred: number }> = [];
   await gmxAdapter.afterMine!(ctx, {
@@ -370,7 +442,7 @@ test("an order deferred and cancelled before its turn is dropped, not filled lat
   resetKeeperOrderQueue();
   const orders = new Map<Hex, StubOrder | Error>();
   for (let n = 1; n <= MAX_ORDER_FILLS_PER_BLOCK + 1; n++)
-    orders.set(key(n), { account: ACCOUNT, callbackContract: zeroAddress, callbackGasLimit: 0n });
+    orders.set(key(n), { callbackContract: zeroAddress, callbackGasLimit: 0n });
   const { ctx, executed } = stubCtx(orders);
   await gmxAdapter.afterMine!(ctx, { noMine: true, fromBlock: 10n, toBlock: 10n });
   assert.equal(executed.length, MAX_ORDER_FILLS_PER_BLOCK);

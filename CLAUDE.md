@@ -300,15 +300,41 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   この算術で導き直す**。5 倍で残るのは片側建玉の有限責任分（5 倍ショートが spike で証拠金を超えて
   失う最大サイズの 12%、12 レジーム一様で期待値は証拠金の ~3% / エポック。3 倍なら 0）。当初は B1 なしでも債務超過しない
   ~3.03 倍（レバ × 0.32 + 決済費用 < 1）で出したが、現実（Arbitrum は 100 倍）からの乖離を小さくするため 5 倍にした（2026-10-30）。
-  **keeper で拒否するのではなく GMX 自身に執行させる**: `setupGlobal` が DataStore の `MIN_COLLATERAL_FACTOR` を CONTROLLER として
-  直接書く（Config.setUint は 5% 超を validateRange で revert するため）。上限を超える increase は executeOrder の中で GMX が
-  cancel し、**証拠金と実行手数料を同じ tx で返す**（keeper 拒否だと注文は OrderVault に `requestExpirationTime` 300 秒残り、
-  その間 0 評価になる）。証拠金を引き出す decrease は引き出し額が 0 に直され、上限を超えたまま残る部分 decrease は cancel、
-  全決済は常に通る。清算閾値（1%）は不変。観測 `protocols.gmx.maxLeverage`（DataStore から読む）と manifest の
-  `limits.gmxMaxLeverage` で公開。書いた値は読み返して違えば setup で落ちる。背景フローは ~1.4 倍なので影響しない。
+  **上限は keeper が GMX より先に判定する**（`sdk/src/protocols/gmxLeverage.ts`）。`setupGlobal` が DataStore の `MIN_COLLATERAL_FACTOR`
+  を CONTROLLER として直接書き（Config.setUint は 5% 超を validateRange で revert するため）、GMX も executeOrder の中で約定価格で判定する。
+  ただし GMX は上限を超えた成行注文を cancel して**証拠金と実行手数料を同じ tx で返し**、最低実行手数料は tip 0 なら 0 なので、上限の少し上で
+  出した注文が**タダの条件付き注文**だった（WETH 担保のロングを上限の ~1.03 倍で出すと ~3% 上がったときだけ約定し、外れは無料で返る。
+  毎ブロック出し直せば spike の gap の残りに乗れる = 11d74b7 が塞いだ stop 注文の作り直し。上限に張り付いたショートは自分の PnL で
+  下げた後だけ追加が通る下向き版）。keeper は約定価格（次ブロック用に自分で書く `ctx.fairPrices`）を知っているので、約定させる前に各注文が
+  残す建玉をその価格で計算し（既存建玉は `Reader.getPositionInfo` をその価格で引いて GMX が上限で切る PnL・未払い borrowing / funding・
+  決済 impact を読む。手数料は大きい方の position fee + UI fee 上限、impact は判定が数える最悪値、referral 割引なし）、**上限の 98%
+  （~4.95 倍）を超えるものは約定させない**（`keeper_order_refused` に `capUse` / `leverage`）。拒否した注文は返金されず OrderVault に
+  0 評価で残り、本人が `requestExpirationTime`（300 秒）後に `cancelOrder` するまで戻らない = 外れが 150 ブロックのロックになる。
+  対象は GMX が上限で cancel・調整する 3 経路: increase（担保どちらも。PnL を数えない担保だけの判定と、PnL・手数料込みの判定の両方）、
+  証拠金を引き出す decrease（GMX は PnL を数えずに判定して引き出し額を 0 に直す、サイズ 0 なら cancel）、上限を超えて残る部分 decrease（cancel）。
+  2% は keeper が厳しい側に丸めた項を吸収して GMX 自身の上限判定（バックストップとして残す）を cancel・返金に届かせないための幅で、
+  上限での必要証拠金の 2% = サイズの ~40bps（手数料 6bps、この深さの impact は 1bp 未満）。**同じ建玉への注文は 1 パス 1 本**
+  （2 本目は次のパスに回し、1 本目が残した建玉で判定する。同じパスで通すと 1 本目を無視して判定した 2 本目を GMX が 1 本目の後で判定する）。
+  **増し玉は自分のサイズの証拠金を自分で持ってくる**（`gmxOwnCapUse`。注文の担保だけで自分のサイズを ~4.95 倍以内に。建玉全体の判定に加えて）。
+  GMX は証拠金 0・サイズ > 0 の increase を受け付けるので、上限に張り付いた建玉への証拠金 0 の増し玉は、拒否されてもロックされるものが無い
+  タダの条件付き注文のままだった。この規則で証拠金 0 の増し玉はどの価格でも拒否され（オプションにならない）、拒否された increase は
+  必ずサイズの ~1/4.95 を 300 秒止める。理由は注文自身の証拠金が先に名指される。**読取の失敗は拒否しない**: 注文や判定の入力が読めなかった
+  パスは次のパスへ回し（`keeper_order_read_retry`）、`GMX_KEEPER_READ_ATTEMPTS`（3）回続けて読めなかったときだけ拒否する
+  （RPC の一時障害で証拠金を 150 ブロック止めると、環境の故障で P を失う）。拒否された注文は観測 `protocols.gmx.orders`
+  （OrderVault に残る自分の注文と `cancellable`）に出て、`gmxCancelOrder` アクションで取り消せる。市場ごとの全建玉は
+  `protocols.gmx.positions`（`position` は従来どおり最初の 1 つ）で、参照ランタイムの事前判定は注文と同じ (担保, 向き) の建玉で行う。
+  swapPath 付きの increase は担保額が swap まで決まらないので拒否。**対象外**: 担保の追加（サイズ 0 の increase。GMX は清算閾値で判定）、
+  全決済（常に通る）、MIN_COLLATERAL_USD / MIN_POSITION_SIZE_USD（$1）、reserve / OI 上限（[base-base-USDC] では価格に依らない）、
+  acceptablePrice / minOutputAmount（逆張りの指値にしかならない）。**残る穴**: keeper の tx が次のブロックに入らないと（gated miner の
+  待ち上限、高い tip でのブロック詰め）GMX は別の価格で判定し、そこで上限を跨げば従来の cancel・返金に届く。参照ランタイムは観測価格で
+  **上限の 90% を超える** increase と引き出しを送らない（`validate`。部分 decrease は送る = 拒否されても実行手数料が止まるだけ）。
+  清算閾値（1%）は不変。観測 `protocols.gmx.maxLeverage`（DataStore から読む）と manifest の `limits.gmxMaxLeverage` /
+  `gmxKeeperMaxLeverage` で公開。書いた値は読み返して違えば setup で落ちる。背景フローは ~1.4 倍なので上限には当たらず、
+  同じ側への同一ブロックの 2 本目が 1 ブロック遅れるだけ。
   **実測（spike#101・150 ブロック、2026-10-29）**: B1 だけ（上限なし）だと 19.5 倍ストラドルは P +42,767（控除 8,650 = shortfall 全額）で、
   残りは**清算後に裸で残った勝ち脚が ramp の残りを取る分**（短い脚が 1 ステップ目で清算され、ロングだけが 2 ステップ目を被る）。
   これは債務超過ではないので B1 では消えず、B2 で消える: 上限ありでは 19.5 倍の注文は `InsufficientCollateralUsd` で cancel・返金され
+  （keeper の事前判定より前の実測。今は keeper が拒否して OrderVault に残る）
   P +6,798（noop +6,799）、3 倍ストラドルは +6,687（noop − 手数料 112）、3 倍の片側ショートは −1,978（証拠金 12k のうち 8.8k 失い債務超過なし）。
   **この実測は上限 3.03 倍のとき**で、5 倍の上限では測っていない（5 倍で 1 段目に清算されないことは上の算術による）。
   `interval_series_agreement` は両 run で差 0。
