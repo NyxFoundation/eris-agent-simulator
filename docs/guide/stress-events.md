@@ -226,7 +226,9 @@ cut at `rampBlocks` (then one integer, not a range: 75, three times the mean), a
 block buys `waveUsdcMult × liquidityUsdc` over the *mean* length ((1 − 0.96^75) / 0.04 = 23.8 blocks),
 so `waveUsdcMult` is the expected total and a buy's size says nothing about how many follow; the
 realized total is that times the length over the mean (up to 3.15×, which the fixed wave-wallet
-endowment covers). Each token's hold and decay start from its own stop. A wave still buying has the
+endowment covers). The block is fixed first, in whole USDC units, and the total is exactly that many
+blocks: splitting a rounded total by the length instead left the length in the last digits of every
+`amountIn`, readable from the first buy. Each token's hold and decay start from its own stop. A wave still buying has the
 same ~24 blocks expected ahead of it at every block, so neither the first buys nor the listing block
 tell how much is left or when the sell-back begins. The length comes from a keyed stream of its own per
 (entry, window, token), so the draws above and every other event's stay where they were. One number

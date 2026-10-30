@@ -77,6 +77,7 @@ import {
   type ResolvedStressEvent,
   type ResolvedTokenLaunch,
   type StressEventConfig,
+  type TokenLaunchTarget,
 } from "./events.js";
 
 // The fee tier every launch pool opens at. 0.3% rather than the environment's 0.05% WETH/USDC tier:
@@ -182,6 +183,8 @@ export type TokenLaunchState = {
   liquidityUsdcUnits: bigint;
   tokenSupplyWei: bigint;
   waveUsdcUnits: bigint;
+  // One block's buy, for a wave with a per-block size (waveStopProb). Undefined for a fixed ramp.
+  waveBlockUsdcUnits?: bigint;
   symbol: string;
   phase: "pending" | "listing" | "live" | "failed";
   token?: Address;
@@ -371,13 +374,16 @@ export function tokenLaunchCeiling(configs: StressEventConfig[]): {
     // (events.ts drawWaveLengths); a fixed ramp spends exactly the multiple.
     const cap = Array.isArray(c.rampBlocks) ? c.rampBlocks[1] : c.rampBlocks;
     const mult = c.waveUsdcMult ? c.waveUsdcMult[1] : 0;
+    const block =
+      c.waveStopProb !== undefined
+        ? mult / waveLengthMean(c.waveStopProb, cap)
+        : undefined;
     const wave = waveUsdcUnits({
       index: 0,
       liquidityUsdc: liquidity,
-      waveUsdcMult:
-        c.waveStopProb !== undefined
-          ? (mult * cap) / waveLengthMean(c.waveStopProb, cap)
-          : mult,
+      waveUsdcMult: block !== undefined ? block * cap : mult,
+      waveBlockUsdcMult: block,
+      rampBlocks: block !== undefined ? cap : undefined,
       dud: false,
       sellBackFrac: 0,
     });
@@ -387,11 +393,37 @@ export function tokenLaunchCeiling(configs: StressEventConfig[]): {
 }
 
 // The wave's total USDC, from its multiple of the pool's USDC side. Rounded to whole units on a
-// 1e6 grid so two runs of the same scenario endow the same wallet.
+// 1e6 grid so two runs of the same scenario endow the same wallet. A wave with a per-block size is
+// that block times its length, exactly, so that every buy is a whole number of blocks.
 export function waveUsdcUnits(launch: ResolvedTokenLaunch): bigint {
+  const block = waveBlockUsdcUnits(launch);
+  if (block !== undefined && launch.rampBlocks !== undefined)
+    return block * BigInt(launch.rampBlocks);
   if (launch.dud || launch.waveUsdcMult <= 0) return 0n;
   const mult = BigInt(Math.round(launch.waveUsdcMult * 1_000_000));
   return (BigInt(launch.liquidityUsdc) * USDC_UNIT * mult) / 1_000_000n;
+}
+
+// One block's buy of a memoryless wave, on the same 1e6 grid, from the per-block multiple alone:
+// nothing in it depends on the length. Undefined for a fixed ramp (no per-block size).
+export function waveBlockUsdcUnits(
+  launch: ResolvedTokenLaunch,
+): bigint | undefined {
+  if (launch.waveBlockUsdcMult === undefined) return undefined;
+  if (launch.dud || launch.waveBlockUsdcMult <= 0) return 0n;
+  const mult = BigInt(Math.round(launch.waveBlockUsdcMult * 1_000_000));
+  return (BigInt(launch.liquidityUsdc) * USDC_UNIT * mult) / 1_000_000n;
+}
+
+// The USDC the wave should have spent by this block. A per-block wave is an integer number of
+// blocks' worth; a fixed ramp a fraction of its total, as before the stop existed.
+export function waveBuyTargetUnits(
+  state: Pick<TokenLaunchState, "waveUsdcUnits" | "waveBlockUsdcUnits">,
+  target: Pick<TokenLaunchTarget, "buyFrac" | "buyBlocks">,
+): bigint {
+  if (state.waveBlockUsdcUnits !== undefined)
+    return state.waveBlockUsdcUnits * BigInt(target.buyBlocks);
+  return scaleUnits(state.waveUsdcUnits, target.buyFrac);
 }
 
 /// Stage the launches: resolve wallets, sizes and the factory, and refuse to start on a deployment
@@ -456,6 +488,7 @@ export async function setupTokenLaunch(
         tokenSupplyWei:
           BigInt(launch.liquidityUsdc) * 10n ** BigInt(LAUNCH_TOKEN_DECIMALS),
         waveUsdcUnits: waveUsdcUnits(launch),
+        waveBlockUsdcUnits: waveBlockUsdcUnits(launch),
         symbol: `LT${eventIndex}${launch.index}`,
         phase: "pending" as const,
         listAttempts: 0,
@@ -566,13 +599,15 @@ export async function stepTokenLaunch(
         state.waveWallet.address,
       );
       if (state.waveStartUsdc === undefined) state.waveStartUsdc = usdcNow;
-      const buyTarget = scaleUnits(state.waveUsdcUnits, target.buyFrac);
+      const buyTarget = waveBuyTargetUnits(state, target);
       const buyDelta =
         buyTarget > state.grossBuyUsdc ? buyTarget - state.grossBuyUsdc : 0n;
       const minDelta =
-        (state.waveUsdcUnits * MIN_DELTA_BPS) /
-        10_000n /
-        BigInt(Math.max(1, rampOf(state)));
+        state.waveBlockUsdcUnits !== undefined
+          ? (state.waveBlockUsdcUnits * MIN_DELTA_BPS) / 10_000n
+          : (state.waveUsdcUnits * MIN_DELTA_BPS) /
+            10_000n /
+            BigInt(Math.max(1, rampOf(state)));
       if (buyDelta > 0n && buyDelta >= minDelta) {
         const amountIn = buyDelta > usdcNow ? usdcNow : buyDelta;
         const price = await poolPrice(ctx, runtime, state);

@@ -18,6 +18,8 @@ import {
   scaleUnits,
   tokenLaunchCeiling,
   tokenLaunchEndowments,
+  waveBlockUsdcUnits,
+  waveBuyTargetUnits,
   waveUsdcUnits,
 } from "../core/src/realtime/tokenLaunch.js";
 
@@ -290,6 +292,10 @@ test("memoryless targets: each token buys over its own length, then holds and se
       assert.equal(at(ramp0 - 1).buyFrac, 0);
       assert.ok(Math.abs(at(ramp0).buyFrac - 1 / L) < 1e-12);
       assert.equal(at(ramp0 + L - 1).buyFrac, 1);
+      assert.equal(at(ramp0 - 1).buyBlocks, 0);
+      assert.equal(at(ramp0).buyBlocks, 1);
+      assert.equal(at(ramp0 + L - 1).buyBlocks, L);
+      assert.equal(at(ramp0 + L + 10).buyBlocks, L);
       const decay0 = ramp0 + L + ev.holdBlocks;
       assert.equal(at(decay0 - 1).sellBackFrac, 0);
       assert.ok(Math.abs(at(decay0).sellBackFrac - l.sellBackFrac / ev.decayBlocks) < 1e-12);
@@ -322,6 +328,52 @@ test("memoryless funding: no draw spends more than the fixed wave wallet, and th
     );
   }
   assert.ok(Math.abs(realized / expected - 1) < 0.05, `realized / expected ${realized / expected}`);
+});
+
+test("a buy says nothing about the length: every block of a memoryless wave buys the same whole amount", () => {
+  // The exploit this pins: a block's buy used to be scaleUnits(L x round(realized multiple x 1e6),
+  // (t + 1) / r) with the realized multiple proportional to r, so the integer amountIn kept r in its
+  // rounding. With L read from the token's supply, the first buy alone left ~3 candidate lengths
+  // out of 75 and named r exactly in ~half the waves.
+  const doc = parse(readFileSync("config/regimes/launch.yaml", "utf8")) as {
+    run: { blocks: number };
+    stress: { events: Array<Record<string, unknown>> };
+  };
+  const parsed = parseStressEvents(JSON.stringify(doc.stress.events));
+  let waves = 0;
+  for (let seed = 1; seed <= 300; seed++) {
+    const s = new EventSchedule(parsed, seed, doc.run.blocks);
+    const i = s.events.findIndex((e) => e.type === "tokenLaunch");
+    const ev = s.events[i];
+    const targets = (b: number) => s.tokenLaunchTargetsAt(b).filter((t) => t.eventIndex === i);
+    for (const [j, l] of ev.launches!.entries()) {
+      if (l.dud) continue;
+      waves++;
+      const r = l.rampBlocks!;
+      const block = waveBlockUsdcUnits(l)!;
+      assert.ok(block > 0n);
+      const state = { waveUsdcUnits: waveUsdcUnits(l), waveBlockUsdcUnits: block };
+      assert.equal(state.waveUsdcUnits, block * BigInt(r), `seed ${seed}: total is not r blocks`);
+      // The same draw with any other length buys the same block.
+      for (const other of [1, 2, 24, 75])
+        assert.equal(
+          waveBlockUsdcUnits({ ...l, rampBlocks: other, waveUsdcMult: l.waveBlockUsdcMult! * other }),
+          block,
+        );
+      // What the driver sends, block by block: one block each time, r times, then nothing.
+      const buys: bigint[] = [];
+      let spent = 0n;
+      for (let b = ev.startBlock; b < ev.endBlock; b++) {
+        const target = waveBuyTargetUnits(state, targets(b)[j]);
+        if (target > spent) buys.push(target - spent);
+        spent = target > spent ? target : spent;
+      }
+      assert.equal(buys.length, r, `seed ${seed} token ${j}`);
+      assert.ok(buys.every((x) => x === block), `seed ${seed} token ${j}: a buy differs from the block`);
+      assert.equal(spent, state.waveUsdcUnits);
+    }
+  }
+  assert.ok(waves > 300, `${waves} waves`);
 });
 
 test("parser: waveStopProb is one probability on a tokenLaunch with a single rampBlocks cap", () => {

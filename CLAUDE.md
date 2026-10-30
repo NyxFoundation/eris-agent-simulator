@@ -1239,7 +1239,10 @@ gas は pin（9M、実測 5.6M）。翌ブロックにレジストリへ `uniswa
   名前を付けた鍵付きストリーム（`launch-length:<salt>:<i>:<k>:<j>`、`drawWaveLengths`）から 1 回ずつ引くので、
   `drawTokenLaunches` の固定 5 回と後続イベントの draw は動かない。1 ブロックの買いは**引いた倍率 / 平均長**
   （(1 − 0.96^75) / 0.04 = 23.8。期待総額は引いた倍率のまま、1 ブロックは最大で片側の 1/23.8 ≈ +8.6%）で、実際の総額は
-  倍率 × 長さ / 平均長（`ResolvedTokenLaunch.waveUsdcMult` は実現値、`rampBlocks` はそのトークンの長さ）。hold と
+  倍率 × 長さ / 平均長（`ResolvedTokenLaunch.waveUsdcMult` は実現値、`rampBlocks` はそのトークンの長さ）。
+  **1 ブロック分を先に整数で決め、総額はそのちょうど長さ倍**（`waveBlockUsdcMult` → `waveBlockUsdcUnits`、driver は
+  `waveBuyTargetUnits` で整数のブロック数ぶんを目標にする）。初版は総額（L × round(実現倍率 × 1e6)）を長さで割っていたので
+  amountIn の端数に長さが残り、L（token の供給量）を読む agent が初手で 47%、8 回目で 85% の波の長さを特定できた。hold と
   decay は**各トークン自身の停止から**数え、窓の `rampBlocks` / `endBlock` は最長の非 dud の波に合わせる。
   `waveStopProb` が**範囲でなく 1 つの数**なのは、トークンごとに引くと幾何分布の混合になり、停止率が年齢とともに下がる
   （長く続いた波ほど止まりにくい種類）ので、年齢が残りを教えてしまうから（parser が範囲を拒否し、`rampBlocks` も 1 つの整数を要求）。

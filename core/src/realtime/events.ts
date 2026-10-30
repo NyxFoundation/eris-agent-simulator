@@ -305,9 +305,15 @@ export type ResolvedTokenLaunch = {
   // Whole USDC seeded on the pool's USDC side; the token side is the same number of tokens.
   liquidityUsdc: number;
   // Total USDC the wave wallet spends over the ramp, as a multiple of liquidityUsdc. 0 for a dud.
-  // With waveStopProb this is the realized total: the drawn (expected) multiple scaled by this
-  // token's length over the mean length, so a block's buy is the same whatever the length.
+  // With waveStopProb this is the realized total: waveBlockUsdcMult times this token's length.
   waveUsdcMult: number;
+  // waveStopProb only: one block's buy, as a multiple of liquidityUsdc -- the drawn (expected)
+  // multiple over the mean length, so it is the same whatever the length. The driver buys it in
+  // whole units, an integer number of blocks at a time: deriving a block from the total instead
+  // left the length in the rounding of every buy (a total of L x round(mult x 1e6) units split
+  // r ways), and an agent that reads the exact amountIn could solve for r from the first buy in
+  // about half the waves. 0 for a dud.
+  waveBlockUsdcMult?: number;
   dud: boolean;
   // Share of the tokens the wave bought that it sells back during the decay.
   sellBackFrac: number;
@@ -328,6 +334,9 @@ export type TokenLaunchTarget = {
   // Fraction of the wave's total USDC that should have been spent by now: rises over the token's
   // ramp, then 1 for the rest of the run (a wave does not un-buy; the decay is the sell-back).
   buyFrac: number;
+  // The same, counted in whole blocks of the token's ramp: min(t + 1, ramp), 0 before it and for a
+  // dud. A wave with a per-block buy (waveBlockUsdcMult) targets exactly this many blocks' worth.
+  buyBlocks: number;
   // Fraction of the tokens bought that should have been sold back by now: 0 until the token's
   // decay starts (its own ramp + the window's hold), rising to sellBackFrac at its end and holding there.
   sellBackFrac: number;
@@ -813,6 +822,7 @@ export class EventSchedule {
         // The buy side is the rising half of the trapezoid and then stays up: the wave's USDC is
         // spent by the end of the ramp and never comes back (the decay is a token sale, not a refund).
         const buyFrac = t < 0 ? 0 : t < r ? (r === 0 ? 1 : (t + 1) / r) : 1;
+        const buyBlocks = t < 0 ? 0 : Math.min(t + 1, r);
         const decayT = t - (r + h);
         const decayFrac =
           decayT < 0 ? 0 : d === 0 ? 1 : Math.min(1, (decayT + 1) / d);
@@ -821,6 +831,7 @@ export class EventSchedule {
           launch,
           listed,
           buyFrac: launch.dud ? 0 : buyFrac,
+          buyBlocks: launch.dud ? 0 : buyBlocks,
           sellBackFrac: launch.dud ? 0 : launch.sellBackFrac * decayFrac,
           justClosed: blockIndex === ev.endBlock,
         });
@@ -1221,9 +1232,11 @@ function drawWaveLengths(
   const mean = waveLengthMean(stopProb, cap);
   const launches = (w.launches ?? []).map((l, j) => {
     const rampBlocks = waveLengthFrom(uniform(j), stopProb, cap);
+    const waveBlockUsdcMult = l.dud ? 0 : l.waveUsdcMult / mean;
     return {
       ...l,
-      waveUsdcMult: l.dud ? 0 : (l.waveUsdcMult * rampBlocks) / mean,
+      waveUsdcMult: waveBlockUsdcMult * rampBlocks,
+      waveBlockUsdcMult,
       rampBlocks,
     };
   });
