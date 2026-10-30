@@ -128,9 +128,19 @@ test(
     const accounts = (await rpc(upstream, "eth_accounts")).body
       .result as string[];
     const [environment, participant] = accounts;
+    // The real list is every environment signer (~35 addresses: role keys, flow, whale, launch slots,
+    // vuln owner, victims; core/src/realtime/environmentWallets.ts). Padded to that size here.
+    const others = Array.from(
+      { length: 40 },
+      (_, i) => `0x${(i + 1).toString(16).padStart(40, "0")}`,
+    );
     const gateway = await startGateway(t, upstream, {
       // Mixed case and a stray space: the list is matched case-insensitively.
-      RPC_PENDING_SEALED_SENDERS: ` ${environment.toUpperCase().replace("0X", "0x")}`,
+      RPC_PENDING_SEALED_SENDERS: [
+        ...others.slice(0, 20),
+        ` ${environment.toUpperCase().replace("0X", "0x")}`,
+        ...others.slice(20),
+      ].join(","),
     });
     for (const from of [environment, participant]) {
       const sent = await rpc(upstream, "eth_sendTransaction", [
@@ -147,6 +157,31 @@ test(
     assert.equal(await count(participant, "pending"), "0x1");
     assert.equal(await count(participant, "latest"), "0x0");
 
+    // Every other form anvil reads (measured, anvil 1.7.1: each answered 0x1 from the node and, before
+    // the seal read them, from the gateway too). The pending tag inside an EIP-1898 object:
+    const raw = async (params: unknown[]) =>
+      (await rpc(gateway, "eth_getTransactionCount", params)).body.result;
+    assert.equal(
+      (await rpc(upstream, "eth_getTransactionCount", [environment, { blockNumber: "pending" }])).body.result,
+      "0x1",
+      "the node answers the object form from the pool",
+    );
+    assert.equal(await raw([environment, { blockNumber: "pending" }]), "0x0");
+    assert.equal(await raw([environment.toUpperCase().replace("0X", "0x"), { blockNumber: "Pending" }]), "0x0");
+    // The address without its 0x, and as an array of bytes: a form the list cannot be checked
+    // against is answered as of latest, whoever it names.
+    const bare = environment.slice(2);
+    assert.equal(
+      (await rpc(upstream, "eth_getTransactionCount", [bare, "pending"])).body.result,
+      "0x1",
+      "the node reads an address without its 0x",
+    );
+    assert.equal(await raw([bare, "pending"]), "0x0");
+    assert.equal(await raw([Array.from(Buffer.from(bare, "hex")), "pending"]), "0x0");
+    assert.equal(await raw([participant.slice(2), "pending"]), "0x0");
+    // A participant naming itself canonically keeps the exemption, in either form of the tag.
+    assert.equal(await raw([participant, { blockNumber: "pending" }]), "0x1");
+
     // A batch is rewritten member by member.
     const batch = await fetch(gateway, {
       method: "POST",
@@ -162,7 +197,7 @@ test(
     assert.equal(byId.get(2), "0x1");
 
     const metrics = await (await fetch(`${gateway}/metrics`)).text();
-    assert.match(metrics, /rpc_pending_sender_sealed_total\{[^}]*\} 3/);
+    assert.match(metrics, /rpc_pending_sender_sealed_total\{[^}]*\} 8/);
   },
 );
 

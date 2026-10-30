@@ -138,8 +138,17 @@ for ct in "$GATEWAY_CT" "$PROXY_CT"; do
   [ -z "$proj" ] || die "$ct belongs to the compose project '$proj' (the practice stack): stop it there first (cutover.sh preflight)"
 done
 docker network inspect "$CHAIN_NET" >/dev/null 2>&1 || docker network create "$CHAIN_NET" >/dev/null
-# The role keys' pending nonce is answered as of "latest" (the deployer's would name a gap's block).
-SEALED=$(node --import tsx scripts/liveWeek.ts sealed-senders) || die "cannot list the role keys' addresses for the gateway (live-week.env)"
+# Every account the environment signs with has its pending nonce answered as of "latest": the role
+# keys (the deployer's named a gap's block), every flow wallet (an informed one's bump said where the
+# next price was), the whale, the launch slots, the vuln pool owner, the victims. The union over the
+# official regimes and this plan's, under this week's wallet secret (scripts/liveWeek.ts).
+SEALED=$(node --import tsx scripts/liveWeek.ts sealed-senders --wallet-secret "$SECRETS/wallet-secret.yaml" \
+  --scenarios config/scenarios/public.yaml --scenarios "$PLAN") \
+  || die "cannot list the environment's signers for the gateway (live-week.env role keys, wallet-secret.yaml)"
+ok "gateway seals the pending nonce of $(echo "$SEALED" | tr ',' '\n' | grep -c .) environment addresses"
+# The coordinator gets the same value and refuses the week if one of an epoch's signers is not on it
+# (core/src/realtime/liveWeek.ts). Never passed to the agents (agentProcess.ts).
+export ERIS_GATEWAY_SEALED_SENDERS="$SEALED"
 docker rm -f "$GATEWAY_CT" "$PROXY_CT" >/dev/null 2>&1 || true
 mkdir -p "runs/rpc-gateway-$MODE" "runs/inference-$MODE"
 LOGOPTS=(--log-opt max-size=100m --log-opt max-file=5)

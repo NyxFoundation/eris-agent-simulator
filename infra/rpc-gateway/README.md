@@ -160,17 +160,48 @@ has transactions of its own pending, and drops it as before when it has none. Mi
 `Sender` seeds its nonce with the latter and must account for already pending submissions.
 `eth_sendRawTransaction` remains available subject to the gas cap and the fee rule (below).
 
-**Except for the environment's own signers** (`RPC_PENDING_SEALED_SENDERS`, comma-separated: the four
-role keys' addresses). The exemption answered for any address, so the deployer's pending nonce told
-everyone when the environment had something unmined -- it sends the liquidity pull in the block a price
-gap opens, and in cdp-incident the eUSD sale too (4 transactions against 3 in the other gap regimes,
-measured in blocks.csv), which named the gap's moment and, for cdp-incident, its direction a block
-early. For a listed address `"pending"` is rewritten to `"latest"` before forwarding (counted in
-`rpc_pending_sender_sealed_total`); every other address keeps the exemption. The live week's
-`run-week.sh` derives the list from `live-week.env` (`scripts/liveWeek.ts sealed-senders`); the
-practice stack reads `ASCON_PENDING_SEALED_SENDERS` from `infra/monitoring/.env`. The flow, whale and
-launch wallets are not on it: their addresses come from the wallet secret, and what they leak is a
-moment without a direction.
+**Except for the environment's own signers** (`RPC_PENDING_SEALED_SENDERS`, comma-separated: every
+address the environment signs with, ~30-35). The exemption answered for any address, so every
+environment wallet's pending nonce told everyone, a block before it was mined, that the environment had
+something unmined, and what:
+
+- the **deployer** sends the liquidity pull in the block a price gap opens, and in cdp-incident the
+  eUSD sale too (4 transactions against 3 in the other gap regimes, measured in blocks.csv): the gap's
+  moment and, for cdp-incident, its direction;
+- an **informed flow wallet** (one per venue) is handed the *next* block's fair price and trades only
+  when it is more than 30bps from that venue's pool price (`core/src/flow/logic.ts`), buying below and
+  selling above: its bump says the next price lies outside a band around a price anyone can read
+  (with the pool's side of the current fair, which way), and every venue's bumps together name the
+  block before a gap. Not "a moment without a direction";
+- a **launch wave wallet** (`launch-wave:<k>`) sends nothing for a dud and an approve and a swap for a
+  real token: "this one is real" a block early, and the start of the sell-back likewise;
+- the **whale wallet** names the print a block early (enough to force a revert and sandwich the
+  deterministic resend);
+- the rest (uninformed and GMX / Aave flow, the `launch:<k>` listing wallets, the vuln pool owner, the
+  victims, the treasury on an external chain) leak less, and are sealed on the same rule: an
+  environment signer's pending nonce is nobody else's business.
+
+For a listed address `"pending"` is rewritten to `"latest"` before forwarding (counted in
+`rpc_pending_sender_sealed_total`); every other address keeps the exemption -- a participant's own
+wallet included, which is what its runtime allocates nonces from. "Pending" in every form anvil reads:
+the string in any case and inside an EIP-1898 object (`[addr, {"blockNumber": "pending"}]` is answered
+from the pool; measured, anvil 1.7.1). anvil also reads the address without its `0x` and as an array of
+20 bytes, and both used to pass a lookup keyed on the canonical string; a pending query whose address
+is not a canonical `0x` + 40 hex string is answered as of `"latest"` whatever it names (fail closed --
+a sender allocating its own nonce names itself canonically). The environment itself never reads
+through the gateway (the coordinator and the flow relay talk to anvil directly), so sealing costs it
+nothing.
+
+The list is `core/src/realtime/environmentWallets.ts` (`environmentSigners`): the role keys, and every
+wallet derived from the wallet secret that signs during an epoch. The coordinator builds its flow map
+and its nonce floor from the same function, and `test/environmentWallets.test.ts` fails on an
+`environmentKey` kind it does not classify or a signing wallet derived anywhere else. Print it with
+`scripts/liveWeek.ts sealed-senders`: the live week's `run-week.sh` runs it over the official regimes
+and the plan under `wallet-secret.yaml` and `live-week.env`; the practice stack reads the value from
+`ASCON_PENDING_SEALED_SENDERS` in `infra/monitoring/.env`
+(`sealed-senders --config config/practice.yaml --wallet-secret <the period's>`, see `.env.example`).
+It depends on the role keys, the wallet secret and the config's venues and actor / victim counts, so a
+change to any of them means regenerating it and recreating the gateway.
 
 **Reads by hash** (`eth_getTransactionByHash`, `eth_getRawTransactionByHash`) stay on the allowlist — the
 receipt poll, explorers and replay tooling read mined transactions through them — but a transaction

@@ -46,9 +46,14 @@ const DEFAULT_PROTOCOL_IDS: ProtocolId[] = ALL_ADAPTERS.map((a) => a.id).filter(
 let enabledIds: ProtocolId[] = [...DEFAULT_PROTOCOL_IDS];
 setEnabledProtocolIds(enabledIds);
 
-export function setEnabledProtocols(ids: ProtocolId[]): void {
+/** The ids `setEnabledProtocols(ids)` enables: the implemented ones, or the default set if none is. */
+export function resolveEnabledProtocolIds(ids: readonly ProtocolId[]): ProtocolId[] {
   const filtered = ids.filter((id) => ALL_BY_ID.has(id));
-  enabledIds = filtered.length > 0 ? filtered : [...DEFAULT_PROTOCOL_IDS];
+  return filtered.length > 0 ? filtered : [...DEFAULT_PROTOCOL_IDS];
+}
+
+export function setEnabledProtocols(ids: ProtocolId[]): void {
+  enabledIds = resolveEnabledProtocolIds(ids);
   // Published so an adapter can ask what the run enabled without importing this module back
   // (which would be a cycle, since this one imports every adapter).
   setEnabledProtocolIds(enabledIds);

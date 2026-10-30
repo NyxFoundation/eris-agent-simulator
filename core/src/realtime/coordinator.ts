@@ -205,6 +205,11 @@ import { measureAgentNetworks, networkMismatches } from "./agentNetwork.js";
 import { createAgentStopper } from "./agentStop.js";
 import { environmentSignerOwners } from "./environmentSigners.js";
 import {
+  deriveFlowWallets,
+  environmentSigners,
+  gatewaySealRecord,
+} from "./environmentWallets.js";
+import {
   createDockerRunner,
   DOCKER_CALL_TIMEOUT_MS,
   PROBE_ATTEMPTS,
@@ -670,6 +675,7 @@ async function assertLiveWeekPosture(
     agentsReadyTimeoutSec: config.agentsReadyTimeoutSec,
     agents,
     env: process.env,
+    gatewaySeal: gatewaySealRecord(environmentSigners(config), process.env),
   });
   // The proxy's mode is only visible from the proxy itself (liveWeek.ts).
   const proxy = await probeInferenceProxy(process.env);
@@ -1429,31 +1435,22 @@ export async function runRealtimeSimulation(
   }
 
   // ---- flow wallets (per protocol/kind; used by submitIntent / ctx for selection) ----
-  const flowWalletMap = new Map<string, FlowWallet>();
-  for (const id of enabledIds) {
-    for (const kind of ["informed", "uninformed"] as FlowKind[]) {
-      const key = `${id}:${kind}`;
-      const privateKey = environmentKey("flow", key);
-      flowWalletMap.set(key, {
-        id: `flow-${key}`,
-        address: accountAddress(privateKey),
-        privateKey,
-      });
-    }
-  }
-  // aave borrower pool: provide independent actors at separate addresses (persistent positions × N).
-  // Since they go on flowWalletMap, funding and blocks.csv attribution flow through the same path as other flow wallets.
-  if (enabledIds.includes("aave")) {
-    for (let i = 0; i < config.aaveFlowActorCount; i++) {
-      const key = `aave:actor${i}`;
-      const privateKey = environmentKey("flow", key);
-      flowWalletMap.set(key, {
-        id: `flow-${key}`,
-        address: accountAddress(privateKey),
-        privateKey,
-      });
-    }
-  }
+  // Per venue an informed and an uninformed wallet; the Aave borrower actors (independent addresses
+  // so their positions persist side by side); the whale; every token-launch slot's listing and wave
+  // wallet. One map so funding and blocks.csv attribution go through the same path. Built by
+  // environmentWallets.ts, which is also what the gateway's sealed-sender list and the nonce floor
+  // read: a flow wallet made here is one they name.
+  //
+  // The whale and the launch slots are created in every run, whale or launch or not: the
+  // environment's wallets and what they hold must not depend on the schedule (rules §3.3). A wallet
+  // that exists only in one regime is a sender in that regime's setup blocks and a balance at a
+  // fixed address in every later epoch of the same matrix process -- the regime, readable before the
+  // first block. The whale's own wallet keeps a print from draining the ordinary flow wallets
+  // mid-run (which would quietly change the flow bot's behavior) and attributes it to the event.
+  const flowWalletMap: Map<string, FlowWallet> = deriveFlowWallets({
+    enabledIds,
+    aaveFlowActorCount: config.aaveFlowActorCount,
+  });
 
   // Resolved before wallet funding, not at the start of the block loop: the whale wallet has to be
   // endowed with enough inventory to place the largest order the seed drew, and that is only knowable
@@ -1468,42 +1465,21 @@ export async function runRealtimeSimulation(
   );
   const stressAudit = new StressAudit(schedule.events, event => logger.event(event));
   if (cp) stressAudit.restore(cp.stressAudit);
-  // A dedicated wallet so a whale order does not drain the ordinary flow wallets mid-run (which
-  // would quietly change the flow bot's behavior for the rest of the run) and so blocks.csv
-  // attributes the print to the event rather than to background flow.
-  //
-  // Created in every run, whale or not, as are the launch slots below: the environment's wallets
-  // and what they hold must not depend on the schedule (rules §3.3). A wallet that exists only in
-  // one regime is a sender in that regime's setup blocks and a balance at a fixed address in every
-  // later epoch of the same matrix process -- the regime, readable before the first block.
   const whaleEvents = schedule.events.filter((e) => e.type === "whale");
   // Under economicGas a print carries a slippage limit, and one that reverts is sent again
   // (whale.ts WhaleResubmits): a whale is a single event, and a reverted print with no second
   // attempt would turn the epoch into calm.
   const whaleResubmits =
     whaleEvents.length > 0 && config.economicGas ? new WhaleResubmits() : null;
-  {
-    const key = WHALE_WALLET_KEY;
-    const privateKey = environmentKey("flow", key);
-    flowWalletMap.set(key, {
-      id: `flow-${key}`,
-      address: accountAddress(privateKey),
-      privateKey,
-    });
-  }
-  // Token launches (issue #29): one wallet that lists each token and one that buys it. On the flow
-  // map so they are funded, approved and attributed as flow like the whale; their sizes are set
-  // below once the pools have been read, for the same reason the whale's are. A fixed number of
-  // slots, whatever the schedule lists (LAUNCH_WALLET_SLOTS).
+  // Token launches (issue #29): one wallet that lists each token and one that buys it, already on
+  // the flow map (funded, approved and attributed as flow like the whale); their sizes are set below
+  // once the pools have been read, for the same reason the whale's are. A fixed number of slots,
+  // whatever the schedule lists (LAUNCH_WALLET_SLOTS): this refuses a schedule that lists more.
   const launchSlots = launchWalletFunding(schedule);
   for (const e of launchSlots) {
     for (const key of [e.launchKey, e.waveKey]) {
-      const privateKey = environmentKey("flow", key);
-      flowWalletMap.set(key, {
-        id: `flow-${key}`,
-        address: accountAddress(privateKey),
-        privateKey,
-      });
+      if (!flowWalletMap.has(key))
+        throw new Error(`token launch slot ${key} is not on the flow map (environmentWallets.ts)`);
     }
   }
 
@@ -1564,24 +1540,48 @@ export async function runRealtimeSimulation(
     ownerId: "vuln-pools",
     role: "system",
   });
+  // Every account the environment signs with (environmentWallets.ts): the list the live week's RPC
+  // gateway seals the pending nonce of, and the nonce floor below. A wallet the environment
+  // attributes to itself but that list does not name would leak its unmined transactions through
+  // the gateway, so it is refused here rather than run.
+  const signers = environmentSigners(config, enabledIds);
+  {
+    const listed = new Set(signers.map((s) => s.address));
+    const unlisted = [...ownerByAddress]
+      .filter(([address, owner]) => owner.role !== "agent" && !listed.has(address as Address))
+      .map(([address, owner]) => `${owner.ownerId} ${address}`);
+    if (unlisted.length > 0)
+      throw new Error(
+        `environment wallets missing from environmentSigners (core/src/realtime/environmentWallets.ts): ${unlisted.join(", ")}. ` +
+          "Add them there, so the gateway seals their pending nonce and the nonce floor raises them",
+      );
+  }
+  // ...and against the list the gateway actually holds, when it was handed over. The live week
+  // refused a list that misses one before anything ran (assertLiveWeekPosture); anywhere else -- the
+  // practice period above all, where a refused start stops the chain everyone trades on -- a gap is
+  // a leak to fix, not a reason to stop, so it is said loudly and recorded.
+  {
+    const seal = gatewaySealRecord(signers, process.env);
+    logger.event({ type: "environment_signers_sealed", signers: signers.length, ...seal });
+    if (seal.gateway === "missing")
+      console.error(
+        `[gateway] WARNING: the RPC gateway's sealed-senders list misses ${seal.missing.length} of this ` +
+          `run's environment signers (${seal.missing.map((m) => m.id).join(", ")}): their pending ` +
+          "nonces are readable. Regenerate it with `scripts/liveWeek.ts sealed-senders` under this " +
+          "run's wallet secret and role keys, and restart the gateway",
+      );
+  }
 
   // ---- every known signer starts above any nonce an earlier epoch used (nonceFloor.ts) ----
   // The reset above put the nonces back to the snapshot's, and the keys are the ones the last epoch
   // signed with, so the last epoch's transactions would be valid again for whoever kept them. Before
   // funding: the agents' venue approvals and every setup transaction after this sign above the floor.
-  // The victims are derived here from the same counts setup uses (pure), since they sign at setup.
+  // The victims are on the signer list from the same counts setup uses (pure), since they sign at setup.
   // Not on a resume: nothing was reverted, so every nonce is already where the period left it.
   if (!external && !config.skipReset && !resume) {
     const report = await raiseNonces(
       publicClient,
-      [
-        ...agentRuntimes.map((a) => a.address),
-        ...[...flowWalletMap.values()].map((w) => w.address),
-        ...[...environmentSignerOwners(config.privateKeys).keys()].map((a) => a as Address),
-        ...deriveStressVictims(config.stressVictimCount).map((v) => v.address),
-        ...deriveLiquityVictims(config.stressLiquityVictimCount).map((v) => v.address),
-        vulnPoolWallet.address,
-      ],
+      [...agentRuntimes.map((a) => a.address), ...signers.map((s) => s.address)],
       epochNonceFloor(),
     );
     logger.event({ type: "epoch_nonce_floor", ...report });

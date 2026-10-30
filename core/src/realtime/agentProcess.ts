@@ -71,6 +71,8 @@ const OS_PASSTHROUGH = new Set([
 //                          core/src/walletKeys.ts). With it, an agent has every other agent's key.
 //   ERIS_SCENARIO_REGIME   the regime the scenario streams are named by (issue #186). Knowing it is
 //                          knowing the regime, which rules §3.2 does not announce.
+//   ERIS_GATEWAY_SEALED_SENDERS  every address the environment signs with (environmentWallets.ts),
+//                          the whale's and the launch slots' among them: a map of who to watch.
 // Any other ERIS_*_SEED is held back the same way: a seed is never something an agent needs, and
 // neither is anything under ERIS_SCENARIO_KEY or ERIS_WALLET_SECRET.
 const ENVIRONMENT_ONLY_ERIS = new Set([
@@ -81,6 +83,7 @@ const ENVIRONMENT_ONLY_ERIS = new Set([
   "ERIS_PRACTICE_SEED",
   "ERIS_FLOW_SEED",
   "ERIS_SCENARIO_REGIME",
+  "ERIS_GATEWAY_SEALED_SENDERS",
 ]);
 export function isEnvironmentOnlyEnv(name: string): boolean {
   return (

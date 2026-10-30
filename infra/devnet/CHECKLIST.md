@@ -138,6 +138,9 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
 - [ ] 参加者キーを発行し、gateway に読ませる:
   `infra/access/issue-key.sh --generate 8` → `infra/monitoring/.env` の `ASCON_KEYS_DIR`
 - [ ] seed: [README](README.md#install-once-on-the-box-that-hosts-it) のとおり `.env.practice` を作る
+- [ ] gateway の sealed senders: `npx tsx scripts/liveWeek.ts sealed-senders --config config/practice.yaml --wallet-secret <.env.practice の ERIS_WALLET_SECRET_FILE>`
+  の stdout を `infra/monitoring/.env` の `ASCON_PENDING_SEALED_SENDERS` に書き、`(cd infra/monitoring && docker compose up -d rpc-gateway-live)`
+  （[README](README.md#what-it-needs)。環境の全署名者 30 前後。stderr の内訳で役割鍵 4 と flow 25 を確かめる）
 - [ ] エピソードを 26h 用に作り直す: `npm run gen:practice-episodes -- --hours 26`
 - [ ] 長さの上書き（unit の drop-in）:
   ```sh
@@ -362,6 +365,14 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
 - [ ] 環境の鍵: 秘密の mnemonic で deploy した dump を使い、`infra/monitoring/.env` に `ANVIL_MNEMONIC`、`.env.local` に
   `DEPLOYER_PRIVATE_KEY`（その 0 番）と、この期間のために作った `ADMIN_PRIVATE_KEY` / `KEEPER_PRIVATE_KEY` /
   `SETUP_PRIVATE_KEY` がある。`ERIS_ALLOW_PUBLIC_ROLE_KEYS` は**無い**（公開鍵のままなら coordinator が起動を拒否する）
+- [ ] gateway の sealed senders をこの期間の鍵と財布の秘密から作り直し、`infra/monitoring/.env` の
+  `ASCON_PENDING_SEALED_SENDERS` に書く（下の compose の上げ直しで gateway が読む）:
+  `npx tsx scripts/liveWeek.ts sealed-senders --config config/practice.yaml --wallet-secret ~/.eris-secrets/practice-wallet-secret.yaml`
+  の stdout。環境が署名する**全**アドレス（役割鍵 4 + flow / whale / launch 25 + vuln 1 = 30 前後。stderr に内訳）で、
+  役割鍵 4 本だけの古い値のままだと flow の informed 財布の pending nonce が次の価格の向きを 1 ブロック先に漏らす
+  （[README](README.md#what-it-needs)）。役割鍵か財布の秘密を変えたら作り直す。同じ値を `.env.practice` の
+  `ERIS_GATEWAY_SEALED_SENDERS` にも書く（coordinator が起動ごとに自分の署名者と照合し、漏れがあれば stderr と
+  `environment_signers_sealed` イベントで警告する。練習期間では起動は止めない）
 - [ ] エピソードを起動予定時刻で作り直し、PR にしてマージし、**box に promote する**:
   `npm run gen:practice-episodes -- --start <起動予定時刻（タイムゾーン付き）>` → マージ → box で
   `infra/dashboard/sync-main.sh promote <マージ commit>`。**マージだけでは box に届かない**（pin で
