@@ -3,7 +3,8 @@
 // Three startup checks refuse a chain that predates a change to a venue, and all three are things
 // an operator has to know *before* taking the environment down: the answer decides whether a live
 // migration is possible at all or whether the chain has to be redeployed, and a redeploy resets a
-// practice period's standings.
+// practice period's standings. A fourth, Liquity's MCR, refuses only a fresh start: a period that
+// resumes on an older chain warns and carries on, so it is reported apart from the others.
 //
 // This reads. It sends nothing, signs nothing, and needs no key. It calls the same functions the
 // coordinator calls at startup (aaveReserveGuard / liquity), so a PASS here means that check will
@@ -22,7 +23,13 @@ import {
   strayAaveReserves,
   type AaveReserveState,
 } from "../realtime/aaveReserveGuard.js";
-import { MIN_ENV_LQTY_STAKE_WEI, lqtyStakeProblem } from "../realtime/liquity.js";
+import {
+  LIQUITY_MCR_WAD,
+  MIN_ENV_LQTY_STAKE_WEI,
+  liquityMcrEnforcement,
+  lqtyStakeProblem,
+} from "../realtime/liquity.js";
+import { troveManagerAbi } from "@eris/sdk/abis.js";
 
 const lqtyStakingAbi = [
   {
@@ -100,6 +107,8 @@ async function main(): Promise<void> {
   }
   console.log(`chain ${rpc} at block ${block}\n`);
   let blocking = 0;
+  // Checks that refuse only a fresh start (a new period or run), not a period resuming.
+  let freshOnly = 0;
 
   // --- Aave: the vendor test market (issue #190) ----------------------------
   // A frozen reserve passes only when nobody but the treasury holds anything in it. A participant's
@@ -188,6 +197,45 @@ async function main(): Promise<void> {
     console.log();
   }
 
+  // --- Liquity: MCR 130% (deployer/vendor/liquity-mcr.patch) ----------------
+  // Not counted as blocking: the coordinator refuses a wrong MCR only on a fresh start. A practice
+  // period resuming on its own chain warns and carries on (liquityMcrEnforcement), because the
+  // constant is in the bytecode and nothing but a redeploy -- a new period -- changes it.
+  console.log("Liquity MCR");
+  if (!LIQUITY?.troveManager) {
+    console.log("  skipped: no Liquity in this deployment overlay\n");
+  } else {
+    try {
+      const mcr = (await client.readContract({
+        address: LIQUITY.troveManager,
+        abi: troveManagerAbi,
+        functionName: "MCR",
+      })) as bigint;
+      console.log(
+        `  TroveManager.MCR() = ${formatUnits(mcr, 18)} ` +
+          `(the check wants ${formatUnits(LIQUITY_MCR_WAD, 18)})`,
+      );
+      if (liquityMcrEnforcement(mcr, { external: false, resume: false }) === "pass")
+        console.log("  PASS");
+      else {
+        freshOnly++;
+        console.log(
+          "  WARN: a resumed period starts with a warning; a new period or a fresh run is refused",
+        );
+        console.log(
+          "  MCR is a constant compiled into TroveManager, so a live migration cannot change it. " +
+            "The deployment predates deployer/vendor/liquity-mcr.patch; the next redeploy of this " +
+            "chain picks it up.",
+        );
+      }
+    } catch (e) {
+      console.log(`  READ FAILED: ${readFailure(e)}`);
+      process.exitCode = 2;
+      return;
+    }
+    console.log();
+  }
+
   // --- GMX: whether the fee configuration is the competition's (issue #233) --
   // Not a startup check: a chain with no position fee starts and runs. It is here because it is the
   // other half of "is this chain the competition's economy", and it is the half a live migration
@@ -208,7 +256,10 @@ async function main(): Promise<void> {
 
   console.log(
     blocking === 0
-      ? "A coordinator can start on this chain."
+      ? freshOnly === 0
+        ? "A coordinator can start on this chain."
+        : `A coordinator can resume a period on this chain, but ${freshOnly} check(s) refuse a new ` +
+          "period or a fresh run on it."
       : `A coordinator cannot start on this chain: ${blocking} check(s) refuse it.`,
   );
   if (blocking > 0) process.exitCode = 1;

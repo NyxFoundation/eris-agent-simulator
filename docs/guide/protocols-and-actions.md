@@ -126,3 +126,31 @@ their PnL — realised (including a winner you already closed) and unrealised �
 overlapped the liquidated one. A one-sided position keeps its on-chain limited liability: it loses at
 most its collateral. A long + short straddle no longer turns a gap into free PnL. The charge shows in
 `summary.json` as `agents[].gmxShortfallChargedUsd` and each close as a `gmx_insolvent_close` event.
+
+## Liquity MCR (130%)
+
+**A Trove's minimum collateral ratio (MCR) is 130%**, where Liquity ships 110%; CCR (Recovery Mode
+below a 150% system ratio) is unchanged. It is the one change to Liquity's core
+(`deployer/vendor/liquity-mcr.patch`, applied by `deployer/scripts/setup-vendors.sh`), and the
+observation reads it from the chain (`obs.protocols.liquity.mcr`, `trove.liquidationPriceUsd`), so a
+strategy that uses those fields needs no change.
+
+- An open or an adjustment that would leave the Trove under 130% reverts (`BorrowerOps: An operation
+  that would result in ICR < MCR is not permitted`). The adapter's check uses the same floor, on the
+  composite debt (request + borrowing fee + 200 eUSD).
+- Under 130% anyone can liquidate the Trove, and liquidation takes **all** of its collateral: a
+  borrower liquidated at 129% loses up to ~30% of the debt rather than ~10%, and the Stability Pool
+  gains that much more per liquidation. A Recovery Mode liquidation seizes at most 130% of the debt
+  (the rest is claimable surplus).
+
+Why 130%: a Trove is a long ETH position with limited liability — below 100% ICR it is worth 0 to
+its owner, and the rest of the loss lands on the environment's Stability Pool, which nobody is scored
+on. At 110% that is ~11x, so a Trove at MCR hedged with a GMX short turned a down gap into a payoff
+that only went one way. At 130% the leverage is ICR/(ICR−1) ≈ 4.3x, and the largest official down
+gap (22%) leaves a Trove opened at MCR at 1.30 × 0.78 = 101%. The same decision as the GMX leverage
+cap above.
+
+The coordinator reads `TroveManager.MCR()` before its first Liquity setup transaction and records
+`liquity_mcr_check`. A deployment or state dump built before the patch is refused on a fresh epoch
+(re-bake it — see [Backtest](backtest.md#troubleshooting)); a practice period resuming on its own
+chain, or an external chain, carries on with a warning, since only a redeploy changes the constant.

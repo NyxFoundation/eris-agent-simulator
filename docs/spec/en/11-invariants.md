@@ -46,6 +46,7 @@ It used to surface minutes into setup as `Cannot decode zero data ("0x")` and a 
 |---|---|
 | **`lst_setup`** | The pool's rate-oracle wiring. Stops above 200bps of divergence (unwired, a rising rate is **a risk-free arbitrage open to everyone**) |
 | **`liquity_setup`** | Swapping the oracle adapter and verifying drift. Stops on an opening Recovery Mode or an already-depegged chain |
+| **`liquity_mcr_check`** | Whether `TroveManager.MCR()` is 1.30 (`LIQUITY_MCR_WAD`, `deployer/vendor/liquity-mcr.patch`). Otherwise a fresh epoch stops (re-bake with `npm run gen:state-dump`); an external chain or a practice period resuming warns and carries on (only a redeploy changes the constant) |
 | **`no_arb_startup`** | Stops when an executable cross-venue round trip exceeds `STARTUP_FAIL_BPS = 300`; warns above `STARTUP_WARN_BPS = 10` |
 
 **Where the no-arb thresholds come from** (`core/src/realtime/noArb.ts:27-31`): after setup the venues are calibrated to within ±20bps of fair and every venue charges at least 30bps per side. So **against a round-trip cost of 60bps or more, any positive executable profit is suspicious**, and 300bps is unambiguously broken (a split deploy that flipped token sort order measured a ~1000× price error).

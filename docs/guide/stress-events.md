@@ -311,7 +311,7 @@ in `agents/<id>.jsonl` — the agent log is the primary source.
 
 `liquityVictimCount` (default 0 = off) is the CDP counterpart of the Aave cohort (issue #107):
 seed-derived accounts (`eris-liquity-victim:<seed>:<i>`) that each open one Trove with
-`liquityVictimCollWethWei` of collateral at `liquityVictimIcr` (default 1.20), through the same
+`liquityVictimCollWethWei` of collateral at `liquityVictimIcr` (default 1.42), through the same
 `liquityOpenTrove` builder an agent uses (hints, WETH unwrap). The debt is sized so the Trove *lands*
 at that ICR once Liquity has added the borrowing fee and the 200 eUSD gas compensation, and the
 coordinator reads it back and refuses a cohort that did not. They hold the eUSD they minted and
@@ -321,9 +321,11 @@ never trade; they are not scored.
   sits in the sorted list at an ICR nobody configured.
 - **Cannot open the epoch in Recovery Mode**: the coordinator refuses a cohort that pushes the system
   TCR under CCR.
-- **Calibration**: a Trove at ICR₀ goes under MCR (1.10) at a crash of m > 1 − MCR/ICR₀ — 8.3 % at
-  1.20 — and `stress_calibration_warning` (`crash magnitude may not breach victim ICR`) says when a
-  drawn crash cannot.
+- **Calibration**: a Trove at ICR₀ goes under MCR (1.30 — Liquity ships 1.10;
+  `deployer/vendor/liquity-mcr.patch`) at a crash of m > 1 − MCR/ICR₀ — 8.5 % at 1.42, the same fall
+  that broke 1.20 against 1.10 (8.3 %) — and `stress_calibration_warning` (`crash magnitude may not
+  breach victim ICR`) says when a drawn crash cannot. The ICR must be above MCR or the Trove cannot
+  open, and the coordinator refuses it at setup.
 - Records: `stress_liquity_victims_setup` (ICR, debt, collateral, and the system's MCR / CCR / TCR),
   `stress_liquity_victim_icr` on every block a window is open, `stress_liquity_liquidation` when a
   victim's Trove is closed by liquidation, `stress_liquity_redemption` when its debt falls (or it is
@@ -347,7 +349,11 @@ Mode liquidates a Trove between MCR and TCR only when the Stability Pool can abs
 `liquitySpSeedEusdWei` lets the environment put the deployer's eUSD surplus into the pool. The genesis
 Trove is left alone on purpose: lowering it would invert the redemption order and thin the pool for
 every regime (the issue's three reasons). `config/regimes/cdp-recovery.yaml` is the worked example,
-outside the official set.
+outside the official set. With MCR at 1.30 the band Recovery Mode liquidates in (MCR up to a TCR under
+1.50) is narrow, and a cohort that should be liquidatable *only* because of Recovery Mode has to land
+in it after the crash — so its own ratio sits close to the target, and pulling the system there takes
+a lot of it: 24 Troves at ICR 1.69 under a 20–22 % crash, 2.3–3.4M eUSD of debt (not yet measured on
+chain).
 
 ## Events emitted
 

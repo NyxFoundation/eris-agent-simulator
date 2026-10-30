@@ -1,16 +1,18 @@
 // Liquity V1 as the CDP stablecoin venue, issuing eUSD (issue #39).
 //
-// The core is forked unmodified, so what this adapter exposes is Liquity's own game:
+// The core is forked with one constant changed -- MCR is 130% rather than Liquity's 110%
+// (deployer/vendor/liquity-mcr.patch, a leverage cap) -- so what this adapter exposes is Liquity's
+// own game:
 //
-//   Troves          borrow eUSD against native ETH at a minimum 110% collateral ratio, paying a
-//                   one-off borrowing fee that rises with use
+//   Troves          borrow eUSD against native ETH at a minimum 130% collateral ratio (MCR, read
+//                   from the chain, never assumed), paying a one-off borrowing fee that rises with use
 //   redemption      anyone holding eUSD may exchange it for collateral at the oracle price, always
 //                   starting from the riskiest Trove. When eUSD trades below $1 that is a clean
 //                   cross-venue α: buy the discount, redeem at par, pay the redemption fee
 //   Stability Pool  deposit eUSD to absorb liquidated debt and receive the collateral at a discount
 //   Recovery Mode   below a system-wide 150% TCR (CCR) the liquidation threshold stops being a
 //                   constant: a Trove is liquidatable once its ICR is under the *current TCR*, and
-//                   the seizure is capped at 110% of the debt with the surplus claimable. So the
+//                   the seizure is capped at MCR x the debt with the surplus claimable. So the
 //                   line moves for everyone at the same time -- a reflexive crash rather than
 //                   Aave's per-position health factor
 //
@@ -23,7 +25,7 @@
 // valuation gap -- but it is a gas interaction, and the observation surfaces the remaining headroom.
 //
 // *A closed Trove can leave collateral behind.* A full redemption returns what the collateral held
-// above the debt it cancelled, and a Recovery-Mode liquidation seizes at most 110% of the debt; in
+// above the debt it cancelled, and a Recovery-Mode liquidation seizes at most MCR x the debt; in
 // both cases the rest waits in CollSurplusPool for the owner to claim with
 // BorrowerOperations.claimCollateral(). There is no action for that call (the venue's action set
 // stays at eight) -- an agent sends it as a `rawTx` to `borrowerOperations`. The observation

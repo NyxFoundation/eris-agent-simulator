@@ -11,7 +11,7 @@ without you.
 Opening a Trove is one decision; holding one is the strategy. Three things can take it away, and
 they are not the same risk:
 
-- **Liquidation.** Under a 110% ICR the Trove is seized: the collateral goes to the Stability Pool
+- **Liquidation.** Under a 130% ICR (`mcr`) the Trove is seized: the collateral goes to the Stability Pool
   and the borrower keeps the eUSD. `trove.liquidationPriceUsd` is the collateral price at which
   that happens — one number, no derivation needed.
 - **Redemption.** Anyone holding eUSD can exchange it for *this* Trove's collateral at the oracle
@@ -19,9 +19,9 @@ they are not the same risk:
   taken) but it resizes a position somebody else chose to shrink.
   `trove.positionFromRiskiest` and `trove.redeemedAheadEusdWei` say how exposed the Trove is; more
   collateral moves it up the list.
-- **Recovery Mode.** Below a system-wide 150% TCR the threshold stops being 110%: a Trove becomes
+- **Recovery Mode.** Below a system-wide 150% TCR the threshold stops being 130%: a Trove becomes
   liquidatable once its ICR is under the *current* TCR, and only if the Stability Pool can absorb
-  its whole debt. What is seized is capped at 110% of the debt and the rest is claimable, so it is
+  its whole debt. What is seized is capped at 130% of the debt and the rest is claimable, so it is
   cheaper than an ordinary liquidation — but the line moves for everyone at once. `recoveryMode`
   and `tcr` are visible before it arrives, and nothing the borrower does causes it or stops it.
 

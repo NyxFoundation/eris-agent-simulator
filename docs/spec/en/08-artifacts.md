@@ -117,6 +117,7 @@ One event per line, each carrying an ISO `ts`. The catalogue below is what the c
 | `run_completed` | Completion |
 | `deployment_check` | Measured deployment (chainId / checked / missing) |
 | `gmx_funding_check` | Each GMX market's `FUNDING_INCREASE_FACTOR_PER_SECOND` and `fundingModeled` on a local deploy (ok / enforcement / markets). A deploy or state dump without funding (before gmx-localhost.patch a35cf3e) stops the run on anvil; on an external chain that is never reset (the practice devnet) it warns and continues |
+| `liquity_mcr_check` | Liquity's `TroveManager.MCR()` (ok / enforcement / mcrWad / expectedMcrWad = 1.3e18). A deploy or state dump from before the MCR 130% patch (`deployer/vendor/liquity-mcr.patch`) stops a fresh epoch here; an external chain or a practice period resuming warns and carries on |
 | `agents_registered` | The whole roster (id / address / baseline / description / external) |
 | `agent_external_registered` | An external registration the environment did not start |
 | `agent_process_exited` | An agent process ending early |

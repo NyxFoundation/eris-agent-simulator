@@ -46,6 +46,7 @@
 |---|---|
 | **`lst_setup`** | プールの rate oracle 配線。乖離 200bps 超で停止（未配線だとレート上昇が**全員に開かれた無リスク裁定**になる） |
 | **`liquity_setup`** | オラクルアダプタの差し替えと drift 検証。Recovery Mode 開幕・デペグ済みチェーンで停止 |
+| **`liquity_mcr_check`** | `TroveManager.MCR()` が 1.30（`LIQUITY_MCR_WAD`、`deployer/vendor/liquity-mcr.patch`）か。違えば新しいエポックは停止（焼き直し = `npm run gen:state-dump`）、external と再開する練習期間は警告して続行（定数は再デプロイでしか変わらない） |
 | **`no_arb_startup`** | 実行可能な venue 間往復が `STARTUP_FAIL_BPS = 300` を超えたら停止（`STARTUP_WARN_BPS = 10` 超は警告） |
 
 **no-arb の閾値の根拠**（`core/src/realtime/noArb.ts:27-31`）：setup 後の venue は fair の ±20bps 以内に較正され、どの venue も片側 30bps 以上を取る。よって**往復コスト 60bps 以上に対して実行可能な利益が正**なら疑わしく、300bps は明確に壊れている（split deploy の sort order 破壊は約 1000 倍の価格誤差を出した）。

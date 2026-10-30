@@ -10,9 +10,10 @@
 # `liquity_liquidation` never fired, eUSD never left par, and redemption-arb / sp-underwriter /
 # trove-manager made 0 / 2 / 14 transactions. Three things happen here in one window, all three
 # from the seed:
-#   - `stress.liquityVictimCount` Troves are opened at ICR 1.20 before the first block (the CDP
-#     counterpart of the Aave cohort; core/src/liquityVictims.ts). MCR is 1.10, so a crash of
-#     more than 1 - 1.10/1.20 = 8.3 % puts them below it.
+#   - `stress.liquityVictimCount` Troves are opened at ICR 1.42 before the first block (the CDP
+#     counterpart of the Aave cohort; core/src/liquityVictims.ts). MCR is 1.30
+#     (deployer/vendor/liquity-mcr.patch), so a crash of more than 1 - 1.30/1.42 = 8.5 % puts them
+#     below it.
 #   - a `crash` of 12-16 % with the liquidityPull aligned to it, as in lending-incident: the
 #     victims become liquidatable -- the Stability Pool's (sp-underwriter's) work.
 #   - an `eusdDepeg` aligned to the same window: the environment sells eUSD into its own market,
@@ -151,21 +152,25 @@ stress:
         holdBlocks: [16, 24],
         decayBlocks: [10, 14],
       }
-  # Two Troves at ICR 1.20 with 5 WETH each (issue #107). A 12 % crash takes them to 1.056, under
-  # MCR 1.10; the coordinator warns at setup if a drawn crash could not.
+  # Two Troves at ICR 1.42 with 5 WETH each (issue #107; 1.20 while MCR was 1.10). A 12 % crash
+  # takes them to 1.250, under MCR 1.30; the coordinator warns at setup if a drawn crash could not.
+  # Liquidated at 1.25 rather than 1.056, the Stability Pool gains ~24 % of the debt it absorbs
+  # instead of ~5 % (the collateral less Liquity's 0.5 % to the caller).
   #
   # Victims (ADR 0029 Amendment 2): the same two cohorts in all twelve official regimes. They are on
-  # chain from block 0 (Aave borrowers at HF 1.10, the lowest Troves at ICR 1.20) and their addresses
+  # chain from block 0 (Aave borrowers at HF 1.10, the lowest Troves at ICR 1.42) and their addresses
   # are handed to every agent, so while only lending-incident and cdp-incident had them, an agent knew
   # at block 0 that a 12-16% fall was coming and which way to stand. What reaches them is the regime's
   # business: lending-incident and cdp-incident gap down onto them (~98% of epochs breach), crash does
   # whenever one of its gaps goes down (~52%), and with no mean reversion (market.kappa) the walk alone
-  # breaches HF 1.10 in ~3% of the other regimes' epochs and ICR 1.20 in ~5% -- liquidation work like
+  # breaches HF 1.10 in ~3% of the other regimes' epochs and ICR 1.42 in ~5% -- liquidation work like
   # any other. test/regimeStartInvariance.test.ts holds the values equal across the twelve.
+  # ICR 1.42 against Liquity's MCR of 1.30 (deployer/vendor/liquity-mcr.patch) is breached by the same
+  # fall as 1.20 was against 1.10: 8.5%, 8.3% before -- so the rates above carry over.
   victimCount: 2
   victimHf0: 1.10
   liquityVictimCount: 2
-  liquityVictimIcr: 1.20
+  liquityVictimIcr: 1.42
 
 # On in every official regime, not only `launch`: the agent's config carries this section and the
 # runtime is handed the registry's address, so a regime that left it off would be told apart from

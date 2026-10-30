@@ -142,6 +142,12 @@ export type LiquityPositionAtEnd = {
   eusdBalance: number;
   /** A closed Trove's collateral waiting in CollSurplusPool for claimCollateral(). Scored at fair. */
   collSurplusWeth: number;
+  /**
+   * TroveManager.MCR() as a ratio: the ICR under which this Trove is liquidatable. Read rather than
+   * assumed, since it changed (1.10 -> 1.30, deployer/vendor/liquity-mcr.patch). null when the read
+   * failed.
+   */
+  mcr: number | null;
 };
 
 export type AaveAccountAtEnd = {
@@ -1477,6 +1483,11 @@ async function readLiquityPositionsAtEnd(opts: {
   const liquity = LIQUITY;
   if (!liquity) return [];
   const batch = new ReadBatch();
+  const mcrIdx = batch.push({
+    address: liquity.troveManager,
+    abi: troveManagerAbi,
+    functionName: "MCR",
+  });
   const idx = opts.agents.map((a) => ({
     agent: a,
     trove: batch.push({
@@ -1505,6 +1516,8 @@ async function readLiquityPositionsAtEnd(opts: {
     }),
   }));
   const results = await opts.call(batch.contracts, BigInt(opts.blockNumber));
+  const mcrWad = results[mcrIdx];
+  const mcr = typeof mcrWad === "bigint" ? Number(mcrWad) / 1e18 : null;
 
   const out: LiquityPositionAtEnd[] = [];
   for (const entry of idx) {
@@ -1538,6 +1551,7 @@ async function readLiquityPositionsAtEnd(opts: {
       stabilityDepositEusd: round6(depositEusd),
       eusdBalance: round6(eusd),
       collSurplusWeth: round6(surplusWeth),
+      mcr,
     });
   }
   return out;

@@ -4,7 +4,7 @@
  * Opening a Trove is easy. What the venue actually asks is whether you can hold one through a
  * price path, and it asks it in three ways that no other venue here does:
  *
- *   liquidation   under a 110% ICR the Trove is taken: the collateral goes to the Stability Pool
+ *   liquidation   under a 130% ICR (MCR) the Trove is taken: the collateral goes to the Stability Pool
  *                 and you keep the eUSD. That is a real loss of the difference, and the price at
  *                 which it happens is `liquidationPriceUsd` -- one number, in the observation.
  *
@@ -15,9 +15,9 @@
  *                 are, and adding collateral moves you up. Defending that position is the skill the
  *                 issue names as having no equivalent anywhere else in this simulator.
  *
- *   Recovery Mode below a system-wide 150% TCR the threshold stops being 110%: a Trove is
+ *   Recovery Mode below a system-wide 150% TCR the threshold stops being MCR: a Trove is
  *                 liquidatable once its ICR is under the *current TCR*, and only if the Stability
- *                 Pool can absorb the whole debt (the seizure is capped at 110%, the rest is a
+ *                 Pool can absorb the whole debt (the seizure is capped at MCR, the rest is a
  *                 claimable surplus). Nothing you did moves that line and nothing you do stops it,
  *                 so the only response is to already be above it when it arrives.
  *
@@ -34,7 +34,7 @@ import type {
   LiquityObservation,
 } from "@eris/sdk";
 
-// The ICR to open at. Well clear of MCR: at 110% a Trove is liquidatable the moment the price
+// The ICR to open at. Well clear of MCR: at 130% a Trove is liquidatable the moment the price
 // twitches, and the borrowing fee makes reopening expensive.
 const TARGET_ICR = Number(process.env.ERIS_TROVE_TARGET_ICR ?? "2.0");
 

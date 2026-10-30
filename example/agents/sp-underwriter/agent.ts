@@ -2,7 +2,7 @@
  * sp-underwriter: the Stability Pool side of the CDP venue (issue #39).
  *
  * A Stability Pool deposit is an underwriting position, not a yield position. It sits there doing
- * nothing until a Trove falls under 110%, and then it is *spent*: the pool burns your eUSD against
+ * nothing until a Trove falls under 130% (MCR), and then it is *spent*: the pool burns your eUSD against
  * the liquidated debt and hands you the collateral that backed it. Because Liquity only liquidates
  * below MCR, that collateral is worth more than the debt it cancelled — the difference, minus the
  * price move you now carry, is the whole return.

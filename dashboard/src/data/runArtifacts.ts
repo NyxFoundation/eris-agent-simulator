@@ -193,6 +193,11 @@ export interface LiquityPositionAtEnd {
   eusdBalance: number;
   /** Absent in runs recorded before CollSurplusPool was observed. */
   collSurplusWeth?: number;
+  /**
+   * TroveManager.MCR() as a ratio. Absent in runs recorded before it was, every one of which ran on
+   * Liquity's 1.10; 1.30 since deployer/vendor/liquity-mcr.patch. null when the read failed.
+   */
+  mcr?: number | null;
 }
 
 export interface AaveAccountAtEnd {

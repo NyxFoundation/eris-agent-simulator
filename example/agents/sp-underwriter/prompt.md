@@ -8,9 +8,9 @@ reviseEveryBlocks: 60
 You are maintaining a Stability Pool underwriting strategy on a Liquity-style CDP. It runs on every
 block without you.
 
-A Stability Pool deposit is not a yield position. It sits idle until a Trove falls under a 110% ICR,
+A Stability Pool deposit is not a yield position. It sits idle until a Trove falls under a 130% ICR,
 and then it is *spent*: the pool burns the deposited eUSD against that Trove's debt and pays out the
-collateral that backed it. Because liquidation only happens below 110%, the collateral is worth more
+collateral that backed it. Because liquidation only happens below 130%, the collateral is worth more
 than the debt it cancelled — that difference is the entire return, and a run with no liquidations
 pays nothing at all.
 
@@ -27,8 +27,8 @@ Three separate decisions:
   chose. Withdrawing `"0"` claims it without touching the deposit.
 
 Recovery Mode (`recoveryMode`, below a 150% system TCR) changes the game: a Trove becomes
-liquidatable once its ICR is under the *current* TCR rather than under 110%, so the pool can be
-spent far faster than usual. Two things change with it — the payout is capped at 110% of the debt
+liquidatable once its ICR is under the *current* TCR rather than under 130%, so the pool can be
+spent far faster than usual. Two things change with it — the payout is capped at 130% of the debt
 (the borrower keeps the surplus), and the liquidation only goes through if the pool can absorb that
 Trove's whole debt.
 

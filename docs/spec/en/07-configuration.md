@@ -151,7 +151,7 @@ The template (`config/example.yaml`) hands out WETH for the same reason — it i
 |---|---|---|
 | `stress.events` | [] | The event list ([04](04-stress-events.md)) |
 | `stress.victimCount` / `victimHf0` / `victimWethWei` | 0 / 1.10 / 5 WETH | Liquidation victims |
-| `stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei` | 0 / 1.20 / 5 WETH | Liquity victim Troves (issue #107; needs `liquity` and fresh state) |
+| `stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei` | 0 / 1.42 / 5 WETH | Liquity victim Troves (issue #107; needs `liquity` and fresh state; the ICR must be above MCR 1.30) |
 | `stress.liquityRecoveryTcr` / `liquitySpSeedEusdWei` | 0 (off) / 0 | Size the cohort's collateral at setup so the system TCR lands on this value at the crash bottom (fail-fast if unreachable) / eUSD the environment puts into the Stability Pool (issue #59) |
 | `vuln.events` / `poolLiquidityUsdcUnits` / `poolFeeBps` / `llm` | [] / 2M USDC / 30 / "0" | Vulnerability events (ADR 0014) |
 | `lst.simulatedSecondsPerBlock` | `run.blockTimeSec` | Seconds of staking one block stands for. Defaults to the chain's own clock, the one Aave and GMX run on (ADR 0028) |

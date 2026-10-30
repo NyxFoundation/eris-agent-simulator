@@ -252,7 +252,7 @@ export const lqtyStakingAbi = parseAbi([
 ]);
 
 // Where a closed Trove's leftover collateral waits for its owner (after a full redemption, or a
-// Recovery-Mode liquidation capped at 110% of the debt). Claimed through
+// Recovery-Mode liquidation capped at MCR x the debt). Claimed through
 // BorrowerOperations.claimCollateral(), which has no action of its own -- agents send it as rawTx.
 export const collSurplusPoolAbi = parseAbi([
   "function getCollateral(address account) view returns (uint256)",

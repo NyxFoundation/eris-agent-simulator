@@ -1,0 +1,23 @@
+Liquity MCR 110% -> 130%, applied by scripts/setup-vendors.sh after the pinned checkout.
+
+A Trove at MCR is a leveraged long ETH position with limited liability: below 100% ICR its owner
+walks away and the Stability Pool absorbs the rest. At 110% that is ~11x, and one official down gap
+(up to 22%) takes a Trove opened at MCR well under 100%. At 130% it is ~4.3x, and 1.30 x 0.78 =
+1.014: the same gap leaves it solvent. CCR stays 150%. core/src/realtime/liquity.ts
+(LIQUITY_MCR_WAD) refuses a deployment whose TroveManager.MCR() reads anything else.
+
+diff --git a/packages/contracts/contracts/Dependencies/LiquityBase.sol b/packages/contracts/contracts/Dependencies/LiquityBase.sol
+index 6403b34e..1b853283 100644
+--- a/packages/contracts/contracts/Dependencies/LiquityBase.sol
++++ b/packages/contracts/contracts/Dependencies/LiquityBase.sol
+@@ -19,7 +19,9 @@ contract LiquityBase is BaseMath, ILiquityBase {
+     uint constant public _100pct = 1000000000000000000; // 1e18 == 100%
+
+     // Minimum collateral ratio for individual troves
+-    uint constant public MCR = 1100000000000000000; // 110%
++    // eris: 130% rather than Liquity's 110% (deployer/vendor/liquity-mcr.patch). Caps a Trove at
++    // ~4.3x so one official down gap (<= 22%) cannot take a Trove opened at MCR under 100% ICR.
++    uint constant public MCR = 1300000000000000000; // 130%
+
+     // Critical system collateral ratio. If the system's total collateral ratio (TCR) falls below the CCR, Recovery Mode is triggered.
+     uint constant public CCR = 1500000000000000000; // 150%

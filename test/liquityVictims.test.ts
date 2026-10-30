@@ -42,35 +42,43 @@ test("victimDebtForIcr sizes the request so the composite debt lands on ICR₀",
 });
 
 test("the breach threshold is 1 − MCR/ICR₀, and the official regime's crash clears it", () => {
-  const m = liquityBreachMagnitude(1.2, 1.1);
-  assert.ok(Math.abs(m - (1 - 1.1 / 1.2)) < 1e-12);
-  assert.ok(m < 0.12, "cdp-incident's crash floor (12 %) breaches a 1.20 Trove");
-  assert.ok(liquityBreachMagnitude(1.1, 1.1) === 0);
+  // MCR is 1.30 (deployer/vendor/liquity-mcr.patch), and the official cohort opens at 1.42.
+  const m = liquityBreachMagnitude(1.42, 1.3);
+  assert.ok(Math.abs(m - (1 - 1.3 / 1.42)) < 1e-12);
+  assert.ok(m < 0.12, "cdp-incident's crash floor (12 %) breaches a 1.42 Trove");
+  assert.ok(liquityBreachMagnitude(1.3, 1.3) === 0);
 });
 
-// Issue #59: the cohort that reaches Recovery Mode. The genesis Trove (250 ETH / 250,000 eUSD) holds
-// the system at 300 %; a crash of 15 % leaves it at 2.55, far above CCR 1.5. The sizing has to find
-// the collateral per victim -- at ICR₀ -- that brings the system TCR to the target at the bottom.
+// Issue #59: the cohort that reaches Recovery Mode. The genesis Trove (350 ETH / 351,950 eUSD of
+// composite debt) holds the system at ~300 %; a crash of 20 % leaves it at 2.39, far above CCR 1.5.
+// The sizing has to find the collateral per victim -- at ICR₀ -- that brings the system TCR to the
+// target at the bottom. The numbers are config/regimes/cdp-recovery.yaml's at its shallowest draw.
 test("recoveryCohortCollateralWei sizes a cohort that lands the system on the target TCR", async () => {
   const { recoveryCohortCollateralWei, tcrAtCrashBottom } = await import("../core/src/liquityVictims.js");
-  const gc = 250n * WAD;
-  const gd = 250_000n * WAD;
+  const gc = 350n * WAD;
+  const gd = 351_950n * WAD;
   const priceWad = 3000n * WAD;
-  const c = recoveryCohortCollateralWei({ systemCollWei: gc, systemDebtWei: gd, priceWad, crashMagnitude: 0.15, icr0: 1.35, count: 8, targetTcr: 1.45 });
+  const icr0 = 1.69;
+  const m = 0.2;
+  const count = 24;
+  const c = recoveryCohortCollateralWei({ systemCollWei: gc, systemDebtWei: gd, priceWad, crashMagnitude: m, icr0, count, targetTcr: 1.45 });
   assert.ok(c !== null && c > 0n);
   // Put the cohort in (debt = c·P/ICR₀ each) and read the TCR at the bottom: it is the target.
-  const n = 8n;
-  const debtEach = (c! * priceWad) / (BigInt(Math.round(1.35 * 1e6)) * (WAD / 1_000_000n));
-  const tcr = tcrAtCrashBottom({ systemCollWei: gc + n * c!, systemDebtWei: gd + n * debtEach, priceWad, crashMagnitude: 0.15 });
+  const n = BigInt(count);
+  const debtEach = (c! * priceWad) / (BigInt(Math.round(icr0 * 1e6)) * (WAD / 1_000_000n));
+  const tcr = tcrAtCrashBottom({ systemCollWei: gc + n * c!, systemDebtWei: gd + n * debtEach, priceWad, crashMagnitude: m });
   assert.ok(Math.abs(tcr - 1.45) < 1e-3, `TCR at the bottom ${tcr}`);
-  // Below CCR, i.e. Recovery Mode; and the cohort itself is still above MCR there (1.35 × 0.85 = 1.1475).
-  assert.ok(tcr < 1.5 && 1.35 * 0.85 > 1.1);
-  // Unreachable: a target *below* the cohort's own post-crash ICR (1.35 × 0.85 = 1.1475) cannot be
-  // produced by adding Troves at that ICR -- the system's TCR converges on the cohort's ICR from above.
-  assert.equal(recoveryCohortCollateralWei({ systemCollWei: gc, systemDebtWei: gd, priceWad, crashMagnitude: 0.15, icr0: 1.35, count: 8, targetTcr: 1.1 }), null);
+  // Below CCR, i.e. Recovery Mode; and the cohort itself is still above MCR 1.30 there (1.69 × 0.80
+  // = 1.352), so it is liquidatable only because of Recovery Mode.
+  assert.ok(tcr < 1.5 && icr0 * (1 - m) > 1.3 && icr0 * (1 - 0.22) > 1.3);
+  // Each Trove's debt fits the Stability Pool the regime stands up (125k genesis + 100k seeded), so
+  // a Recovery Mode liquidation -- which needs the pool to absorb the whole debt -- can execute.
+  assert.ok(debtEach < 225_000n * WAD, `debt per victim ${debtEach / WAD}`);
+  // Unreachable: a target *below* the cohort's own post-crash ICR (1.352) cannot be produced by
+  // adding Troves at that ICR -- the system's TCR converges on the cohort's ICR from above.
+  assert.equal(recoveryCohortCollateralWei({ systemCollWei: gc, systemDebtWei: gd, priceWad, crashMagnitude: m, icr0, count, targetTcr: 1.3 }), null);
   // Any target between the two is reachable, with more collateral the closer it sits to the cohort's ICR.
-  const c13 = recoveryCohortCollateralWei({ systemCollWei: gc, systemDebtWei: gd, priceWad, crashMagnitude: 0.15, icr0: 1.35, count: 8, targetTcr: 1.3 });
-  assert.ok(c13 !== null && c13 > c!);
-  // Already there: the system is under the target without a cohort.
-  assert.equal(recoveryCohortCollateralWei({ systemCollWei: 100n * WAD, systemDebtWei: 250_000n * WAD, priceWad, crashMagnitude: 0.15, icr0: 1.35, count: 8, targetTcr: 1.45 }), null);
+  const c14 = recoveryCohortCollateralWei({ systemCollWei: gc, systemDebtWei: gd, priceWad, crashMagnitude: m, icr0, count, targetTcr: 1.4 });
+  assert.ok(c14 !== null && c14 > c!);
+  assert.equal(recoveryCohortCollateralWei({ systemCollWei: 100n * WAD, systemDebtWei: 250_000n * WAD, priceWad, crashMagnitude: m, icr0, count, targetTcr: 1.45 }), null);
 });

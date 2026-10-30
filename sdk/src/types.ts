@@ -698,7 +698,7 @@ export type LiquityTroveObservation = {
   // What you would actually have to repay to close: debt minus the gas compensation the GasPool
   // holds on your behalf. Valuing a Trove against the gross debt understates it by 200 eUSD.
   netDebtEusdWei: string;
-  // Individual collateral ratio, as a plain ratio (1.1 = 110% = MCR).
+  // Individual collateral ratio, as a plain ratio (1.3 = 130% = MCR).
   icr: number;
   // The collateral price at which ICR falls to MCR -- i.e. how far the market has to move before
   // this Trove is liquidatable. Zero when there is no debt.
@@ -732,11 +732,11 @@ export type LiquityObservation = {
   tcr: number;
   // In Recovery Mode the liquidation threshold stops being MCR: a Trove is liquidatable once its
   // ICR is under the *current TCR* (which is itself under CCR while this lasts), and only if the
-  // Stability Pool can absorb its whole debt. The seizure is capped at 110% of the debt, so a
+  // Stability Pool can absorb its whole debt. The seizure is capped at MCR x the debt, so a
   // borrower over that keeps the rest as a claimable surplus. Borrowing is
   // restricted. It is the venue's reflexive failure mode and it applies to everyone at once.
   recoveryMode: boolean;
-  mcr: number; // 1.1
+  mcr: number; // 1.3 (130%; Liquity ships 1.1 -- deployer/vendor/liquity-mcr.patch)
   ccr: number; // 1.5
   troveCount: number;
   totalCollWei: string;
@@ -772,7 +772,7 @@ export type LiquityObservation = {
   // one worth liquidating if the price keeps falling.
   riskiestTrove?: { owner: string; icr: number; netDebtEusdWei: string };
   // Collateral a closed Trove of yours left behind: what a full redemption returned above the debt
-  // it cancelled, or what a Recovery-Mode liquidation capped at 110% of the debt did not seize. It
+  // it cancelled, or what a Recovery-Mode liquidation capped at MCR x the debt did not seize. It
   // waits in CollSurplusPool as native ETH until you claim it with BorrowerOperations
   // .claimCollateral() -- there is no action for it, send it as a rawTx. Scored at the WETH fair
   // while it waits, since it is yours to claim at any time.

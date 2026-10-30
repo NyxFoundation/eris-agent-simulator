@@ -324,6 +324,13 @@ Two checks can refuse a chain that predates the change that introduced them:
 | Aave's vendor test market is closed (issue #190) | **Usually.** `cd deployer && RPC_URL=<node> npm run close:aave-vendor`. Not when a participant still holds a position in one of those reserves: a frozen reserve passes only when nobody but the treasury is left in it, and the operator cannot clear somebody else's position |
 | The environment holds an LQTY stake (issue #240) | **No.** `LQTYToken` refuses the multisig as a staking sender for a year, and on a deployment that predates this the multisig is the deployer — the account that holds the LQTY. A redeploy is the only route |
 
+A third check refuses only a *fresh* start. Liquity's MCR is 130% (`deployer/vendor/liquity-mcr.patch`;
+Liquity ships 110%), and it is a constant compiled into `TroveManager`, so nothing but a redeploy
+changes it. The coordinator refuses a chain without it for a new run or a new period, and **warns and
+carries on when a period resumes** on its own chain (`liquity_mcr_check` ok:false) — refusing there
+would only stop the period. The probe prints it as a WARN and does not count it toward exit 1; its
+last line says when a resumed period can start but a new one cannot.
+
 GMX's fee, leverage, impact, borrowing and funding settings are not startup checks, so a chain
 carrying the old ones starts and runs. They are all in GMX `Config`'s `allowedBaseKeys`, so the
 config keeper can write the competition's values on a running chain; the probe says so rather than

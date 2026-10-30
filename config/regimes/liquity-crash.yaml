@@ -54,9 +54,11 @@ flow:
 stress:
   events:
     # Deep enough to take a thin Trove through MCR, and no deeper. `trove-manager-spent` opens at
-    # 125%, so 15% puts it at 106% and 22% at 98% -- under the 110% floor across the whole range,
-    # which is what makes the liquidation path a property of the regime rather than of the seed.
-    # The Trove that kept its eUSD sits at 200% and comes through every draw.
+    # 145%, so 15% puts it at 123% and 22% at 113% -- under the 130% floor across the whole range
+    # (MCR is 130%, deployer/vendor/liquity-mcr.patch; this Trove opened at 125% against 110%
+    # before), which is what makes the liquidation path a property of the regime rather than of the
+    # seed. The Trove that kept its eUSD sits at 200% and comes through every draw (22% puts it at
+    # 156%).
     - {
         type: crash,
         magnitudeRange: [0.15, 0.22],
@@ -77,10 +79,10 @@ agents:
   - id: trove-manager-spent
     dir: trove-manager
     wallet: AGENT3_PRIVATE_KEY
-    description: borrows at 125%, posts everything and sells the eUSD — the borrower with no defences left
+    description: borrows at 145%, posts everything and sells the eUSD — the borrower with no defences left
     env:
-      ERIS_TROVE_TARGET_ICR: "1.25"
-      ERIS_TROVE_FLOOR_ICR: "1.15"
+      ERIS_TROVE_TARGET_ICR: "1.45"
+      ERIS_TROVE_FLOOR_ICR: "1.35"
       ERIS_TROVE_OPEN_BPS: "10000"
       ERIS_TROVE_SPEND_DEBT: "1"
   - id: sp-underwriter

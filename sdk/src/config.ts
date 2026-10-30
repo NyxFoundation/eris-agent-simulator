@@ -102,7 +102,7 @@ export type SimConfig = {
   // Issue #107: the CDP counterpart -- seed-derived Liquity Troves opened near MCR so a crash
   // liquidates them (Stability Pool work) and a depeg redeems against them (redemption work).
   // Count (ERIS_STRESS_LIQUITY_VICTIM_COUNT, default 0 = off), the ICR each Trove is opened at
-  // (ERIS_STRESS_LIQUITY_VICTIM_ICR, default 1.20: MCR is 1.10, so a 12-16 % crash breaks it) and
+  // (ERIS_STRESS_LIQUITY_VICTIM_ICR, default 1.42: MCR is 1.30, so a fall over 8.5 % breaks it) and
   // the collateral per Trove (ERIS_STRESS_LIQUITY_VICTIM_COLL_WETH_WEI, default 5 WETH). Not scored.
   stressLiquityVictimCount: number;
   stressLiquityVictimIcr: number;
@@ -469,7 +469,7 @@ export function loadConfig(env = process.env): SimConfig {
       5_000_000_000_000_000_000n,
     ),
     stressLiquityVictimCount: Math.max(0, intEnv(env.ERIS_STRESS_LIQUITY_VICTIM_COUNT, 0)),
-    stressLiquityVictimIcr: floatEnv(env.ERIS_STRESS_LIQUITY_VICTIM_ICR, 1.2),
+    stressLiquityVictimIcr: floatEnv(env.ERIS_STRESS_LIQUITY_VICTIM_ICR, 1.42),
     stressLiquityVictimCollWethWei: bigintEnv(
       env.ERIS_STRESS_LIQUITY_VICTIM_COLL_WETH_WEI,
       5_000_000_000_000_000_000n,

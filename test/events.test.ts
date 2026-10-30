@@ -861,7 +861,7 @@ test("config/regimes/depeg-persist.yaml: the DAI discount holds to the end of th
 });
 
 // Issue #107: cdp-incident puts the crash, the pull and the eUSD depeg on one window, over Liquity
-// victims opened at ICR 1.20. Read off the committed YAML.
+// victims opened at ICR 1.42 (1.20 while MCR was 1.10). Read off the committed YAML.
 test("config/regimes/cdp-incident.yaml: crash, pull and eUSD depeg on one window over Liquity victims", async () => {
   const { readFileSync } = await import("node:fs");
   const { parse } = await import("yaml");
@@ -871,7 +871,7 @@ test("config/regimes/cdp-incident.yaml: crash, pull and eUSD depeg on one window
   };
   assert.ok(doc.run.protocols.includes("liquity"));
   assert.equal(doc.stress.liquityVictimCount, 2);
-  assert.equal(doc.stress.liquityVictimIcr, 1.2);
+  assert.equal(doc.stress.liquityVictimIcr, 1.42);
   // Both cohorts are staged in every official regime (ADR 0029 Amendment 2), so the Aave one is here
   // too: test/regimeStartInvariance.test.ts holds the twelve equal. What makes this regime is the
   // crash and the depeg below, not who is standing there.
@@ -880,8 +880,8 @@ test("config/regimes/cdp-incident.yaml: crash, pull and eUSD depeg on one window
   assert.deepEqual(configs.map((c) => c.type), ["crash", "liquidityPull", "eusdDepeg"]);
   assert.equal(configs[1].alignWith, "crash");
   assert.equal(configs[2].alignWith, "crash");
-  // Every drawn crash breaches a 1.20 Trove: the magnitude floor is above 1 − 1.10/1.20.
-  assert.ok(configs[0].magnitudeRange[0] > 1 - 1.1 / 1.2);
+  // Every drawn crash breaches a 1.42 Trove: the magnitude floor is above 1 − MCR/1.42.
+  assert.ok(configs[0].magnitudeRange[0] > 1 - 1.3 / 1.42);
   const s = new EventSchedule(configs, 101, doc.run.blocks);
   const [crash, pull, depeg] = s.events;
   assert.equal(pull.startBlock, crash.startBlock);

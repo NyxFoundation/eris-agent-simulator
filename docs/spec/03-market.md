@@ -190,7 +190,9 @@ WETH 以外の base は `flow.baseMax` が共通上限となる。任意の `flo
 3. **Recovery Mode** — system TCR が CCR(150%) を割ると清算閾値が MCR でなくなり、**その時点の TCR** を下回る Trove が対象になる。全員の線が同時に動く点が Aave の per-position HF と対照的
 4. **sorted list 上の位置** — 償還は最下位 ICR から walk するので、借り手は「自分の前にどれだけ債務があるか」を守る
 
-自作なのは 2 つだけで core は無改変：
+core の改変は 1 つだけ：**MCR を 110% → 130%**（`deployer/vendor/liquity-mcr.patch`、CCR 150% は不変）。Trove は有限責任のロング（ICR 100% を割ると評価 0 で止まり、残りは採点されない環境の Stability Pool が被る）で、110% ではレバ ~11 倍、公式の下向きギャップ（最大 22%）1 回で MCR で開いた Trove が 100% を割った。130% ならレバ ~4.3 倍・1.30 × 0.78 = 1.014 で割らない（GMX のレバ上限と同じ判断）。定数なので setup では書けず、coordinator が `TroveManager.MCR()` を読んで `liquity_mcr_check` を記録し、新しいエポックでは違えば落とす（11 章）。
+
+自作なのは 2 つだけ：
 
 - `LiquityPriceFeedAdapter` — Liquity は wiring 後に ownership を renounce するのでオラクルアドレスが永久固定になる。一方 run は毎回新しい PriceFeed をデプロイするので、その間に挟んで毎 run 差し替える
 - `LiquityRedemptionHelper` — **部分償還のヒントは実行時価格に依存する**。環境はブロック毎にオラクルを書き、しかもエージェントより先に入るので、オフチェーンで計算したヒントは構造的に必ず陳腐化する。helper は `fetchPrice()` で価格を確定させた同一 tx 内でヒントを計算する

@@ -14,13 +14,18 @@
 #     The coordinator sizes each victim's collateral from the crash magnitude the seed drew, the
 #     system as it stands and the cohort's ICR, and fails fast at setup if no cohort can (the
 #     cohort's own post-crash ICR must sit above the target -- it is what pulls the system down).
-#   - the cohort's ICR (1.35) is chosen so a 15-22 % crash leaves it *above* MCR (1.35 × 0.78 =
-#     1.053 at the worst draw is under; at 15 % it is 1.15): these Troves are meant to be
-#     liquidatable only because of Recovery Mode, not on their own.
+#   - the cohort's ICR (1.69) is chosen so a 20-22 % crash leaves it *above* MCR 1.30 and under
+#     the target (1.69 × 0.78 = 1.318, × 0.80 = 1.352): these Troves are meant to be liquidatable
+#     only because of Recovery Mode, not on their own. MCR 1.30 (deployer/vendor/liquity-mcr.patch;
+#     1.10 before) leaves a narrow band between it and CCR 1.50, and a cohort whose own ratio sits
+#     near the target has to be large to pull the system there -- so the crash range is narrow
+#     (it was 15-22 % with ICR 1.35 under MCR 1.10; at 15 % this cohort would need ~28M eUSD of debt).
+#     Sized for TCR 1.45 against the genesis Trove alone, the cohort carries 2.3-3.4M eUSD of debt
+#     across the range (TCR 1.81-1.86 when it opens). Not yet measured on chain at MCR 1.30.
 #   - `liquitySpSeedEusdWei` puts 100,000 eUSD of the deployer's surplus into the Stability Pool.
 #     Recovery Mode liquidates a Trove between MCR and TCR only when the pool can absorb its whole
-#     debt; with 8 victims sized for TCR 1.45 each holds ~113,000 eUSD of debt, so the seeded pool
-#     plus sp-underwriter's deposit covers one at a time.
+#     debt; with 24 victims sized for TCR 1.45 each holds ~98,000-140,000 eUSD of debt, so the
+#     seeded pool plus the genesis deposit and sp-underwriter's covers one or two at a time.
 #   Fee-curve dilution is unavoidable (the issue says so): baseRate rises by redeemed/supply/2, and
 #   this regime roughly quadruples supply, so the redemption calibration of liquity.yaml does not
 #   transfer -- measure it here and state it separately.
@@ -80,17 +85,17 @@ stress:
   events:
     - {
         type: crash,
-        magnitudeRange: [0.15, 0.22],
+        magnitudeRange: [0.20, 0.22],
         windowFrac: [0.3, 0.7],
         rampBlocks: 3,
         holdBlocks: 12,
         decayBlocks: 12,
       }
-  # Eight Troves at ICR 1.35, collateral sized at setup so the system's TCR lands on 1.45 at the
-  # crash bottom (issue #59); 100,000 eUSD into the Stability Pool so the Recovery Mode branch can
-  # execute.
-  liquityVictimCount: 8
-  liquityVictimIcr: 1.35
+  # Twenty-four Troves at ICR 1.69, collateral sized at setup so the system's TCR lands on 1.45 at
+  # the crash bottom (issue #59); 100,000 eUSD into the Stability Pool so the Recovery Mode branch
+  # can execute. (Eight at 1.35 while MCR was 1.10; see the header.)
+  liquityVictimCount: 24
+  liquityVictimIcr: 1.69
   liquityRecoveryTcr: 1.45
   liquitySpSeedEusdWei: "100000000000000000000000"
 agents:

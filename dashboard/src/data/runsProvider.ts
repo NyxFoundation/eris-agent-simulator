@@ -1280,13 +1280,18 @@ function buildAgentPositions(
   for (const p of market.liquityPositionsAtEnd ?? []) {
     if (p.agent !== agentId) continue;
     if (p.troveDebtEusd > 0 || p.troveCollWeth > 0) {
+      // A run recorded before market.json carried the MCR ran on Liquity's own 1.10.
+      const mcr = p.mcr === undefined ? 1.1 : p.mcr;
       out.push({
         market: "Liquity Trove",
         kind: t("pos.kind.debt"),
-        tone: p.icr !== null && p.icr < 1.1 ? "down" : "neutral",
+        tone: p.icr !== null && mcr !== null && p.icr < mcr ? "down" : "neutral",
         size: `${p.troveDebtEusd.toLocaleString("en-US", { maximumFractionDigits: 0 })} eUSD`,
         mark: p.icr !== null ? `ICR ${p.icr.toFixed(3)}` : t("pos.icrNone"),
-        note: t("pos.troveNote", { coll: p.troveCollWeth.toFixed(3) }),
+        note: t("pos.troveNote", {
+          coll: p.troveCollWeth.toFixed(3),
+          mcr: mcr !== null ? mcr.toFixed(3) : "—",
+        }),
       });
     }
     if (p.stabilityDepositEusd > 0) {

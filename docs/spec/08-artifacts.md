@@ -117,6 +117,7 @@ runs/
 | `run_completed` | 完了 |
 | `deployment_check` | デプロイの実測（chainId / checked / missing） |
 | `gmx_funding_check` | ローカルデプロイの GMX 各市場の `FUNDING_INCREASE_FACTOR_PER_SECOND` と `fundingModeled`（ok / enforcement / markets）。funding の無い deploy・state dump（gmx-localhost.patch の a35cf3e 以前）は anvil ではここで停止、リセットしない external（練習 devnet）では警告して続行 |
+| `liquity_mcr_check` | Liquity の `TroveManager.MCR()`（ok / enforcement / mcrWad / expectedMcrWad = 1.3e18）。MCR 130% の patch（`deployer/vendor/liquity-mcr.patch`）以前の deploy・state dump は新しいエポックではここで停止、external と再開する練習期間は警告して続行 |
 | `agents_registered` | ロスター全体（id / address / baseline / description / external） |
 | `agent_external_registered` | 外部参加者の登録（環境は起動しない） |
 | `agent_process_exited` | エージェントプロセスの異常終了 |

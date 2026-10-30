@@ -190,7 +190,9 @@ The four skills `sdk/src/types.ts:551-560` names.
 3. **Recovery Mode** — below CCR (150%) the liquidation threshold stops being MCR: a Trove becomes liquidatable once its ICR is under the *current TCR*. Everyone's line moves at once, in contrast to Aave's per-position health factor
 4. **Position in the sorted list** — redemptions walk up from the lowest ICR, so a borrower defends "how much debt is ahead of me"
 
-Only two pieces are ours; the core is unmodified.
+The core has one change: **MCR is 130% rather than 110%** (`deployer/vendor/liquity-mcr.patch`; CCR stays 150%). A Trove is a limited-liability long (below 100% ICR it is worth 0 and the rest lands on the environment's unscored Stability Pool); at 110% that is ~11x, and one official down gap (up to 22%) took a Trove opened at MCR under 100%. At 130% it is ~4.3x and 1.30 × 0.78 = 1.014 (the same decision as GMX's leverage cap). The constant cannot be written at setup, so the coordinator reads `TroveManager.MCR()`, records `liquity_mcr_check`, and refuses a fresh epoch on anything else (chapter 11).
+
+Only two pieces are ours:
 
 - `LiquityPriceFeedAdapter` — Liquity renounces ownership after wiring, so its oracle address is permanent, while every run deploys a new PriceFeed. The adapter sits between them and is repointed each run
 - `LiquityRedemptionHelper` — **a partial redemption's hint depends on the execution-time price**. The environment writes the oracle every block and lands ahead of every agent, so a hint computed off-chain is structurally guaranteed to be stale. The helper computes the hint inside the same transaction that pins the price via `fetchPrice()`

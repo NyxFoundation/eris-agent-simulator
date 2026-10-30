@@ -15,6 +15,9 @@
 // same reconcile-to-a-target shape as the liquidity pull (issue #52) and for the same reason: the
 // coordinator drops block notifications while it is busy, so a state that is re-derived every block
 // costs a block of lag where a one-shot would strand the pool.
+//
+// Setup also refuses a deployment built without the MCR patch (LIQUITY_MCR_WAD below), and one whose
+// LQTYStaking has no environment stake (lqtyStakeProblem).
 import { encodeFunctionData, parseAbi, type Address, type Hex } from "viem";
 import { lqtyStakingAbi, troveManagerAbi } from "@eris/sdk/abis.js";
 import {
@@ -74,6 +77,67 @@ export function lqtyStakeProblem(totalStakedWei: bigint): string | undefined {
   );
 }
 
+// The minimum collateral ratio the environment's Liquity is built with: 130%, where Liquity ships
+// 110% (deployer/vendor/liquity-mcr.patch). A Trove is a long ETH position with limited liability --
+// below 100% ICR its owner walks away (sdk/src/protocols/liquity.ts floors it at 0) and the
+// environment's unscored Stability Pool absorbs the rest. At 110% that is ~11x, so a Trove opened at
+// MCR and hedged with a GMX short turned an official down gap (12-22%) into a convex payoff: the
+// Trove's loss stopped at its equity while the hedge kept going. At 130% (~4.3x) the largest official
+// down gap leaves a Trove opened at MCR above 100% (1.30 x 0.78 = 1.014). The same decision as GMX's
+// leverage cap (GMX_MIN_COLLATERAL_FACTOR, sdk/src/protocols/gmxKeys.ts), made the way this venue
+// allows: MCR is a compile-time constant, so it is set in the source and read back here rather than
+// written at setup.
+export const LIQUITY_MCR_WAD = 1_300_000_000_000_000_000n;
+
+/// What a deployment whose MCR is not LIQUITY_MCR_WAD does to a run. A fresh epoch (backtest,
+/// sim:realtime, a new practice period) stops: every state dump baked before the patch is one of
+/// these, and the fix is a re-bake. A chain that cannot be redeployed without ending what runs on it
+/// records and warns instead: an external chain, and a practice period resuming on its own chain.
+/// The second is not covered by chainMode -- the hosted practice devnet runs anvil -- and refusing
+/// there would end the period on the next restart (a refused start halts mining), with nothing to
+/// fix in place: the constant is in the bytecode. A read that failed is not a pass.
+export function liquityMcrEnforcement(
+  mcrWad: bigint | null,
+  opts: { external: boolean; resume: boolean },
+): "pass" | "warn" | "fail" {
+  if (mcrWad === LIQUITY_MCR_WAD) return "pass";
+  return opts.external || opts.resume ? "warn" : "fail";
+}
+
+const ratioOf = (wad: bigint) => (Number(wad) / 1e18).toFixed(2);
+
+/// What to tell the operator when the MCR is wrong: what it means and the commands that fix it.
+export function liquityMcrMessage(
+  mcrWad: bigint | null,
+  enforcement: "warn" | "fail",
+  readError?: string,
+): string {
+  const lines = [
+    mcrWad === null
+      ? `could not read TroveManager.MCR() (${readError ?? "read failed"}), so this run cannot tell ` +
+        `whether the deployment caps a Trove at MCR ${ratioOf(LIQUITY_MCR_WAD)}.`
+      : `the Liquity deployment's MCR is ${ratioOf(mcrWad)}, not ${ratioOf(LIQUITY_MCR_WAD)}: it predates ` +
+        "deployer/vendor/liquity-mcr.patch, so a Trove can borrow at ~" +
+        `${(Number(mcrWad) / (Number(mcrWad) - 1e18)).toFixed(1)}x and an official down gap takes one ` +
+        "opened at MCR under 100% ICR, the rest of the loss landing on the environment's Stability Pool.",
+  ];
+  if (enforcement === "warn")
+    lines.push(
+      "Continuing anyway: this chain is not rebuilt per run (an external chain, or a practice period " +
+        "resuming), and MCR is compiled into the contract, so only a redeploy changes it. The run " +
+        "records liquity_mcr_check ok:false. Fix for the next deployment of this chain: " +
+        "`cd deployer && npm run clean:vendors && ./scripts/setup-vendors.sh && npm run deploy -- " +
+        "--keep-fresh`.",
+    );
+  else
+    lines.push(
+      "Fix: re-bake the state dump (`npm run gen:state-dump`) from a deploy with the current vendor " +
+        "patches -- `cd deployer && npm run clean:vendors && ./scripts/setup-vendors.sh && npm run " +
+        "deploy -- --keep-fresh` on a fresh anvil, then `npm run gen:local-constants`.",
+    );
+  return lines.join("\n");
+}
+
 export type LiquityRuntime = {
   troveManager: Address;
   priceFeedAdapter: Address;
@@ -112,6 +176,8 @@ export async function setupLiquity(
         "-- --keep-fresh`), or drop liquity from run.protocols.",
     );
   }
+  // Before the first setup transaction: is this the Liquity the regimes are calibrated for?
+  await checkLiquityMcr(ctx, { resume: opts.resume === true }, logger);
   const admin = accountAddress(ctx.adminPk);
   const operator = (await ctx.publicClient.readContract({
     address: LIQUITY.priceFeed,
@@ -187,6 +253,8 @@ export async function setupLiquity(
     priceFeed: opts.priceFeed,
     oracleServedUsd: servedUsd,
     oracleDriftBps: Number(driftBps.toFixed(2)),
+    mcr: state.mcr,
+    ccr: state.ccr,
     tcr: state.tcr,
     recoveryMode: state.recoveryMode,
     troveCount: state.troveCount,
@@ -246,6 +314,43 @@ export async function setupLiquity(
     priceFeedAdapter: LIQUITY.priceFeed,
     oracleRepointed: true,
   };
+}
+
+/// Read TroveManager.MCR() and apply liquityMcrEnforcement: throw on a fresh epoch, warn on a chain
+/// that is not rebuilt per run. Recorded either way (`liquity_mcr_check`).
+async function checkLiquityMcr(
+  ctx: SimContext,
+  opts: { resume: boolean },
+  logger: RunLogger,
+): Promise<void> {
+  let mcrWad: bigint | null = null;
+  let readError: string | undefined;
+  try {
+    mcrWad = (await ctx.publicClient.readContract({
+      address: LIQUITY!.troveManager,
+      abi: troveManagerAbi,
+      functionName: "MCR",
+    })) as bigint;
+  } catch (error) {
+    readError =
+      error instanceof Error ? error.message.split("\n")[0] : String(error);
+  }
+  const enforcement = liquityMcrEnforcement(mcrWad, {
+    external: isExternalChain(),
+    resume: opts.resume,
+  });
+  logger.event({
+    type: "liquity_mcr_check",
+    ok: enforcement === "pass",
+    enforcement,
+    mcrWad: mcrWad?.toString() ?? null,
+    expectedMcrWad: LIQUITY_MCR_WAD.toString(),
+    ...(readError ? { error: readError } : {}),
+  });
+  if (enforcement === "pass") return;
+  const message = liquityMcrMessage(mcrWad, enforcement, readError);
+  if (enforcement === "fail") throw new Error(message);
+  console.warn(`[liquity] WARNING: ${message}`);
 }
 
 // Liquity V1 refuses every redemption for BOOTSTRAP_PERIOD (14 days) after the LQTY token's

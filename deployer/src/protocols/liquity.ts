@@ -3,8 +3,9 @@
 // The core is forked essentially unmodified -- TroveManager / BorrowerOperations / StabilityPool /
 // SortedTroves and the pools keep Recovery Mode, debt and collateral redistribution, the sorted
 // list, and the dynamic borrowing and redemption fees. The interaction between those *is* the game
-// the venue adds; simplifying any of it produces something materially different. The only
-// source-level change is the token's name and symbol (see scripts/setup-vendors.sh).
+// the venue adds; simplifying any of it produces something materially different. The source-level
+// changes are two (see scripts/setup-vendors.sh): MCR is 130% rather than 110% (vendor/
+// liquity-mcr.patch, a leverage cap: ~4.3x instead of ~11x), and the token's name and symbol.
 //
 // Two things are ours rather than Liquity's:
 //   - the oracle, because Liquity's own testnet feed has an unpermissioned setter, which would let
@@ -76,6 +77,10 @@ const STABILITY_POOL_EUSD = 125_000n; // pre-seeded underwriting depth: 50 % of 
 /// deployment timestamp. Warping past it costs nothing and keeps the fork diff at zero -- the
 /// alternative would be patching a constant in TroveManager.
 const BOOTSTRAP_SECONDS = 14n * 24n * 60n * 60n + 3600n;
+
+/// The minimum collateral ratio vendor/liquity-mcr.patch builds in: 130% where Liquity ships 110%,
+/// so a Trove is at most ~4.3x. verifyLiquity reads it back.
+const LIQUITY_MCR = parseEther("1.3");
 
 /// Borrowing fee ceiling for the genesis open. baseRate starts at zero so the actual fee is the
 /// 0.5% floor; this is only the slippage bound on it.
@@ -486,6 +491,7 @@ async function seedLiquity(addrs: {
 /// specific way this deployment can come out looking fine and be useless:
 ///   - the rename is a `sed` in setup-vendors.sh, which silently does nothing against a source tree
 ///     that has already been renamed or has moved on
+///   - an out/ built before the MCR patch deploys a venue at 110%, which every run then refuses
 ///   - a Trove that starts near liquidation, or a system already in Recovery Mode, would make every
 ///     run about the genesis position rather than about the agents
 ///   - redemptions are the whole point of the venue (issue #39's redemption arb), and they revert
@@ -509,6 +515,19 @@ async function verifyLiquity(addrs: {
   );
 
   const troveManagerAbi = liquityArtifact("TroveManager").abi;
+  // The MCR patch is the venue's one change to the mechanism, and the coordinator refuses a dump
+  // without it (core/src/realtime/liquity.ts, LIQUITY_MCR_WAD) -- so say so here, before baking one.
+  const mcr = (await publicClient.readContract({
+    address: addrs.troveManager,
+    abi: troveManagerAbi,
+    functionName: "MCR",
+  })) as bigint;
+  assert(
+    mcr === LIQUITY_MCR,
+    `MCR is ${mcr}, not ${LIQUITY_MCR}: vendor/liquity-mcr.patch is not in the build. ` +
+      "Run `npm run clean:vendors && ./scripts/setup-vendors.sh` and deploy again",
+  );
+
   const troves = (await publicClient.readContract({
     address: addrs.troveManager,
     abi: troveManagerAbi,

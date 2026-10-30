@@ -123,6 +123,14 @@ victim のアドレスは env（`ERIS_LIQUIDATION_VICTIMS` / `ERIS_LIQUITY_VICTI
 帰結: lending-incident と crash の違いは、ギャップの大きさ・本数・向き（下固定か半々か）だけになる。
 どちらも起きた後にしか分からない。
 
+**追記（2026-10-30）: Liquity の cohort は ICR 1.42。** Liquity の MCR を 110% → 130% にした
+（`deployer/vendor/liquity-mcr.patch`。Trove のレバ上限で、GMX の上限と同じ判断。理由は CLAUDE.md の CDP 節）。
+1.20 は MCR より下なので開けない。1.42 は 1 − 1.30/1.42 = 8.5% の下落で割れ、1.20 対 1.10 の 8.3% とほぼ同じなので、
+上の割れる率はそのまま残る（WETH の fair の経路で 2,000 seed / レジーム、旧 → 新: lending-incident・cdp-incident 99.0% → 99.0%、
+crash 53.5% → 53.5%、乱歩だけの 7 本 4.3〜5.3% → 3.8〜5.1%、cex-drift 20.9% → 20.3%）。1.40 だと 7.1% で割れ、乱歩だけの
+レジームで ~9% に倍増する。清算時の ICR は上がる（cdp-incident の 12% で 1.056 → 1.250）ので、SP が 1 回の清算で得る分は
+債務の ~5% → ~24% に増える。
+
 ## Amendment 3: 練習期間も同じ形にする（2026-10-28）
 
 本文の「練習期間」が先送りしたもの。練習期間（`config/practice.yaml`）は sdk 既定の OU（κ = 0.02、開始時の fair へ回帰）

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Bootstrap that clones the external vendor repo (GMX) and applies the localhost patch.
+# Bootstrap that clones the external vendor repos (GMX, Liquity) and applies their patches
+# (vendor/gmx-localhost.patch, vendor/liquity-mcr.patch).
 # Curve ships prebuilt bytecode in vendor/curve, so no rebuild is needed.
 set -euo pipefail
 
@@ -54,6 +55,7 @@ echo "==> Setting up Aave (hardhat subproject)"
 LIQUITY_REPO="https://github.com/liquity/dev.git"
 LIQUITY_SHA="3e64ee1b52c50d51587c64c1cf75e0ba82934979" # pinned so the ABI cannot shift under a redeploy
 LIQUITY_DIR="vendor/liquity-src"
+LIQUITY_PATCH="vendor/liquity-mcr.patch"
 
 echo "==> Setting up Liquity V1"
 if [ ! -d "$LIQUITY_DIR/.git" ]; then
@@ -67,9 +69,26 @@ if ! git -C "$LIQUITY_DIR" checkout -q "$LIQUITY_SHA" 2>/dev/null; then
   git -C "$LIQUITY_DIR" checkout -q "$LIQUITY_SHA"
 fi
 
-# LUSD -> eUSD. The token's name and symbol are the only source-level change the simulation makes;
-# everything the mechanism depends on (Recovery Mode, redistribution, the fee curves, the sorted
-# list) is untouched. sed rather than a patch file so a re-clone cannot leave it half-applied.
+# MCR 110% -> 130%: the one change to the mechanism. A Trove at MCR is a limited-liability long, and
+# at 110% (~11x) one official down gap takes it under 100% ICR with the Stability Pool absorbing the
+# rest; at 130% (~4.3x) it does not (the patch's header has the arithmetic). Everything else the
+# mechanism depends on -- Recovery Mode, redistribution, the fee curves, the sorted list -- is
+# Liquity's own. Applied like the GMX patch above, so a tree with an older version of it fails loudly
+# instead of building a venue the coordinator then refuses (liquity_mcr_check).
+echo "  apply $LIQUITY_PATCH"
+if git -C "$LIQUITY_DIR" apply --reverse --check "../../$LIQUITY_PATCH" 2>/dev/null; then
+  echo "  (patch already applied)"
+elif git -C "$LIQUITY_DIR" apply --check "../../$LIQUITY_PATCH" 2>/dev/null; then
+  git -C "$LIQUITY_DIR" apply "../../$LIQUITY_PATCH"
+  echo "  patch applied"
+else
+  echo "  ERROR: $LIQUITY_PATCH does not apply cleanly — the vendor tree likely has an older version of the patch applied." >&2
+  echo "  Reset it with: npm run clean:vendors   (then re-run this script)" >&2
+  exit 1
+fi
+
+# LUSD -> eUSD. The token's name and symbol, the only other source-level change; sed rather than a
+# patch file so a re-clone cannot leave it half-applied.
 LUSD_SRC="$LIQUITY_DIR/packages/contracts/contracts/LUSDToken.sol"
 if grep -q '"LUSD Stablecoin"' "$LUSD_SRC"; then
   sed -i.bak 's/"LUSD Stablecoin"/"eUSD Stablecoin"/; s/_SYMBOL = "LUSD"/_SYMBOL = "eUSD"/' "$LUSD_SRC"

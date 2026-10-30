@@ -10,7 +10,7 @@ A TypeScript/viem orchestrator that deploys the major DeFi protocols from scratc
 | Curve | ✅ | Deploy prebuilt bytecode of `stableswap-ng` built with Vyper 0.3.10, using viem |
 | GMX V2 | ✅ | Run `vendor/gmx-src` (gmx-synthetics, hardhat-deploy), patched for localhost support |
 | LST | ✅ | `contracts/MockLSTVault.sol` (a wstETH-style non-rebasing vault) plus its LST/WETH plain pool on the stableswap-ng factory, with the pool's rate oracle wired to `stEthPerToken()` |
-| Liquity (eUSD) | ✅ | An unmodified Liquity V1 core fork, plus two of ours: a price-feed adapter (Liquity renounces ownership, so the oracle address is fixed forever) and a redemption helper (partial-redemption hints depend on the execution-time price) |
+| Liquity (eUSD) | ✅ | A Liquity V1 core fork with one constant changed (MCR 130% instead of 110%, `vendor/liquity-mcr.patch`), plus two of ours: a price-feed adapter (Liquity renounces ownership, so the oracle address is fixed forever) and a redemption helper (partial-redemption hints depend on the execution-time price) |
 
 The order in `--only` does not matter, but the deploy order does: `lst` and `liquity` both reuse the
 stableswap-ng factory for their secondary markets, so they run after `curve`, and `liquity` warps the
@@ -28,17 +28,21 @@ is why the simulator treats them as local-deploy only.
 npm install
 forge build                 # compile shared mock tokens (WETH9 / MockERC20)
 cp .env.example .env
-./scripts/setup-vendors.sh  # clone+patch external repos (GMX), install Aave deps
+./scripts/setup-vendors.sh  # clone+patch external repos (GMX, Liquity), install Aave deps
 ```
 
 > **Vendor layout**
-> - Clones of external repositories (`vendor/gmx-src`, `vendor/curve-src`) are **not tracked by git**.
+> - Clones of external repositories (`vendor/gmx-src`, `vendor/curve-src`, `vendor/liquity-src`) are **not tracked by git**.
 >   `scripts/setup-vendors.sh` clones them at pinned commits and applies
 >   `vendor/gmx-localhost.patch` to GMX. The patch = changes needed to get
 >   hardhat-deploy through on `localhost` (anvil): `hardhat`/`localhost` detection, `chainId`,
 >   `localhost` keys in each config, making `setBalance` anvil-compatible, etc. (see `docs/adr` for details).
 >   When `vendor/gmx-localhost.patch` is updated (e.g. after `git pull`), reset the vendor tree with
 >   `npm run clean:vendors`, then re-run `./scripts/setup-vendors.sh` to apply the new patch.
+>   Liquity is cloned the same way and gets `vendor/liquity-mcr.patch`: its minimum collateral
+>   ratio (MCR) is 130% rather than 110%, a leverage cap (~4.3x instead of ~11x). `verifyLiquity`
+>   reads it back after the deploy, and the coordinator refuses a state dump without it
+>   (`liquity_mcr_check`). The same `clean:vendors` resets it.
 > - `vendor/curve` **commits** the `{abi, bytecode/blueprintBytecode}` JSON built from
 >   `curvefi/stableswap-ng` with Vyper 0.3.10 (Docker). Vyper is not needed at runtime.
 >   Only to rebuild, clone `vendor/curve-src` and use

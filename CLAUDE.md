@@ -267,7 +267,7 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   事後 sweep（窓を 1 回読む）が同じ ledger を同じ境界で引くので `interval_series_agreement` は 0 のまま（`core/src/realtime/gmxShortfall.ts`）。
   控除は境界の値に入るので P に効く。`gmx_insolvent_close` イベント、summary の `agents[].gmxShortfallChargedUsd`、
   練習期間の再開は `LiveScorerSnapshot.gmxShortfall`。**口座をまたぐストラドル（2 体で片側ずつ）は対象外**（1 参加単位 1 体が前提）。
-  **(B2) レバレッジ上限 ~5.05 倍**（`GMX_MIN_COLLATERAL_FACTOR` = 0.198。`sdk/src/protocols/gmxKeys.ts`）。債務超過は B1 が
+  **(B2) レバレッジ上限 ~5.05 倍**（`GMX_MIN_COLLATERAL_FACTOR` = 0.198。`sdk/src/protocols/gmxKeys.ts`。Liquity の Trove も同じ理由で MCR 130% = ~4.3 倍 = CDP 節）。債務超過は B1 が
   請求するので、上限が塞ぐのは B1 で消えない「負け脚が gap の最終段より前に清算され、勝ち脚が裸で残りを取る」分。清算は検知の
   1 ブロック後に着くので、それには 3 段 ramp の 1 段目（spike 32% / 3 = 10.7%、crash 22% / 3 = 7.3%）で清算線
   （≈ 1/レバ − 1.1%）に届く必要があり ~8.4 倍以上。2 段 ramp なら清算は gap の満額で着く。**この余裕は gap の形（1 段の幅と段数）に
@@ -655,7 +655,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     必ず大きい）。境界ブロックの分割なら同じブロックの swap は財布と LP で相殺される
   - **エポック順序は抽選 seed から導出**（`npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k 60`。`core/src/competition/schedule.ts` = SHA-256 カウンタ + 棄却法 + Fisher-Yates、レジームはエポックごとに独立・一様（issue #186）。`--starts-at <ISO> --every-minutes <N>`（または `--ends-at <ISO>` で窓に均等配置）で各エポックに `startsAt` を付けると matrix.json の `schedule` 経由で dashboard が「次のエポック開始予定」を出し、`backtest --follow-schedule` がその時刻を待って各エポックを始める。コミットメントには入らない）。`npm run competition -- commit <file>` が正規化 JSON の sha256 を出す（非公開 seed は 9/23 前、抽選 seed は 11/30 に公表。原本は結果発表後）。形は `config/competition/*.example.yaml`
   - **ライブ週の編成は [ADR 0026](docs/adr/0026-live-week-schedule.md)（Proposed）**: k = 60（レジームはエポックごとに i.i.d. 一様に引く = issue #186。平均 5 回 ± 2.1、どれかが 0 回になる確率 6.4%）・1 エポック 360 ブロック・ガス用 ETH 3（ベンチマークも同額。公式レジームの `funding.ethWei` は別変更）・168 時間に 168 分おきで均等配置し `--follow-schedule` の 1 プロセスで走らせる。**60 エポックはブロック時間で 12 時間 = 週の 7%**。週を埋めるなら「360 ブロックのままエポックを増やす（非公開 seed の追加 commit が要る）」が推奨で、エポックを伸ばすのは全 12 レジームの再較正になる（ADR の §5）
-  - **公式レジーム（12 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）/ `spike`（crash の鏡像 = 上方向のギャップ + 同じ窓の引き抜き。バスケットを持っているだけの側が報われる唯一のレジーム。issue #105）/ `depeg-persist`（`depeg` の `persist: true` 版。ディスカウントが最終採点ブロックまで戻らず、買い戻しは teardown。「戻ると信じて持つ」が構造で勝てない唯一のレジーム。issue #106）/ `cdp-incident`（Liquity victim = ICR 1.20 の Trove 2 本 + 12〜16% 暴落 + 同じ窓の `eusdDepeg` と引き抜き。清算・償還・借り手防御の 3 skill。issue #107。victim は `core/src/liquityVictims.ts`、`stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei`、`stress_liquity_*` イベント）/ `launch`（run 途中に 2〜3 の新トークンが環境の Uniswap V3 factory 経由で USDC の薄いプールに上場し、トークンごとに需要の波が来るか dud かをシードが決める。鐘の時点の保有は 0 = ADR 0022 公理 2。issue #29。下の「新規トークンの上場」節）。**Liquity の 14 日 bootstrap 期間**: deployer は deploy 時に warp するが、state dump を新しい anvil に `--load-state` すると時計が実時間に戻って期間内に逆戻りし、**全 backtest run で `liquityRedeem` が revert していた**（実測: redemption-arb が 8 ブロック連続で redeem を決めて全部 `Redemptions are not allowed during bootstrap phase`）。`setupLiquity` が期間内なら `evm_increaseTime` で飛ばす（`liquity_bootstrap_warped`）。**抽選はエポックごとにレジームを独立・一様に引く**（`schedule.ts`、issue #186。以前は各レジーム k/R 回をシャッフルしていたが、それだと状態を引き継ぐ agent が既出レジームを数えて残りを推測できた）。非公開セットは**各レジーム k 本以上**の seed が要る（全エポックが同じレジームを引きうる）。**乱数ストリームはレジーム名でも分かれる**（`run.regime` → `setScenarioRegime`、flow bot へは `ERIS_SCENARIO_REGIME`。issue #186。以前は同じ seed の calm と crash が同じ価格ショック・フローを引いていた。backtest が自動で書く。agent には渡さない）
+  - **公式レジーム（12 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）/ `spike`（crash の鏡像 = 上方向のギャップ + 同じ窓の引き抜き。バスケットを持っているだけの側が報われる唯一のレジーム。issue #105）/ `depeg-persist`（`depeg` の `persist: true` 版。ディスカウントが最終採点ブロックまで戻らず、買い戻しは teardown。「戻ると信じて持つ」が構造で勝てない唯一のレジーム。issue #106）/ `cdp-incident`（Liquity victim = ICR 1.42 の Trove 2 本 + 12〜16% 暴落 + 同じ窓の `eusdDepeg` と引き抜き。清算・償還・借り手防御の 3 skill。issue #107。victim は `core/src/liquityVictims.ts`、`stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei`、`stress_liquity_*` イベント）/ `launch`（run 途中に 2〜3 の新トークンが環境の Uniswap V3 factory 経由で USDC の薄いプールに上場し、トークンごとに需要の波が来るか dud かをシードが決める。鐘の時点の保有は 0 = ADR 0022 公理 2。issue #29。下の「新規トークンの上場」節）。**Liquity の 14 日 bootstrap 期間**: deployer は deploy 時に warp するが、state dump を新しい anvil に `--load-state` すると時計が実時間に戻って期間内に逆戻りし、**全 backtest run で `liquityRedeem` が revert していた**（実測: redemption-arb が 8 ブロック連続で redeem を決めて全部 `Redemptions are not allowed during bootstrap phase`）。`setupLiquity` が期間内なら `evm_increaseTime` で飛ばす（`liquity_bootstrap_warped`）。**抽選はエポックごとにレジームを独立・一様に引く**（`schedule.ts`、issue #186。以前は各レジーム k/R 回をシャッフルしていたが、それだと状態を引き継ぐ agent が既出レジームを数えて残りを推測できた）。非公開セットは**各レジーム k 本以上**の seed が要る（全エポックが同じレジームを引きうる）。**乱数ストリームはレジーム名でも分かれる**（`run.regime` → `setScenarioRegime`、flow bot へは `ERIS_SCENARIO_REGIME`。issue #186。以前は同じ seed の calm と crash が同じ価格ショック・フローを引いていた。backtest が自動で書く。agent には渡さない）
   - **`cex-drift` / `informed-flow` は窓イベント**（`cexDrift` / `flowTrend`）で表現する（issue #56）。run 全体設定だった頃の `cex-drift` は**宣言長 360 ブロックで壊れていた** — 実測でプール乖離が平均 1,055bps（10%）に居座り fair が +34.6% 暴走、venue-arb が +8,458 を無条件に得ていた。60 ブロックでは 55bps に見えるので発覚が遅れた。窓化後は 461bps・+1,191（calm 基準は 39bps・−289）。`informed-flow` は窓化しても 45.0 → 42.7bps でほぼ中立（この regime はもともと calm と識別しにくい）
   - **`vuln` を公式化するにはフィールド側の追加が要る** — 悪意あるプールは factory 購読で発見するので、`discovery-arb` / `discovery-arb-verify` を `config/rosters/full-field.yaml` に入れないと**誰も見つけられず何も測れない**（`liquidator` が victim 無しでは遊ぶのと同じ形）。実測: 無検証は −5,306、検証側は +721、新プールを見ない venue-arb は −220（calm と同じ）
   - **7 本とも全 venue（`lst` / `liquity` 含む）をデプロイし、配布は ETH/BTC/USDC バスケット**（8 WETH + 0.4 WBTC + 25k USDC。issue #54）に**ガス用 1 ETH**（2026-09-28。規約 §4.2 の公表値で、公式レジームと `practice.yaml` に明記。sdk の既定も全モード 1 ETH。以前の既定 100 ETH はバスケットの 4 倍で、その値動きが P の大半を占めていた。ガスマネージャは全 run で動き、足りなくなれば自分の WETH から補充する）。**flow wallet には 0.5 WBTC も配る**（`funding.flowBase`。issue #99）— 以前は flow の財布に WBTC が無く、しかも `flow/logic.ts` の売り側ガードが全 base で `wethWei` を見ていたので、WBTC の売り注文が残高 0 に対して送られて informed 行の 27〜38% が revert し、WBTC プールが fair の +110bps に張り付いていた。ガードは base ごとの残高（`flowBalances[*].bases`）を読むようになった。WETH は従来どおり flow が買って調達する（1,012/1,012 成功の実測があるので触らない）。以前は 5 venue・USDC-only 版と `full-*` の 7 venue 版が並立していたが、**5 venue 版は撤去した**（「競技とは何か」に 2 つ目の答えを残さないため）。`full-8h` / `full-boxA` は `public.yaml` と同内容になったので統合済み。`config/regimes/{lst,liquity,liquity-crash}.yaml` は venue 単体検証用として競技セット外に残る。USDC-only を保つのは `metric-*` だけで、理由は別（ADR 0019 §6。`genMetricRegimes.ts` が `funding.base` ごと落とす）
@@ -817,7 +817,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run check:boundaries` — workspace 依存方向（example → sdk ← core）の検査
 - `npm run bundle:agent <id>` — 提出用 zip（runtime + sdk + lib + 対象 agent。ADR 0015 §7）。**`kind: improve` の prompt.md が無いディレクトリは拒否**（規約 §2.5 が全提出 agent に戦略改訂を要求する。起動時ではなく提出物の段で止めるのは、example の 17 agent が prompt.md 無しの教材だから）
 
-> **deployer は本 repo 同梱**（`deployer/`。旧 `../eris-app-deployer` を統合）。全 protocol を空の anvil へ deploy する自己完結のサブパッケージ（独自の `package.json` / `foundry.toml`）。初回のみ `cd deployer && npm install && forge build && cp .env.example .env && ./scripts/setup-vendors.sh`。以降は `cd deployer && npm run deploy -- --keep-fresh` で anvil 起動＋全 venue deploy。**焼き直すときは anvil ごと立て直す**（`--keep-fresh` が消すのは deployments.json だけ。全 venue の seed で deployer アカウントは 100 万 ETH のうち ~99.9 万を使うので、同じ anvil に 2 回目を流すと WETH の wrap で `insufficient funds` で落ちる）。`vendor/` の重いクローン（gmx-src/curve-src/twocrypto-src）は git 管理外で `setup-vendors.sh` が再現する。
+> **deployer は本 repo 同梱**（`deployer/`。旧 `../eris-app-deployer` を統合）。全 protocol を空の anvil へ deploy する自己完結のサブパッケージ（独自の `package.json` / `foundry.toml`）。初回のみ `cd deployer && npm install && forge build && cp .env.example .env && ./scripts/setup-vendors.sh`。以降は `cd deployer && npm run deploy -- --keep-fresh` で anvil 起動＋全 venue deploy。**焼き直すときは anvil ごと立て直す**（`--keep-fresh` が消すのは deployments.json だけ。全 venue の seed で deployer アカウントは 100 万 ETH のうち ~99.9 万を使うので、同じ anvil に 2 回目を流すと WETH の wrap で `insufficient funds` で落ちる）。`vendor/` の重いクローン（gmx-src/curve-src/twocrypto-src/liquity-src）は git 管理外で `setup-vendors.sh` が再現する（GMX と Liquity には patch = `vendor/gmx-localhost.patch` / `vendor/liquity-mcr.patch` を当てる。patch を更新したら `npm run clean:vendors && ./scripts/setup-vendors.sh`）。
 
 > **Aave 自前のテスト market は閉じてある**（issue #190）。`@aave/deploy-v3` は自前のテストトークンで 8 reserve
 > （WETH $4,000 / WBTC $60,000 等の固定価格）と、既定で誰でも 1 回 10,000 枚 mint できる `Faucet` を作る。競技は
@@ -971,18 +971,39 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
 
 ### CDP stablecoin venue（Liquity V1 フォーク = eUSD。issue #39。既定 off・**ローカルデプロイ専用**）
 
-Liquity V1 の core を**無改変**でフォークした CDP（`deployer/src/protocols/liquity.ts`）。Recovery Mode・
+Liquity V1 の core を**定数 1 つ（MCR）だけ変えて**フォークした CDP（`deployer/src/protocols/liquity.ts`）。Recovery Mode・
 再分配・sorted list・2 本の動的手数料がそのまま入っているので、他 venue に無い skill が 4 つ増える:
 
 - **redemption arb** — eUSD は常に「最もリスクの高い Trove に対して $1 分の担保」と交換できる。よって
   eUSD/USDC プールのディスカウントは**プロトコルが強制する価格に対する乖離**であって価格予想ではない（ADR 0007 の α 方向）
 - **Stability Pool** — eUSD を預けて清算債務を吸収し担保を割引で受け取る
 - **Recovery Mode** — system TCR が CCR(150%) を割ると清算閾値が MCR でなくなり、**その時点の TCR** を
-  下回る Trove が清算対象になる（SP がその債務を全額吸収できる場合のみ。押収は債務の 110% で頭打ちで、
+  下回る Trove が清算対象になる（SP がその債務を全額吸収できる場合のみ。押収は債務の MCR 倍 = 130% で頭打ちで、
   余剰は借り手が claim できる）。全員の線が同時に動くのが Aave の per-position HF と対照的
 - **sorted list 上の位置** — 償還は最下位 ICR から walk するので、借り手は「自分の前にどれだけ債務があるか」を守る
 
-ours なのは 2 つだけ（core は無改変）:
+**MCR は 130%**（Liquity は 110%。2026-10-30、`deployer/vendor/liquity-mcr.patch` を `setup-vendors.sh` が
+GMX の patch と同じ手順で当てる。CCR 150% は不変）。Trove は**有限責任のロング**で、ICR 100% を割ると
+評価は 0 で止まり（`liquityPositionValue` の clamp）、残りは採点されない環境の Stability Pool（deployer の 125k）が
+被る。110% ではレバ ~11 倍で、MCR で開いた Trove を GMX のショートでヘッジすると公式の下向きギャップ
+（lending-incident / cdp-incident 12〜16%、crash 最大 22%）が凸のペイオフになった（Trove の損は証拠金で止まり、
+ヘッジは取り続ける）。GMX の B2（レバ上限）と同じ判断で、130% ならレバ = ICR/(ICR−1) ≈ 4.3 倍、
+1.30 × 0.78 = 1.014 で**公式のギャップ 1 回では MCR で開いた Trove が 100% を割らない**
+（`test/liquityMcr.test.ts` が公式 12 本の下向きギャップの上限 < 1 − 1/MCR = 23.1% を検査）。MCR はコンパイル時の
+定数なので setup で書けず、**ソースで変えて読み返す**: deployer の `verifyLiquity` が `MCR()` を assert し、
+coordinator は `setupLiquity` の最初の tx の前に `TroveManager.MCR()` を読んで `liquity_mcr_check` を記録する
+（`LIQUITY_MCR_WAD`。`core/src/realtime/liquity.ts`）。**新しいエポック（backtest・`sim:realtime`・新しい練習期間）は
+落とし**（`npm run gen:state-dump` で焼き直すまで。これ以前の dump は全部これで落ちる）、**external と再開する練習期間は
+警告して続行**（練習 devnet は chainMode anvil なので external だけでは守れない。定数は bytecode にあり再デプロイ＝
+新期間でしか変わらないので、拒否すると次の再起動で期間が止まる）。`npm run check:chain-readiness` は
+「再開は可・新期間は不可」と別枠で出す。副作用: 清算は担保を全部取るので、清算された借り手の損は債務の ~10% から
+最大 ~30% に増え、SP が 1 回の清算で得る分も増える（cdp-incident の victim は 1.056 → 1.25 で清算 = 債務の ~5% → ~24%）。
+victim の ICR は 1.20 → **1.42**（割れる下落幅が 8.3% → 8.5% で同じ = ADR 0029 Amendment 2 の割れる率がそのまま）、
+`liquity-crash` の spent Trove は 125% → 145%、`cdp-recovery` は RM 帯（MCR〜TCR）が狭くなったので組み直した
+（下の Recovery Mode の項）。観測の `mcr` はチェーンから読むので参照 agent はそのまま、market.json の Trove 行も
+`mcr` を持つ（dashboard は無い古い run を 1.10 と読む）
+
+ours なのは 2 つだけ（core の改変は上の MCR だけ）:
 - `LiquityPriceFeedAdapter` — Liquity は wiring 後に ownership を renounce するのでオラクルアドレスは永久固定。
   一方 run は毎回新しい PriceFeed を deploy するので、その間に挟んで admin key で毎 run 差し替える
 - `LiquityRedemptionHelper` — **部分償還のヒントは実行時価格に依存する**（`_redeemCollateralFromTrove` が
@@ -1006,7 +1027,7 @@ ours なのは 2 つだけ（core は無改変）:
   **native ETH で戻る**（WETH に戻すアクションは無い = `rawTx` で `WETH.deposit()`）。
   observation に `ethBalanceWei` / `suggestedGasReserveWei` を出すが**強制はしない**（self-stranding は正当な負け）
 - **open/adjust の ICR 検査は composite debt**（要求額 + 借入手数料 + gas compensation 200。チェーンの
-  `_computeCR` と同じ分母）。要求額だけで割っていた頃は 110% 付近が検査を通ってチェーンで revert した
+  `_computeCR` と同じ分母）。要求額だけで割っていた頃は MCR 付近が検査を通ってチェーンで revert した
 - **CollSurplusPool の余剰担保も数える**（`liquity.collSurplusWei`。全額償還や RM の上限つき清算で残る分）。
   claim すれば native ETH になるので realizable = WETH fair。請求は `rawTx` で `claimCollateral()`（action は足さない）
 - action は 8 つ: `liquityOpenTrove` / `liquityAdjustTrove` / `liquityCloseTrove` / `liquityRedeem` /
@@ -1035,13 +1056,17 @@ ours なのは 2 つだけ（core は無改変）:
 - 参照 agent は 3 体: `redemption-arb`（α 側）/ `trove-manager`（借り手側。清算・償還・Recovery Mode に
   対する防御）/ `sp-underwriter`（Stability Pool で清算を吸収し、自分で `liquidate` を叩いて担保を取る）。
   借り手の防御が効くかは**借りた eUSD を使ったかどうか**で決まる（`ERIS_TROVE_SPEND_DEBT`）。実測で
-  200% 保持組は無傷、125% で全額 post して eUSD を売った組は清算され −13,140（担保 20 ETH を失い USDC を残す）
+  200% 保持組は無傷、125% で全額 post して eUSD を売った組は清算され −13,140（担保 20 ETH を失い USDC を残す。
+  MCR 110% 時の実測。今の spent 組は 145% で開く）
 - **Recovery Mode は公式レジームの較正では到達不能**（実測: seed 501 で最小 TCR 2.244 対 CCR 1.5）。genesis Trove
   が 350 ETH / 350k eUSD（300%。#79 以前は 250 / 250k）で TCR を支配するため。**到達させるのは victim cohort の仕事**（issue #59 →
   `config/regimes/cdp-recovery.yaml`、公式セット外）: `stress.liquityRecoveryTcr` を書くと coordinator が seed の引いた
   crash magnitude と現状の system から各 victim の担保を逆算し（`recoveryCohortCollateralWei`）、届かなければ setup で
   fail-fast。RM の清算（MCR〜TCR 帯）は SP が債務を全額吸収できる場合しか執行されないので `stress.liquitySpSeedEusdWei`
   で環境が deployer の eUSD を SP に入れる。genesis を下げないのは償還順序と SP 相対深度を全レジームで壊すから。
+  **MCR 130% で RM 帯（MCR〜CCR）が 0.2 幅に狭まった**ので、cohort が「RM のせいでだけ清算される」（暴落後の ICR が
+  MCR 以上・目標 TCR 未満）を保つには、cohort 自身の比率が目標に近く、system を引き下げる量が要る: 24 本・ICR 1.69・
+  暴落 20〜22% で債務 2.3〜3.4M eUSD（以前は 8 本・1.35・15〜22%。15% のままだと ~28M 要る）。チェーンでは未計測
   手数料カーブの希釈（供給に反比例）は不可避で、この regime の償還較正は別に測る。sp-underwriter は RM 帯でも
   清算する分岐を持つ（SP が全額吸収できる Trove だけ）
 - **環境が LQTY を 200 万ステークしている**（`stakeEnvironmentLqty`。bounty 枠を mnemonic index 100 の staker に
@@ -1417,8 +1442,8 @@ agent 側の `ctx.rng` は address 由来（run の seed ではない）。`SimC
   **vuln factory・その owner（`vuln-pools` 財布、全 run で同額のガス）・`disclosures/`・`ERIS_VULN_*` は全 run**（プールは窓で
   `createPool(initCode)` 1 本で deploy = ADR 0014 Amendment 2。以前は setup で全部 deploy し、作成 selector が正解を名指していた）。
   agent に渡す追加 env の形は `core/src/realtime/agentEnv.ts` が config から決め、coordinator は起動前に照合して違えば落ちる。
-  **victim は全 12 本で同じ cohort を建てる**（Aave 2 体 HF 1.10 + Liquity 2 本 ICR 1.20。ADR 0029 Amendment 2）。env を消しても
-  victim は block 0 からチェーン上に見える（Aave の HF 1.10 の借り手、`SortedTroves.getLast()` の ICR 1.20）ので、lending-incident /
+  **victim は全 12 本で同じ cohort を建てる**（Aave 2 体 HF 1.10 + Liquity 2 本 ICR 1.42（MCR 130% の前は 1.20）。ADR 0029 Amendment 2）。env を消しても
+  victim は block 0 からチェーン上に見える（Aave の HF 1.10 の借り手、`SortedTroves.getLast()` の ICR 1.42）ので、lending-incident /
   cdp-incident だけにいた頃は「下に 12〜16% 落ちる」が block 0 で分かった。他のレジームではデコイで、割れるのは crash の下向きギャップ
   （~52%）か κ = 0 の乱歩（Aave ~3% / Liquity ~5%）。coordinator の「victim がいるのに crash が無い」警告は、反転しない crash を
   持つ regime だけで出す。`test/regimeStartInvariance.test.ts` が env と cohort の同一性を検査する。残っている既知の穴は vuln プールのソースが公開 repo に

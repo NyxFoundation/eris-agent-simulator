@@ -22,7 +22,7 @@ cp .env.example .env
 cd ..
 ```
 
-> The heavy clones under `vendor/` (`gmx-src` / `curve-src` / `twocrypto-src`) are outside git, and `setup-vendors.sh` reproduces them at pinned commits. Only the `vendor/curve` prebuilt bytecode and `gmx-localhost.patch` are bundled.
+> The heavy clones under `vendor/` (`gmx-src` / `curve-src` / `twocrypto-src` / `liquity-src`) are outside git, and `setup-vendors.sh` reproduces them at pinned commits. Only the `vendor/curve` prebuilt bytecode and the two patches (`gmx-localhost.patch`, and `liquity-mcr.patch` = Liquity's MCR at 130%) are bundled.
 
 ## Steps
 
