@@ -6,6 +6,8 @@ import {
   EventSchedule,
   TOKEN_LAUNCH_LEAD_BLOCKS,
   parseStressEvents,
+  waveLengthFrom,
+  waveLengthMean,
   type StressEventConfig,
 } from "../core/src/realtime/events.js";
 import {
@@ -14,6 +16,7 @@ import {
   LAUNCH_WAVE_USDC_UNITS,
   launchWalletFunding,
   scaleUnits,
+  tokenLaunchCeiling,
   tokenLaunchEndowments,
   waveUsdcUnits,
 } from "../core/src/realtime/tokenLaunch.js";
@@ -165,6 +168,193 @@ test("a dud's targets are zero throughout", () => {
     assert.equal(t.buyFrac, 0);
     assert.equal(t.sellBackFrac, 0);
   }
+});
+
+// ---- the memoryless wave (waveStopProb) ----
+
+const MEMORYLESS = (over: Partial<StressEventConfig> = {}) =>
+  LAUNCH({
+    waveUsdcMult: [0.25, 1],
+    rampBlocks: 75,
+    holdBlocks: [24, 36],
+    decayBlocks: [28, 36],
+    waveStopProb: 0.04,
+    ...over,
+  });
+
+test("waveLengthFrom inverts the geometric: P(L > n) = (1 - p)^n, at least 1, cut at the cap", () => {
+  const p = 0.04;
+  assert.equal(waveLengthFrom(0, p, 75), 1);
+  for (const n of [1, 5, 23, 60]) {
+    const edge = 1 - (1 - p) ** n; // u below this: L <= n; at or above: L > n
+    assert.equal(waveLengthFrom(edge - 1e-9, p, 75), n, `n ${n}`);
+    assert.equal(waveLengthFrom(edge + 1e-9, p, 75), n + 1, `n ${n}`);
+  }
+  assert.equal(waveLengthFrom(0.999999999, p, 75), 75);
+  // The closed form of the mean is the sum it stands for.
+  let sum = 0;
+  for (let n = 1; n <= 75; n++) sum += n * (n < 75 ? (1 - p) ** (n - 1) * p : (1 - p) ** 74);
+  assert.ok(Math.abs(waveLengthMean(p, 75) - sum) < 1e-9);
+  assert.ok(Math.abs(waveLengthMean(p, 75) - 23.83) < 0.01);
+});
+
+test("memoryless lengths: per token, deterministic, inside [1, cap], and geometric", () => {
+  const lengths: number[] = [];
+  for (let seed = 1; seed <= 1500; seed++) {
+    const a = new EventSchedule([MEMORYLESS()], seed, 360).events[0];
+    const b = new EventSchedule([MEMORYLESS()], seed, 360).events[0];
+    assert.deepEqual(a, b, `seed ${seed}`);
+    for (const l of a.launches!) {
+      assert.ok(Number.isInteger(l.rampBlocks) && l.rampBlocks! >= 1 && l.rampBlocks! <= 75);
+      lengths.push(l.rampBlocks!);
+    }
+  }
+  const n = lengths.length;
+  const mean = lengths.reduce((s, x) => s + x, 0) / n;
+  const expected = waveLengthMean(0.04, 75);
+  // sd of a capped geometric at p = 0.04 is ~19 blocks: 4 standard errors.
+  assert.ok(Math.abs(mean - expected) < (4 * 19) / Math.sqrt(n), `mean ${mean} vs ${expected}`);
+  // No memory: a wave that has bought 15 blocks is as likely to buy 15 more as a new one is.
+  const past = (k: number) => lengths.filter((x) => x > k).length;
+  const fresh = past(15) / n;
+  const aged = past(30) / past(15);
+  assert.ok(Math.abs(fresh - 0.96 ** 15) < 0.03, `P(L > 15) ${fresh}`);
+  assert.ok(Math.abs(aged - fresh) < 0.05, `P(L > 30 | L > 15) ${aged} vs ${fresh}`);
+  // The cap takes what is left of the tail, and two tokens of one window do not share a length.
+  const atCap = lengths.filter((x) => x === 75).length / n;
+  assert.ok(Math.abs(atCap - 0.96 ** 74) < 0.02, `P(L = 75) ${atCap}`);
+  let differ = 0;
+  for (let seed = 1; seed <= 50; seed++) {
+    const ls = new EventSchedule([MEMORYLESS()], seed, 360).events[0].launches!;
+    if (new Set(ls.map((l) => l.rampBlocks)).size > 1) differ++;
+  }
+  assert.ok(differ > 40, `${differ} of 50 windows gave every token the same length`);
+});
+
+test("the length has a stream of its own: the window's other draws and the events after it do not move", () => {
+  // On the seed-only stream the main draws do not depend on what the list says, so the same seed
+  // must list the same pools, duds, sell-backs, start and hold with and without the stop.
+  const crash: StressEventConfig = {
+    type: "crash",
+    magnitudeRange: [0.1, 0.2],
+    windowFrac: [0.2, 0.8],
+    rampBlocks: 3,
+    holdBlocks: 6,
+    decayBlocks: 8,
+  };
+  const opts = { saltWithEventList: false };
+  for (let seed = 1; seed <= 30; seed++) {
+    const fixed = new EventSchedule([MEMORYLESS({ waveStopProb: undefined }), crash], seed, 360, 360, opts);
+    const memoryless = new EventSchedule([MEMORYLESS(), crash], seed, 360, 360, opts);
+    const [f, m] = [fixed.events[0], memoryless.events[0]];
+    assert.equal(m.startBlock, f.startBlock);
+    assert.equal(m.holdBlocks, f.holdBlocks);
+    assert.equal(m.decayBlocks, f.decayBlocks);
+    assert.equal(m.launches!.length, f.launches!.length);
+    for (const [j, l] of m.launches!.entries()) {
+      const g = f.launches![j];
+      assert.equal(l.liquidityUsdc, g.liquidityUsdc);
+      assert.equal(l.dud, g.dud);
+      assert.equal(l.sellBackFrac, g.sellBackFrac);
+      assert.equal(g.rampBlocks, undefined);
+      // The drawn multiple is the expected total; the realized one scales with the length, so a
+      // block's buy is the drawn multiple over the mean length whatever this token's length is.
+      if (!l.dud)
+        assert.ok(
+          Math.abs(l.waveUsdcMult - (g.waveUsdcMult * l.rampBlocks!) / waveLengthMean(0.04, 75)) < 1e-12,
+        );
+    }
+    assert.deepEqual(memoryless.events[1], fixed.events[1], `seed ${seed}: the crash moved`);
+  }
+});
+
+test("memoryless targets: each token buys over its own length, then holds and sells back from its own stop", () => {
+  let checked = 0;
+  for (let seed = 1; seed <= 40 && checked < 5; seed++) {
+    const s = new EventSchedule([MEMORYLESS({ dudProb: [0, 0], tokenCount: [3, 3] })], seed, 360);
+    const ev = s.events[0];
+    const ls = ev.launches!;
+    if (new Set(ls.map((l) => l.rampBlocks)).size < 2) continue;
+    checked++;
+    // The window lasts until its longest wave has sold back.
+    const longest = Math.max(...ls.map((l) => l.rampBlocks!));
+    assert.equal(ev.rampBlocks, longest);
+    assert.equal(
+      ev.endBlock,
+      ev.startBlock + TOKEN_LAUNCH_LEAD_BLOCKS + longest + ev.holdBlocks + ev.decayBlocks,
+    );
+    const ramp0 = ev.startBlock + TOKEN_LAUNCH_LEAD_BLOCKS;
+    for (const [j, l] of ls.entries()) {
+      const L = l.rampBlocks!;
+      const at = (i: number) => s.tokenLaunchTargetsAt(i)[j];
+      assert.equal(at(ramp0 - 1).buyFrac, 0);
+      assert.ok(Math.abs(at(ramp0).buyFrac - 1 / L) < 1e-12);
+      assert.equal(at(ramp0 + L - 1).buyFrac, 1);
+      const decay0 = ramp0 + L + ev.holdBlocks;
+      assert.equal(at(decay0 - 1).sellBackFrac, 0);
+      assert.ok(Math.abs(at(decay0).sellBackFrac - l.sellBackFrac / ev.decayBlocks) < 1e-12);
+      assert.ok(Math.abs(at(decay0 + ev.decayBlocks - 1).sellBackFrac - l.sellBackFrac) < 1e-12);
+    }
+  }
+  assert.equal(checked, 5);
+});
+
+test("memoryless funding: no draw spends more than the fixed wave wallet, and the expected total is kept", () => {
+  const configs = [MEMORYLESS({ liquidityUsdc: [20_000, 100_000] })];
+  const ceiling = tokenLaunchCeiling(configs);
+  // The longest wave on the largest pool at the top multiple: 75 / 23.83 x 1.0 x 100k.
+  assert.ok(ceiling.waveUsdcUnits > 314_000n * 1_000_000n && ceiling.waveUsdcUnits < 315_000n * 1_000_000n);
+  assert.ok(ceiling.waveUsdcUnits <= LAUNCH_WAVE_USDC_UNITS);
+  let realized = 0;
+  let expected = 0;
+  for (let seed = 1; seed <= 1000; seed++) {
+    const s = new EventSchedule(configs, seed, 360);
+    for (const e of tokenLaunchEndowments(s)) assert.ok(e.waveUsdcUnits <= ceiling.waveUsdcUnits);
+    for (const l of s.events[0].launches!) {
+      if (l.dud) continue;
+      realized += l.waveUsdcMult;
+      expected += (l.waveUsdcMult * waveLengthMean(0.04, 75)) / l.rampBlocks!;
+    }
+    // The fixed slots cover every draw, so funding still says nothing about the schedule.
+    assert.deepEqual(
+      launchWalletFunding(s).map((f) => f.waveUsdcUnits),
+      Array(LAUNCH_WALLET_SLOTS).fill(LAUNCH_WAVE_USDC_UNITS),
+    );
+  }
+  assert.ok(Math.abs(realized / expected - 1) < 0.05, `realized / expected ${realized / expected}`);
+});
+
+test("parser: waveStopProb is one probability on a tokenLaunch with a single rampBlocks cap", () => {
+  const base = {
+    type: "tokenLaunch",
+    windowFrac: [0.2, 0.5],
+    tokenCount: [2, 3],
+    liquidityUsdc: [20000, 100000],
+    waveUsdcMult: [0.25, 1],
+    dudProb: [0.3, 0.5],
+    sellBackFrac: [0.5, 1],
+    waveStopProb: 0.04,
+    rampBlocks: 75,
+    holdBlocks: [24, 36],
+    decayBlocks: [28, 36],
+  };
+  assert.equal(parseStressEvents(JSON.stringify([base]))[0].waveStopProb, 0.04);
+  const refuse = (over: Record<string, unknown>, pattern: RegExp) =>
+    assert.throws(() => parseStressEvents(JSON.stringify([{ ...base, ...over }])), pattern);
+  refuse({ waveStopProb: [0.03, 0.05] }, /one number, not a range/);
+  refuse({ waveStopProb: 0 }, /strictly between 0 and 1/);
+  refuse({ waveStopProb: 1 }, /strictly between 0 and 1/);
+  refuse({ rampBlocks: [20, 75] }, /rampBlocks must be one integer/);
+  refuse({ rampBlocks: 0 }, /rampBlocks must be one integer/);
+  assert.throws(
+    () =>
+      parseStressEvents(
+        JSON.stringify([
+          { type: "crash", magnitudeRange: [0.1, 0.2], windowFrac: [0.2, 0.5], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8, waveStopProb: 0.04 },
+        ]),
+      ),
+    /waveStopProb only applies/,
+  );
 });
 
 test("endowments: the launch wallet holds the USDC side, the wave wallet its multiple, a dud nothing", () => {
@@ -326,14 +516,25 @@ test("config/regimes/launch.yaml: a tokenLaunch window on a registry-enabled, al
   assert.equal(doc.agentMarkets.enabled, true);
   const launch = doc.stress.events.find((e) => e.type === "tokenLaunch");
   assert.ok(launch, "no tokenLaunch event");
-  // The regime's ranges parse, and the window fits the run with room to exit afterwards.
+  // The regime's ranges parse; the wave's length is memoryless; and on every seed each wave's
+  // sell-back starts with room to exit before it and long before the bell. (The decay itself may
+  // run later: a holder who is still in by then has missed the exit, not the run.)
   const parsed = parseStressEvents(JSON.stringify(doc.stress.events));
-  const s = new EventSchedule(parsed, 101, doc.run.blocks);
-  const ev = s.events.find((e) => e.type === "tokenLaunch")!;
-  assert.ok(
-    ev.endBlock <= doc.run.blocks - 60,
-    `window ends at ${ev.endBlock}`,
-  );
+  const tl = parsed.find((e) => e.type === "tokenLaunch")!;
+  assert.equal(typeof tl.waveStopProb, "number");
+  for (let seed = 1; seed <= 200; seed++) {
+    const s = new EventSchedule(parsed, seed, doc.run.blocks);
+    const ev = s.events.find((e) => e.type === "tokenLaunch")!;
+    assert.ok(ev.endBlock <= doc.run.blocks, `seed ${seed}: window ends at ${ev.endBlock}`);
+    for (const l of ev.launches!) {
+      const sellBack =
+        ev.startBlock + TOKEN_LAUNCH_LEAD_BLOCKS + l.rampBlocks! + ev.holdBlocks;
+      assert.ok(sellBack <= doc.run.blocks - 60, `seed ${seed}: a sell-back starts at ${sellBack}`);
+    }
+  }
+  // The most any seed can draw stays inside the fixed wave wallet (also held for every official
+  // regime by test/regimeStartInvariance.test.ts).
+  assert.ok(tokenLaunchCeiling(parsed).waveUsdcUnits <= LAUNCH_WAVE_USDC_UNITS);
   assert.ok(doc.agents.some((a) => a.id === "launch-sniper"));
   assert.ok(doc.agents.some((a) => a.id === "launch-confirm"));
 });

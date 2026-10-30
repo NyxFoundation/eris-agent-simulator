@@ -22,9 +22,11 @@
 # seed-drawn window the environment lists 2-3 new ERC-20 tokens, each in a thin Uniswap V3 pool
 # against USDC created through the environment's own factory, so they surface through the #40
 # registry like any agent-made market (`uniswapV3Pool` + `erc20`, one block after creation). For
-# each token, independently, a demand wave is drawn: a dedicated wallet buys the token over the
-# ramp, holds, and sells a seeded fraction back during the decay -- or, with `dudProb`, buys
-# nothing at all. Nothing announces which. The first blocks of a ramp are the only evidence.
+# each token, independently, a demand wave is drawn: a dedicated wallet buys the token every block
+# until it stops (each block with the same chance, `waveStopProb`), holds, and sells a seeded
+# fraction back during the decay -- or, with `dudProb`, buys nothing at all. Nothing announces
+# which, and nothing announces when a wave will stop. The first blocks of a ramp are the only
+# evidence that a wave exists; how much of it is left is never in evidence.
 #
 # Holdings at the bell are worth zero (ADR 0022 axiom 2, unchanged): the only way to score is to
 # buy before the wave, sell before the sell-back, and to have picked a token that got a wave.
@@ -109,8 +111,9 @@ stress:
     # the window's length is below).
     #
     # Per token, independently: the USDC side seeded (the token side is the same number of tokens
-    # at 1.00 USDC), the wave as a multiple of that USDC side, the dud coin, and the share of what
-    # the wave bought that it sells back during the decay. `magnitudeRange` does not apply.
+    # at 1.00 USDC), the wave's expected total as a multiple of that USDC side, the dud coin, the
+    # share of what the wave bought that it sells back during the decay, and how long it buys.
+    # `magnitudeRange` does not apply.
     #
     # Calibrated on the five public seeds (issue #29 acceptance, 2026-09-13/14). The issue's
     # proposal (waveUsdcMult [0.5, 2] over a 9-block ramp) put up to 2/9 of the pool's USDC side
@@ -123,11 +126,47 @@ stress:
     # on the price (full range, equal sides: (1 + x)^2 - 1) at the top of the range and +2.5% at
     # the bottom. The window was 2 + 20 + 30 + 30 = 82 blocks.
     #
-    # Each segment's length is now drawn (ramp 20-26, hold 24-36, decay 28-36), so the listing no
-    # longer gives away the block the sell-back starts on. The ramp only lengthens: a shorter one
-    # would put more than 1/20 of the USDC side into a block and bring back the reverts above. The
-    # longest window is 2 + 26 + 36 + 36 = 100 blocks; the latest start is block 180, so it closes
-    # by 280 with ~80 blocks left for exits.
+    # The hold and the decay are drawn per window (hold 24-36, decay 28-36), so the listing does not
+    # give away the block the sell-back starts on.
+    #
+    # The ramp is memoryless (2026-10-30). It was drawn per window from [20, 26] and every token of
+    # the window bought its multiple evenly over it, so the first buy settled the rest: its size
+    # was the total over ~23, and the end was known to within six blocks. Now each token's wave, after
+    # every block it buys, stops for good with probability `waveStopProb` -- a geometric length, at
+    # most `rampBlocks` -- and its hold and sell-back start from its own stop. Every block buys the
+    # drawn multiple over the *mean* length (23.8 blocks here), so the expected total is the drawn
+    # multiple, as before, and a block of the ramp is at most 1/23.8 of the USDC side (+8.6% on the
+    # price at the top of the range), inside the 1/20 above. At any block, a wave that is still
+    # buying has the same ~24 blocks expected ahead of it (1 in 25 stops each block); 4.7% run to the
+    # cap of 75 = 3x the mean. Those spend up to 75 / 23.8 = 3.15x the drawn multiple, which is what
+    # the wave wallets are funded for (core LAUNCH_WAVE_USDC_UNITS, the same in every regime), and
+    # the largest of them reach the 10x price cap on their own (2.9% of waves).
+    #
+    # What it does and does not change, per epoch (npx tsx scripts/measureLaunchFrontRun.ts, 2,000
+    # seeds of this file; --fixed-ramp 20,26 for the left column. Constant-product pools at 0.3%, an
+    # agent sees block t-1 and lands in block t, in front of the wave only if it outbids it; one
+    # strategy at a time, tokens worth 0 at the bell; the standard error is ~±650 / ±120):
+    #
+    #                                         fixed ramp 20-26   memoryless (this)
+    #   confirm on the first buy, buy the best
+    #     size up to $60k, sell on the stop       +31,659           +29,742
+    #   stay one block ahead (32x a block)        +30,716           +28,925
+    #   launch-sniper as written                   +7,619            +5,778
+    #   launch-confirm as written                  +5,276            +6,508
+    #   the wave's gross buying                    55,953            54,971
+    #
+    # It does not take the front-run apart, at any stop probability that keeps the expected total
+    # (0.0333-0.05 all land at +29.5k-30.7k). A front-runner's take is a near-fixed share of the
+    # wave's remaining buying (~55% of the gross for a $60k stack), and with the expected total kept
+    # the expected remainder at confirmation is what it was. Not knowing the length costs the best
+    # size ~$450 an epoch (+30,181 with every length known in advance), because a wave that stops
+    # right after the front-run costs it only the pool fee both ways. What the memoryless ramp does
+    # remove is the schedule: the size of a buy no longer gives the total, the end of the ramp and
+    # the start of the sell-back are not readable from the first block, a fixed hold (launch-sniper)
+    # now sometimes meets the sell-back, and an exit has to be read from the tape (launch-confirm).
+    #
+    # The longest window is 2 + 75 + 36 + 36 = 149 blocks: from the latest start (block 180) the last
+    # wave stops by block 257 and its sell-back cannot begin before 281, ~80 blocks before the bell.
     - {
         type: tokenLaunch,
         windowFrac: [0.2, 0.5],
@@ -136,7 +175,8 @@ stress:
         waveUsdcMult: [0.25, 1.0],
         dudProb: [0.3, 0.5],
         sellBackFrac: [0.5, 1.0],
-        rampBlocks: [20, 26],
+        waveStopProb: 0.04,
+        rampBlocks: 75,
         holdBlocks: [24, 36],
         decayBlocks: [28, 36],
       }

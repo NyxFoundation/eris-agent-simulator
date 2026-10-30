@@ -208,16 +208,40 @@ from them. The token's `erc20` entry now comes from the launcher's `Launched` ev
 published unverified, an internal CREATE not at all).
 
 The wave stops buying when the pool prices the token above **10× the listing price**
-(`WAVE_PRICE_CAP_MULT`, `stress_token_launch_wave_capped`). The largest official wave on its own takes
-a full-range pool to 4×, so the cap binds only once the field has bought ahead of it by more than about
-1.16× the pool's seeded USDC.
+(`WAVE_PRICE_CAP_MULT`, `stress_token_launch_wave_capped`). The largest official expected wave on its
+own takes a full-range pool to 4×, so the cap binds once the field has bought ahead of it by more than
+about 1.16× the pool's seeded USDC — or, on its own, at the end of the longest memoryless waves (below;
+2.9% of waves).
 
-Then, **per token and independently**, a demand wave: a dedicated wave wallet buys the token with
-`waveUsdcMult × liquidityUsdc` of USDC over the ramp, holds, and sells `sellBackFrac` of what it
-bought back during the decay. With probability `dudProb` the wave is zero — a dud — and the draw is a
-mass at zero on purpose: a continuous range whose lower bound is 0 never lands on 0. The wave is
-drawn even for a dud so the RNG consumption per token is constant and the events after this one do
-not move. `magnitudeRange` does not apply and is rejected.
+Then, **per token and independently**, a demand wave: a dedicated wave wallet buys the token over the
+ramp, holds, and sells `sellBackFrac` of what it bought back during the decay. With probability
+`dudProb` the wave is zero — a dud — and the draw is a mass at zero on purpose: a continuous range
+whose lower bound is 0 never lands on 0. The wave is drawn even for a dud so the RNG consumption per
+token is constant and the events after this one do not move. `magnitudeRange` does not apply and is
+rejected.
+
+**How long a wave buys** is memoryless when the event sets `waveStopProb` (the `launch` regime: 0.04).
+After every block it buys, the wave stops for good with that probability, so its length is geometric,
+cut at `rampBlocks` (then one integer, not a range: 75, three times the mean), and drawn per token. Each
+block buys `waveUsdcMult × liquidityUsdc` over the *mean* length ((1 − 0.96^75) / 0.04 = 23.8 blocks),
+so `waveUsdcMult` is the expected total and a buy's size says nothing about how many follow; the
+realized total is that times the length over the mean (up to 3.15×, which the fixed wave-wallet
+endowment covers). Each token's hold and decay start from its own stop. A wave still buying has the
+same ~24 blocks expected ahead of it at every block, so neither the first buys nor the listing block
+tell how much is left or when the sell-back begins. The length comes from a keyed stream of its own per
+(entry, window, token), so the draws above and every other event's stay where they were. One number
+rather than a range, because a stop probability drawn per token mixes geometrics whose stopping rate
+falls with age, and a wave's age would say how much is left again. Without `waveStopProb` every token
+buys over the window's drawn `rampBlocks`, as before 2026-10-30.
+
+This does not shrink what a well-funded front-runner takes (`npx tsx scripts/measureLaunchFrontRun.ts`,
+2,000 seeds; `--fixed-ramp 20,26` replays the fixed ramp): confirming on the first buy and buying the
+best size up to $60k ahead of the wave, selling on the stop, made +31,659 per epoch with the fixed ramp
+and +29,742 memoryless, and staying one block ahead +30,716 → +28,925 (launch-sniper +7,619 → +5,778,
+launch-confirm +5,276 → +6,508). A front-run collects a near-fixed share of the wave's remaining buying,
+the expected remainder at confirmation is unchanged when the expected total is, and a wave that stops
+right after the front-run costs it only the pool fee both ways — knowing every length in advance would
+add only ~$450.
 
 Both targets are cumulative and reconciled every block like a `state` event: the buy fraction rises
 over the ramp and stays at 1 (a wave does not un-buy), the sell-back fraction rises over the decay
@@ -245,7 +269,7 @@ deployed that same bytecode from the key that created the pool passed; now no pa
 
 No teardown: the pools stay for the scenario snapshot to revert, and the environment's leftovers
 sit in flow wallets nobody scores. `stress_token_launch_summary` closes the books per token (gross
-USDC the wave paid, USDC it took back).
+USDC the wave paid, USDC it took back, the blocks it bought for).
 
 ## Options that cut across types
 
