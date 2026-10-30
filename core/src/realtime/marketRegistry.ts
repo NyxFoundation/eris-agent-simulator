@@ -5,8 +5,10 @@
 //
 //   1. deployAgentMarketVenues — setup: deploy the registry and the permissionless lending singleton.
 //   2. sweepMarkets            — every block: factory logs + a top-level CREATE scan, classified,
+//                               and queued -- the environment's listings first, then round-robin
+//                               by creator, so one creator's deploys delay only its own.
+//   3. registerPending         — every block: one batched `register` write from a dedicated key,
 //                               capped per block with the overflow carried into the next one.
-//   3. registerPending         — every block: one batched `register` write from a dedicated key.
 //
 // **Discovery is log-first and misses are accepted.** Uniswap V3 `PoolCreated`, the lending
 // singleton's `CreateMarket`, plus a scan of each block's transactions for `to === null`. CREATE /
@@ -81,20 +83,39 @@ export type PendingEntry = {
   // The block the environment saw it, for the lag diagnostic. Not written on chain (the contract
   // stamps its own block number, which is the block the information actually became public).
   seenAtBlock: number;
+  // The environment's own listing: a token from the launcher's `Launched` event, or anything whose
+  // creator is a launch wallet (the pool the launcher created in the same transaction). Drains
+  // before every participant entry and is never dropped by a cap. Not written on chain.
+  environment: boolean;
 };
 
-// Ceiling on the discovery backlog. Registration is capped per block and the overflow carries, which
-// is what stops a deploy-spam agent from inflating the environment's write cost -- but the queue
-// itself is memory, and `createMarket` is permissionless and costs the creator only gas. Past this
-// the *oldest* pending entries are dropped and the drop is logged: a queue that grows without bound
-// is a way to make the environment do unbounded work, and a queue that truncates silently is a way
-// to make a contract permanently invisible without anybody noticing.
+// Backstop on the discovery backlog, summed over every creator. Registration is capped per block and
+// the overflow carries, which is what stops a deploy-spam agent from inflating the environment's
+// write cost -- but the queue itself is memory, and a top-level CREATE costs the creator only gas
+// (a 10-byte contract is ~56k, so ~150 a block under the 10M per-agent budget). The per-creator cap
+// below is what binds a single spammer; this one binds only when more than
+// MAX_PENDING_ENTRIES / MAX_PENDING_PER_CREATOR creators are all at theirs, and it then drops from
+// whichever creator has the most pending, never from the environment's listings. Every drop is
+// logged: a queue that grows without bound is a way to make the environment do unbounded work, and a
+// queue that truncates silently is a way to make a contract permanently invisible without anybody
+// noticing. A dropped key stays in `seen`, so a dropped contract is not published later either.
 export const MAX_PENDING_ENTRIES = 2048;
+
+// How much of the backlog one creator may hold, at each stage (waiting for the probe, waiting for
+// the write). Past it the creator's own entries that would publish last are dropped: lowest tier
+// first, newest first within it. Nobody else's. Before this the queue was one list sorted by kind and
+// age and truncated from the tail, so a creator deploying a few dozen tiny contracts a block that
+// answer name/symbol/decimals (a 10-byte runtime returning [0x20, 0] does) filled the `erc20` tier,
+// delayed everything behind it -- the environment's launch token included -- and pushed the newest
+// entries of everybody else off the end, for good.
+export const MAX_PENDING_PER_CREATOR = 64;
 
 // How many new contracts one sweep probes. The probes share one deadline (`readUntrustedBatch`), and
 // CREATE is cheap enough that a single block can carry hundreds: unbounded, a deploy-spam block
 // spends the whole deadline every tick and every contract in it -- an honest token deployed alongside
-// included -- comes back `timeout`. The rest wait for the next sweep (issue #213 review).
+// included -- comes back `timeout`. The rest wait for the next sweep (issue #213 review). Which ones
+// are probed is round-robin by creator, so the slots are not first-come: a creator with hundreds
+// waiting gets one per round like a creator with one.
 export const MAX_CLASSIFY_PER_SWEEP = 64;
 // A probe the *node* did not answer (`timeout` / transport `error`) says nothing about the contract,
 // so it is tried again on later sweeps before the contract is published as `unknown`. Out of gas and
@@ -122,8 +143,14 @@ export type MarketRegistryRuntime = {
   tokenLauncher?: Address;
   registrarPk: Hex;
   registrarAddress: Address;
-  // Discovered but not yet published. Factory-made kinds are drained first: a verified pool is more
-  // useful to publish promptly than an arbitrary contract nobody can price anyway.
+  // Lowercase addresses of the launch wallets that may call the token launcher. An entry one of
+  // them created is the environment's own listing (PendingEntry.environment). Empty when there is
+  // no launcher.
+  environmentCreators: ReadonlySet<string>;
+  // Discovered but not yet published, in the order they will be written (`fairOrder`): the
+  // environment's listings first, then factory-made kinds, then erc20, then unknown -- a verified
+  // pool is more useful to publish promptly than an arbitrary contract nobody can price anyway --
+  // and round-robin by creator within each.
   pending: PendingEntry[];
   // (market|extra) pairs already discovered, so a re-scan of an overlapping range does not queue
   // the same contract twice.
@@ -133,12 +160,13 @@ export type MarketRegistryRuntime = {
   readFailuresReported: Set<string>;
   // Contracts found by the CREATE scan that are waiting to be probed: the overflow past
   // MAX_CLASSIFY_PER_SWEEP, and the ones whose probe the node did not answer (CLASSIFY_ATTEMPTS).
-  // Not yet in `seen`, so nothing about them is permanent until they are published.
+  // Not yet in `seen`, so nothing about them is permanent until they are published. Kept in the
+  // order they will be probed (`fairOrder`, round-robin by creator).
   classifyQueue: Array<{ address: Address; creator: Address; attempts: number }>;
   perBlockCap: number;
 };
 
-// Order the overflow drains in: factory-made kinds first, then everything else, FIFO within a tier.
+// Participant entries drain factory-made kinds first, then everything else.
 const KIND_PRIORITY: Record<RegistryKind, number> = {
   uniswapV3Pool: 0,
   balancerWeightedPool: 0,
@@ -148,6 +176,151 @@ const KIND_PRIORITY: Record<RegistryKind, number> = {
   erc20: 1,
   unknown: 2,
 };
+
+/// The tier an entry drains in, lowest first: the environment's own listings (0), then participant
+/// entries by kind (1 + KIND_PRIORITY).
+export function pendingTier(
+  entry: Pick<PendingEntry, "environment" | "kind">,
+): number {
+  return entry.environment ? 0 : 1 + KIND_PRIORITY[entry.kind];
+}
+
+/**
+ * Drain order for a backlog: tiers lowest first, and inside a tier one item per creator per round.
+ *
+ * Creators take their turns in the order they first appear in `items`, and each creator's own items
+ * keep their relative order. A backlog kept in this order and re-ordered with new items appended
+ * therefore continues its rotation where it stopped, and a creator who appears for the first time
+ * joins at the end of the current one. Stable, and a pure function of the input order.
+ */
+export function fairOrder<T>(
+  items: readonly T[],
+  tierOf: (item: T) => number,
+  creatorOf: (item: T) => string,
+): T[] {
+  const tiers = new Map<number, Map<string, T[]>>();
+  for (const item of items) {
+    const tier = tierOf(item);
+    let byCreator = tiers.get(tier);
+    if (!byCreator) {
+      byCreator = new Map();
+      tiers.set(tier, byCreator);
+    }
+    const creator = creatorOf(item).toLowerCase();
+    const queue = byCreator.get(creator);
+    if (queue) queue.push(item);
+    else byCreator.set(creator, [item]);
+  }
+  const out: T[] = [];
+  for (const tier of [...tiers.keys()].sort((a, b) => a - b)) {
+    // A Map iterates in insertion order: first appearance.
+    const queues = [...tiers.get(tier)!.values()];
+    const depth = queues.reduce((m, q) => Math.max(m, q.length), 0);
+    for (let round = 0; round < depth; round++)
+      for (const q of queues) if (round < q.length) out.push(q[round]);
+  }
+  return out;
+}
+
+/**
+ * Bound a backlog that is already in drain order, per creator and in total.
+ *
+ * Each creator keeps the first `perCreator` of its items in drain order; past that, its later ones
+ * go. If what is left still exceeds `total`, the creators with the most are cut down to a common
+ * level (any slot left over goes to the earlier creators in drain order) -- the same as dropping one
+ * item at a time from whoever has the most. `exempt` items are kept and are not counted against
+ * either bound. Returns the survivors in their original order and what was dropped, per creator.
+ */
+export function capByCreator<T>(
+  items: readonly T[],
+  opts: {
+    perCreator: number;
+    total: number;
+    creatorOf: (item: T) => string;
+    exempt?: (item: T) => boolean;
+  },
+): { kept: T[]; dropped: Map<string, number> } {
+  const exempt = opts.exempt ?? (() => false);
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (exempt(item)) continue;
+    const creator = opts.creatorOf(item).toLowerCase();
+    counts.set(creator, (counts.get(creator) ?? 0) + 1);
+  }
+  const allowance = new Map<string, number>();
+  for (const [creator, n] of counts)
+    allowance.set(creator, Math.min(n, opts.perCreator));
+  const sum = [...allowance.values()].reduce((a, b) => a + b, 0);
+  if (sum > opts.total) {
+    // The highest level L with sum(min(n, L)) <= total.
+    const levelSum = (level: number): number =>
+      [...allowance.values()].reduce((a, n) => a + Math.min(n, level), 0);
+    let lo = 0;
+    let hi = opts.perCreator;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (levelSum(mid) <= opts.total) lo = mid;
+      else hi = mid - 1;
+    }
+    let spare = opts.total - levelSum(lo);
+    for (const [creator, n] of allowance) {
+      let keep = Math.min(n, lo);
+      if (n > lo && spare > 0) {
+        keep += 1;
+        spare -= 1;
+      }
+      allowance.set(creator, keep);
+    }
+  }
+  const kept: T[] = [];
+  const dropped = new Map<string, number>();
+  for (const item of items) {
+    if (exempt(item)) {
+      kept.push(item);
+      continue;
+    }
+    const creator = opts.creatorOf(item).toLowerCase();
+    const left = allowance.get(creator) ?? 0;
+    if (left > 0) {
+      allowance.set(creator, left - 1);
+      kept.push(item);
+    } else {
+      dropped.set(creator, (dropped.get(creator) ?? 0) + 1);
+    }
+  }
+  return { kept, dropped };
+}
+
+function logDropped(
+  logger: RunLogger,
+  stage: "classify" | "publish",
+  dropped: ReadonlyMap<string, number>,
+  blockNumber: number,
+): void {
+  const byCreator = [...dropped]
+    .map(([creator, n]) => ({ creator, dropped: n }))
+    .sort((a, b) => b.dropped - a.dropped);
+  // Bounded: many creators each over by one is a list as long as the backlog.
+  const shown = byCreator.slice(0, 16);
+  logger.event({
+    type: "market_registration_dropped",
+    stage,
+    blockNumber,
+    dropped: byCreator.reduce((a, c) => a + c.dropped, 0),
+    creators: byCreator.length,
+    byCreator: shown,
+    perCreatorCap: MAX_PENDING_PER_CREATOR,
+    backlog: MAX_PENDING_ENTRIES,
+    note:
+      (stage === "classify"
+        ? "contracts waiting for the ERC-20 probe "
+        : "discovered contracts waiting to be published ") +
+      "exceeded their creator's share of the backlog (or the backlog's ceiling); each creator's own " +
+      "latest-to-publish entries were dropped, nobody else's and never the environment's listings. " +
+      "They will not be published. They are still on chain and findable by anyone who scans for " +
+      "them -- what is lost is the environment publishing them, the same loss as an internal CREATE.",
+  });
+}
 
 function entryKey(market: string, extra: string): string {
   return `${market.toLowerCase()}|${extra.toLowerCase()}`;
@@ -264,6 +437,9 @@ export async function deployAgentMarketVenues(
     tokenLauncher,
     registrarPk,
     registrarAddress,
+    environmentCreators: new Set(
+      tokenLauncher ? (launchCallers ?? []).map((a) => a.toLowerCase()) : [],
+    ),
     pending: [],
     seen: new Set(),
     readFailuresReported: new Set(),
@@ -331,6 +507,8 @@ export async function sweepMarkets(
           verified: true,
           extra: ZERO_BYTES32,
           seenAtBlock: toBlock,
+          // Set below from the creator: a launch wallet's pool is the environment's listing.
+          environment: false,
         });
       }
     } catch (error) {
@@ -389,6 +567,7 @@ export async function sweepMarkets(
           verified: true,
           extra: a.id,
           seenAtBlock: toBlock,
+          environment: false,
         });
       }
     } catch (error) {
@@ -431,6 +610,9 @@ export async function sweepMarkets(
           verified: true,
           extra: ZERO_BYTES32,
           seenAtBlock: toBlock,
+          // Only a launch wallet can call the launcher, so this is the environment's listing
+          // whatever `environmentCreators` holds.
+          environment: true,
         });
       }
     } catch (error) {
@@ -473,35 +655,38 @@ export async function sweepMarkets(
     }
   }
 
+  const isEnvironmentCreator = (creator: string): boolean =>
+    runtime.environmentCreators.has(creator.toLowerCase());
   const queued = new Set(
     runtime.classifyQueue.map((c) => c.address.toLowerCase()),
   );
-  const candidates = [
-    ...runtime.classifyQueue,
-    ...created
-      .filter(
-        (c) =>
-          !environmentAddresses.has(c.address.toLowerCase()) &&
-          !runtime.seen.has(entryKey(c.address, ZERO_BYTES32)) &&
-          !queued.has(c.address.toLowerCase()),
-      )
-      .map((c) => ({ ...c, attempts: 0 })),
-  ];
+  // Round-robin by creator, so a creator with hundreds of contracts waiting cannot hold the probe
+  // slots (and with them everybody else's classification) for sweeps on end.
+  const candidates = fairOrder(
+    [
+      ...runtime.classifyQueue,
+      ...created
+        .filter(
+          (c) =>
+            !environmentAddresses.has(c.address.toLowerCase()) &&
+            !runtime.seen.has(entryKey(c.address, ZERO_BYTES32)) &&
+            !queued.has(c.address.toLowerCase()),
+        )
+        .map((c) => ({ ...c, attempts: 0 })),
+    ],
+    (c) => (isEnvironmentCreator(c.creator) ? 0 : 1),
+    (c) => c.creator,
+  );
   const fresh = candidates.slice(0, MAX_CLASSIFY_PER_SWEEP);
-  runtime.classifyQueue = candidates.slice(MAX_CLASSIFY_PER_SWEEP);
-  if (runtime.classifyQueue.length > MAX_PENDING_ENTRIES) {
-    const dropped = runtime.classifyQueue.length - MAX_PENDING_ENTRIES;
-    runtime.classifyQueue = runtime.classifyQueue.slice(0, MAX_PENDING_ENTRIES);
-    logger.event({
-      type: "market_registration_dropped",
-      dropped,
-      backlog: MAX_PENDING_ENTRIES,
-      stage: "classify",
-      note:
-        "the backlog of contracts waiting for the ERC-20 probe exceeded its ceiling; the newest " +
-        "will not be published. They are still on chain and findable by anyone who scans for them.",
-    });
-  }
+  const waiting = capByCreator(candidates.slice(MAX_CLASSIFY_PER_SWEEP), {
+    perCreator: MAX_PENDING_PER_CREATOR,
+    total: MAX_PENDING_ENTRIES,
+    creatorOf: (c) => c.creator,
+    exempt: (c) => isEnvironmentCreator(c.creator),
+  });
+  runtime.classifyQueue = waiting.kept;
+  if (waiting.dropped.size > 0)
+    logDropped(logger, "classify", waiting.dropped, toBlock);
   if (fresh.length > 0) {
     const classified = await classifyContracts(
       publicClient,
@@ -561,10 +746,12 @@ export async function sweepMarkets(
         verified: false,
         extra: ZERO_BYTES32,
         seenAtBlock: toBlock,
+        environment: false,
       });
     }
   }
 
+  let added = 0;
   for (const entry of found) {
     const key = entryKey(entry.market, entry.extra);
     if (runtime.seen.has(key)) continue;
@@ -574,28 +761,28 @@ export async function sweepMarkets(
     )
       continue;
     runtime.seen.add(key);
-    runtime.pending.push(entry);
-  }
-  if (found.length > 0) {
-    runtime.pending.sort(
-      (a, b) =>
-        KIND_PRIORITY[a.kind] - KIND_PRIORITY[b.kind] ||
-        a.seenAtBlock - b.seenAtBlock,
-    );
-  }
-  if (runtime.pending.length > MAX_PENDING_ENTRIES) {
-    const dropped = runtime.pending.length - MAX_PENDING_ENTRIES;
-    runtime.pending = runtime.pending.slice(0, MAX_PENDING_ENTRIES);
-    logger.event({
-      type: "market_registration_dropped",
-      dropped,
-      backlog: MAX_PENDING_ENTRIES,
-      note:
-        "the discovery backlog exceeded its ceiling; these contracts will not be published. " +
-        "They are still on chain and still findable by anyone who scans for them -- what is lost " +
-        "is the environment publishing them, which is the same loss as an internal CREATE.",
+    runtime.pending.push({
+      ...entry,
+      environment: entry.environment || isEnvironmentCreator(entry.creator),
     });
+    added++;
   }
+  if (added === 0) return;
+  // The environment's listings first, so that what the `launch` regime is about reaches the field
+  // in the next block however many contracts the field deployed alongside it; then round-robin by
+  // creator inside each kind tier, so that what one creator deploys delays only that creator.
+  const backlog = capByCreator(
+    fairOrder(runtime.pending, pendingTier, (e) => e.creator),
+    {
+      perCreator: MAX_PENDING_PER_CREATOR,
+      total: MAX_PENDING_ENTRIES,
+      creatorOf: (e) => e.creator,
+      exempt: (e) => e.environment,
+    },
+  );
+  runtime.pending = backlog.kept;
+  if (backlog.dropped.size > 0)
+    logDropped(logger, "publish", backlog.dropped, toBlock);
 }
 
 // Publish up to the per-block cap. Returns the transaction hash when something was written.

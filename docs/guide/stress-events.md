@@ -207,6 +207,16 @@ from them. The token's `erc20` entry now comes from the launcher's `Launched` ev
 **`verified: true`** (the token was deployed inside environment code; a top-level CREATE is always
 published unverified, an internal CREATE not at all).
 
+The listing cannot be buried by what the field deploys. The registry publishes 8 entries a block and
+queues the rest; the environment's listing (the token and the pool the launcher created) is written
+ahead of every participant entry, in the block after the listing, and the queue is round-robin by
+creator, so a participant who deploys a hundred contracts a block delays only its own. The
+observation carries the newest 128 entries **plus** the environment's listings whatever their age
+(`observation.registry.dropped` counts what is left out). Before 2026-10-30 a creator deploying tiny
+contracts that answer `name`/`symbol`/`decimals` could hold the launch token behind its own entries
+past the wave, or have it dropped from the backlog for good, and sixteen blocks of such entries
+pushed any listing out of every agent's 128-entry window.
+
 The wave stops buying when the pool prices the token above **10× the listing price**
 (`WAVE_PRICE_CAP_MULT`, `stress_token_launch_wave_capped`). The largest official wave on its own takes
 a full-range pool to 4×, so the cap binds only once the field has bought ahead of it by more than about
