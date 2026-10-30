@@ -15,6 +15,7 @@ import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 const { loadRunConfig } = await import("../core/src/runConfig.js");
+const { EventSchedule } = await import("../core/src/realtime/events.js");
 
 const ROOT = resolve(import.meta.dirname, "..");
 const OFFICIAL: string[] = (
@@ -52,19 +53,45 @@ const GAPS = new Set(["crash", "spike"]);
 const mean = (r: number | [number, number]) => (Array.isArray(r) ? (r[0] + r[1]) / 2 : r);
 const upper = (r: number | [number, number]) => (Array.isArray(r) ? r[1] : r);
 
+// The most blocks a gap may ramp over. The price is in storage before a block's transactions run
+// (core/src/realtime/gatedMiner.ts), so a contract called in block t reads t's fair inside t, and the
+// GMX order it creates there fills at t+1's: a fill lag L of 1 (an agent off chain has 2). An r-block
+// linear ramp has moved through step 1 + L by the fill, so it leaves nothing to join iff r <= 1 + L.
+// 2-3 left a third of the gap to the in-block reader (ADR 0029 Amendment 5).
+const MAX_GAP_RAMP_BLOCKS = 1 + 1;
+
 test("an official gap stays where it lands and is over before an order can join it", () => {
   // A gap that recovered on a straight line could be faded once it stalled (recoverFrac above 0) or
-  // followed once the decay began; a ramp longer than the two blocks between seeing a step and
-  // filling on it left its last steps to whoever joined.
+  // followed once the decay began; a ramp longer than MAX_GAP_RAMP_BLOCKS left its last steps to
+  // whoever joined.
   let gaps = 0;
   for (const regime of OFFICIAL)
     for (const ev of load(regime).stressEvents) {
       if (!GAPS.has(ev.type)) continue;
       gaps++;
       assert.deepEqual(ev.recoverFrac, [0, 0], `${regime}: ${ev.type}.recoverFrac`);
-      assert.ok(upper(ev.rampBlocks) <= 3, `${regime}: ${ev.type}.rampBlocks reaches ${upper(ev.rampBlocks)}`);
+      assert.ok(
+        upper(ev.rampBlocks) <= MAX_GAP_RAMP_BLOCKS,
+        `${regime}: ${ev.type}.rampBlocks reaches ${upper(ev.rampBlocks)}`,
+      );
     }
   assert.equal(gaps, 4, "crash, spike, lending-incident and cdp-incident each carry one gap event");
+});
+
+test("every gap an official regime resolves to, flipped ones included, ramps within the bound", () => {
+  // The same bound on what the coordinator plays: a crash flipped up resolves as a spike
+  // (flippedFrom: crash), and every window draws its own ramp.
+  for (const regime of OFFICIAL) {
+    const config = load(regime);
+    for (let seed = 1; seed <= 50; seed++)
+      for (const ev of new EventSchedule(config.stressEvents, seed, config.runBlocks).events) {
+        if (!GAPS.has(ev.type)) continue;
+        assert.ok(
+          ev.rampBlocks >= 1 && ev.rampBlocks <= MAX_GAP_RAMP_BLOCKS,
+          `${regime}#${seed}: ${ev.flippedFrom ?? ev.type} -> ${ev.type} ramps over ${ev.rampBlocks} blocks`,
+        );
+      }
+  }
 });
 
 test("across the official mix the expected gap is about zero", () => {

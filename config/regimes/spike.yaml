@@ -113,7 +113,7 @@ stress:
   # nothing here is calibrated to a victim's health factor (the victims below are decoys here).
   #
   # A gap is a level shift: once it is seen, nothing about where the price goes next can be read off
-  # it (ADR 0029 Amendment 1; crash.yaml has the recoverFrac / rampBlocks reasoning). What is
+  # it (ADR 0029 Amendments 1 and 5; crash.yaml has the recoverFrac / rampBlocks reasoning). What is
   # particular to this file is that it carries the other side of the official mix. lending-incident
   # and cdp-incident gap down only (the victims are their point) by 12-16%, so 0.28 of expected
   # gap per twelve epochs goes down; crash goes either way with even odds. One upward gap of 24-32%
@@ -126,7 +126,7 @@ stress:
         recoverFrac: [0, 0],
         magnitudeRange: [0.24, 0.32],
         windowFrac: [0.3, 0.7],
-        rampBlocks: [2, 3],
+        rampBlocks: [1, 2],
         holdBlocks: [4, 8],
         decayBlocks: [6, 10],
       }

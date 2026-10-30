@@ -112,10 +112,15 @@ stress:
   #                depeg-persist closed for stables (issue #106), and leverage was its only bound.
   #                hold / decay below still shape the window the pull aligns to; the price stays at
   #                the bottom from the end of the ramp on
-  #   rampBlocks   2-3. An order placed after the first step fills two blocks later (the GMX keeper
-  #                executes in the block after the order lands), so a 4-block ramp left a quarter of
-  #                the gap to collect by joining it. The pools lag the first step either way; taking
-  #                that is the arbitrage this regime is for
+  #   rampBlocks   1-2. The price is in storage before a block's transactions run, so a contract the
+  #                agent calls every block reads the first step inside the block it lands in, and the
+  #                GMX order it creates there fills in the next block (lag 1; an agent off chain fills
+  #                a block later still). An r-block ramp leaves nothing to join at lag L only while
+  #                r <= 1 + L, so 2-3 left a third of the gap to that contract (~+470 bps of notional
+  #                per epoch here, ADR 0029 Amendment 5). Drawn rather than fixed at 2: at lag 1 the
+  #                two are the same, and Liquity's redemption fills at the very price the contract
+  #                read (lag 0, buying only), which a one-block gap leaves nothing to. The pools lag
+  #                the step either way; taking that is the arbitrage this regime is for
   #   flipProb     0.5, drawn per gap. A second gap is as likely to go up as down whatever the first
   #                did, and across the official mix the expected gap is ~0 (spike.yaml has the sum),
   #                so holding less base than the basket has no edge of its own
@@ -130,7 +135,7 @@ stress:
         recoverFrac: [0, 0],
         magnitudeRange: [0.15, 0.22],
         windowFrac: [0.3, 0.7],
-        rampBlocks: [2, 3],
+        rampBlocks: [1, 2],
         holdBlocks: [4, 8],
         decayBlocks: [6, 10],
       }

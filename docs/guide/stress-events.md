@@ -62,6 +62,13 @@ xychart-beta
 A trapezoid rather than a jump on purpose: an instantaneous move interacts badly with the 1-block
 delay of oracle updates, and the ramp leaves everyone the same lag to react in.
 
+The ramp is not the same lag for everyone, though. The price is in storage before a block's
+transactions run, so a contract called in every block reads each step inside the block it lands in,
+and a GMX order it creates there fills in the next block — one block ahead of an agent that reads the
+chain from outside. An r-block ramp leaves nothing to follow at a fill lag of L blocks only while
+r ≤ 1 + L, so the official gaps ramp over one or two blocks (ADR 0029 Amendment 5): by the time an
+order placed on the first step fills, the gap is complete.
+
 ### `whale` — a single large order moves the pool, not the fair price
 
 A point event: one market order of `magnitudeRange` **whole base units** (30 = a 30 WETH order),

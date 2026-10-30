@@ -420,9 +420,11 @@ export type GmxKeeperRefusal = GmxKeeperOrder & { key: Hex; reason: string };
  * is not met reverts the keeper's tx (InvalidOrderPrices) and is never retried; one whose trigger
  * is met fills at the first price of the move. An agent that re-arms a stop every block therefore
  * had a zero-lag conditional order: it filled at the first block of every crash/spike gap and rode
- * the rest of the 2-3 block ramp, which the official regimes never give back (recoverFrac 0), at up
- * to 20x. Everyone else acts on a price observed one block late and fills one block after sending
- * (ADR 0029 and scripts/measurePredictability.ts measure with that lag). Executing conditional
+ * the rest of the ramp, which the official regimes never give back (recoverFrac 0), at up to 20x.
+ * A market order fills at least a block after the price it acted on: an agent off chain sees a block
+ * late and fills a block after sending (lag 2), a contract reads the price inside its block and fills
+ * in the next (lag 1). The official gaps ramp over at most two blocks so that neither is left any of
+ * it (ADR 0029 Amendment 5; scripts/measurePredictability.ts --lags). Executing conditional
  * orders properly would mean re-checking every resting order against every price, a matching
  * engine the keeper does not have; the SDK's actions are market orders only.
  *
