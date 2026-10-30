@@ -26,7 +26,13 @@ import {
 } from "viem";
 
 const gmx = await import("@eris/sdk/protocols/gmx.js");
-const { gmxAdapter, gmxKeeperRefusal, MAX_ORDER_FILLS_PER_BLOCK, resetKeeperOrderQueue } = gmx;
+const {
+  gmxAdapter,
+  gmxKeeperRefusal,
+  GMX_ORDER_TYPE,
+  MAX_ORDER_FILLS_PER_BLOCK,
+  resetKeeperOrderQueue,
+} = gmx;
 const { GMX, DEFAULT_ANVIL_PRIVATE_KEYS } =
   await import("@eris/sdk/constants.js");
 const { gmxMarketAddresses } = await import("@eris/sdk/markets.js");
@@ -64,6 +70,8 @@ type StubOrder = {
   account: Address;
   callbackContract: Address;
   callbackGasLimit: bigint;
+  // Omitted = MarketIncrease, the type every SDK action creates.
+  orderType?: number;
 };
 
 function stubCtx(orders: Map<Hex, StubOrder | Error>): {
@@ -93,7 +101,7 @@ function stubCtx(orders: Map<Hex, StubOrder | Error>): {
         if (order === undefined)
           return {
             addresses: { account: zeroAddress, callbackContract: zeroAddress },
-            numbers: { callbackGasLimit: 0n },
+            numbers: { callbackGasLimit: 0n, orderType: 0 },
           };
         if (order instanceof Error) throw order;
         return {
@@ -101,7 +109,10 @@ function stubCtx(orders: Map<Hex, StubOrder | Error>): {
             account: order.account,
             callbackContract: order.callbackContract,
           },
-          numbers: { callbackGasLimit: order.callbackGasLimit },
+          numbers: {
+            callbackGasLimit: order.callbackGasLimit,
+            orderType: order.orderType ?? GMX_ORDER_TYPE.MarketIncrease,
+          },
         };
       },
     },
@@ -135,6 +146,7 @@ test("an order with a callbackContract is refused; one without is executed", () 
       account: ACCOUNT,
       callbackContract: zeroAddress,
       callbackGasLimit: 0n,
+      orderType: GMX_ORDER_TYPE.MarketIncrease,
     }),
     null,
   );
@@ -145,6 +157,7 @@ test("an order with a callbackContract is refused; one without is executed", () 
       account: ACCOUNT,
       callbackContract: CALLBACK,
       callbackGasLimit,
+      orderType: GMX_ORDER_TYPE.MarketIncrease,
     });
     assert.ok(reason?.includes(CALLBACK), String(reason));
   }
@@ -193,6 +206,85 @@ test("the keeper executes only the orders without a callback, and reports the re
   assert.equal(refused[0].callbackContract, CALLBACK);
   // An order that could not be read is not executed (fail closed), and the reason is one line.
   assert.match(refused[1].reason, /could not be read: rpc timeout$/);
+});
+
+// ---- market orders only ----
+//
+// The keeper tries each new order once, in the next block, at that block's oracle price (written
+// before the block is mined). A stop re-armed every block was therefore a zero-lag conditional
+// order: it filled at the first block of a crash/spike gap and rode the rest of the ramp, where
+// everyone else fills a block after observing. Conditional orders are refused, not executed.
+
+test("market swaps, increases and decreases pass; limit, stop and liquidation orders are refused", () => {
+  const order = (orderType: number) => ({
+    account: ACCOUNT,
+    callbackContract: zeroAddress,
+    callbackGasLimit: 0n,
+    orderType,
+  });
+  for (const t of [
+    GMX_ORDER_TYPE.MarketSwap,
+    GMX_ORDER_TYPE.MarketIncrease,
+    GMX_ORDER_TYPE.MarketDecrease,
+  ])
+    assert.equal(gmxKeeperRefusal(order(t)), null, `type ${t}`);
+  for (const t of [
+    GMX_ORDER_TYPE.LimitSwap,
+    GMX_ORDER_TYPE.LimitIncrease,
+    GMX_ORDER_TYPE.LimitDecrease,
+    GMX_ORDER_TYPE.StopLossDecrease,
+    GMX_ORDER_TYPE.Liquidation,
+    GMX_ORDER_TYPE.StopIncrease,
+    // A value past the enum (a future GMX type) is not a market order either.
+    9,
+  ]) {
+    const reason = gmxKeeperRefusal(order(t));
+    assert.match(
+      String(reason),
+      new RegExp(`^non-market order type ${t}: the keeper executes market orders only`),
+    );
+  }
+  // The callback refusal still applies to a market order.
+  assert.ok(
+    gmxKeeperRefusal({ ...order(GMX_ORDER_TYPE.MarketIncrease), callbackContract: CALLBACK })?.includes(
+      CALLBACK,
+    ),
+  );
+});
+
+test("the keeper sends no executeOrder for a stop or limit order and reports it", async () => {
+  resetKeeperOrderQueue();
+  const plain = { account: ACCOUNT, callbackContract: zeroAddress, callbackGasLimit: 0n };
+  const orders = new Map<Hex, StubOrder | Error>([
+    [key(1), { ...plain, orderType: GMX_ORDER_TYPE.StopIncrease }],
+    [key(2), { ...plain, orderType: GMX_ORDER_TYPE.MarketIncrease }],
+    [key(3), { ...plain, orderType: GMX_ORDER_TYPE.LimitIncrease }],
+    [key(4), { ...plain, orderType: GMX_ORDER_TYPE.MarketDecrease }],
+    [key(5), { ...plain, orderType: GMX_ORDER_TYPE.StopLossDecrease }],
+    [key(6), { ...plain, orderType: GMX_ORDER_TYPE.MarketSwap }],
+  ]);
+  const { ctx, executed } = stubCtx(orders);
+  const refused: Array<{ key: string; reason: string; orderType: number }> = [];
+  await gmxAdapter.afterMine!(ctx, {
+    noMine: true,
+    fromBlock: 10n,
+    toBlock: 10n,
+    onOrderRefused: (r) => refused.push(r),
+  });
+  assert.deepEqual(executed, [key(2), key(4), key(6)]);
+  assert.deepEqual(
+    refused.map((r) => [r.key, r.orderType]),
+    [
+      [key(1), GMX_ORDER_TYPE.StopIncrease],
+      [key(3), GMX_ORDER_TYPE.LimitIncrease],
+      [key(5), GMX_ORDER_TYPE.StopLossDecrease],
+    ],
+  );
+  // A refused order is not queued for a later pass either: it is not retried when its trigger is met.
+  (ctx.publicClient as unknown as { getLogs: () => Promise<unknown[]> }).getLogs = async () => [];
+  await gmxAdapter.afterMine!(ctx, { noMine: true, fromBlock: 11n, toBlock: 11n });
+  assert.equal(executed.length, 3);
+  resetKeeperOrderQueue();
 });
 
 test("the startup check calls a deploy closed only when all three limits read 0", () => {

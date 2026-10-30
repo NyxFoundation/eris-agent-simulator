@@ -84,6 +84,8 @@ Mock oracles (`contracts/MockAggregator.sol` / `contracts/MockOracleProvider.sol
 
 GMX is async (order creation → keeper execution). In realtime, each block advances via interval mining, and after each block (`afterMine`) the coordinator reads the `OrderCreated` logs of the latest block and executes each order as the keeper. Intra-block ordering is determined by anvil's `--order fees` (descending priority fee). GMX position changes become visible to agents about one block late. GMX actions can only be sent alone (no bundling).
 
+The keeper executes **market orders only** (`MarketSwap` / `MarketIncrease` / `MarketDecrease`, what `gmxIncrease` / `gmxDecrease` create). It also does not execute an order that sets a `callbackContract`. A limit, stop or stop-loss order sent with `rawTx` is read, refused and recorded as a `keeper_order_refused` event. It is never executed or retried, even after its trigger price is reached. Its collateral and execution fee stay in GMX's OrderVault, count for nothing while they sit there, and come back only when you cancel the order yourself (`ExchangeRouter.cancelOrder`; GMX allows a non-market order to be cancelled at any time). Why: the keeper tries each order once, in the next block, at a price written before that block is mined, so a stop re-armed every block would fill at the first price of a move that every other order sees a block late.
+
 ```mermaid
 sequenceDiagram
   participant A as Agent

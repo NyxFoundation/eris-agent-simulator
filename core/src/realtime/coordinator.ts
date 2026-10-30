@@ -4785,6 +4785,8 @@ export async function runRealtimeSimulation(
                       account: refusal.account,
                       callbackContract: refusal.callbackContract,
                       callbackGasLimit: refusal.callbackGasLimit.toString(),
+                      // -1 when the order could not be read.
+                      orderType: refusal.orderType,
                       reason: refusal.reason,
                     }),
                   // Issue #225: fills past the per-block bound wait for the next pass. Recorded so a
