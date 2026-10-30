@@ -404,6 +404,19 @@ class Replay {
   private readonly queues = new Map<string, (RecordedCall | TruncatedCall)[]>();
   constructor(private readonly dir: string) {}
   next(agentId: string): RecordedCall | TruncatedCall | undefined {
+    return this.queue(agentId).shift();
+  }
+  // Whether the next record is this request: a record made before a refusal existed holds a call that
+  // is refused now, and only that call may take it.
+  nextHolds(agentId: string, body: unknown): boolean {
+    const rec = this.queue(agentId)[0];
+    if (!rec) return false;
+    const text = JSON.stringify(body);
+    return "truncated" in rec
+      ? rec.requestSha256 === sha256(text)
+      : JSON.stringify(rec.request ?? null) === text;
+  }
+  private queue(agentId: string): (RecordedCall | TruncatedCall)[] {
     let q = this.queues.get(agentId);
     if (!q) {
       const path = join(this.dir, `${agentId}.jsonl`);
@@ -419,7 +432,7 @@ class Replay {
         : [];
       this.queues.set(agentId, q);
     }
-    return q.shift();
+    return q;
   }
 }
 
@@ -434,6 +447,11 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
     : "operator";
   let credentialsRefused = 0;
   const refusedOnce = new Set<string>();
+  // Bodies refused for fetching by reference (fetchByReference.ts). Counted and said once per agent
+  // because the rule accepts false positives (a schema property named `file_id`), and an agent whose
+  // every revision is refused otherwise looks, from here, like one that never asked.
+  let referencesRefused = 0;
+  const referenceRefusedOnce = new Set<string>();
   const replay = opts.replayDir ? new Replay(opts.replayDir) : null;
   const seq = new Map<string, number>();
   const recent = new Map<string, number[]>();
@@ -593,6 +611,7 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
         recording: stats(),
         handlerErrors,
         credentials: { mode: credentialsMode, refused: credentialsRefused },
+        references: { refused: referencesRefused },
       });
     }
     if (req.method === "GET" && url.pathname === "/v1/models")
@@ -659,7 +678,22 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
     // The same refusal one level down, at any depth: a content part that has the provider fetch a
     // URL or a stored file (fetchByReference.ts). Like the keys above, it is refused before the
     // credential, the rate limit and the call count, so it is not a call the agent made.
-    const reference = findFetchByReference(body);
+    // A replay refuses it the same way, so a record made under this rule -- where the call took no
+    // number -- stays in step. A record made before the rule holds the call as forwarded; refusing it
+    // there would serve its answer to the next call and every answer after off by one, with no 409.
+    // So in a replay the call is let through to the queue exactly when the next record is this body.
+    const reference = replay?.nextHolds(who, body) ? null : findFetchByReference(body);
+    if (reference && !replay) {
+      referencesRefused++;
+      if (!referenceRefusedOnce.has(who)) {
+        referenceRefusedOnce.add(who);
+        log(
+          reference.kind === "uninspectable"
+            ? `request from ${who} too large to inspect for fetch-by-reference: refused`
+            : `request from ${who} fetches by reference at ${reference.path.slice(0, 200)}: refused`,
+        );
+      }
+    }
     if (reference?.kind === "uninspectable")
       return send(res, 403, {
         error:

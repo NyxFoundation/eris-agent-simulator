@@ -42,6 +42,11 @@ routes the Ollama, OpenAI-compatible and Anthropic providers through the base UR
 Every refusal above comes before the credential, the rate limit and the call count: a refused request
 reaches no provider, spends nothing of the agent's minute, and does not move the record's numbering
 (a replay refuses it the same way, before its queue).
+A reference refusal is counted (`references.refused` on `GET /admin/recording`) and said once per
+agent on stderr, because the rule below accepts false positives: an agent whose every revision is
+refused otherwise looks, from here, like one that never asked. A replay of a record made before the
+rule existed holds such a call as forwarded; there the call takes its record when the next record is
+that exact body (or its digest, past the cap), and is refused only otherwise.
 
 ### Content goes inline, not by reference
 

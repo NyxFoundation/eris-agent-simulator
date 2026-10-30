@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { IncomingMessage, ServerResponse } from "node:http";
@@ -1243,4 +1243,50 @@ test("a reference refusal is not a call: it spends no rate limit, takes no numbe
     assert.deepEqual(await (await post(base, "/v1/chat/completions", ok, h)).json(), { call: 2 });
     assert.equal(seen.length, 0);
   });
+});
+test("a record made before the reference refusal replays in step: a call it holds as forwarded takes its own answer", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-proxy-ref-old-"));
+  const refused = REFERENCE_CASES[0];
+  const ok = { model: "gpt-x", messages: [{ role: "user", content: "hi" }] };
+  const base = { ts: "2026-10-01T00:00:00.000Z", agentId: "alice", path: refused.path, model: "gpt-x", provider: "openai", durationMs: 1, status: 200 };
+  const text = JSON.stringify(refused.body);
+  const lines = [
+    { ...base, seq: 1, request: refused.body, response: { call: 1 } },
+    { ...base, seq: 2, path: "/v1/chat/completions", request: ok, response: { call: 2 } },
+    // Past the cap the record keeps only the digest; that still says which call it was.
+    { ...base, seq: 3, truncated: true, requestBytes: text.length, requestSha256: createHash("sha256").update(text).digest("hex"), responseBytes: 0, responseSha256: "" },
+  ];
+  writeFileSync(join(dir, "alice.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  const h = { "x-eris-agent": "alice" };
+  await withProxy({ replayDir: dir, config: unlimited }, async (b, seen) => {
+    // A different referencing body is not the record's call: refused, and the queue does not move.
+    const other = REFERENCE_CASES[1];
+    assert.equal((await post(b, other.path, other.body, h)).status, 403);
+    assert.deepEqual(await (await post(b, refused.path, refused.body, h)).json(), { call: 1 });
+    assert.deepEqual(await (await post(b, "/v1/chat/completions", ok, h)).json(), { call: 2 });
+    const stub = await post(b, refused.path, refused.body, h);
+    assert.equal(stub.status, 409);
+    assert.equal(((await stub.json()) as { seq: number }).seq, 3);
+    assert.equal(seen.length, 0);
+  });
+});
+
+test("reference refusals are counted on the admin stats and said once per agent on stderr", async () => {
+  const lines: string[] = [];
+  const h = (who: string) => ({ "x-eris-agent": who });
+  await withProxy({ statsToken: STATS_TOKEN, log: (l) => lines.push(l) }, async (base, seen) => {
+    for (const c of REFERENCE_CASES.slice(0, 3)) assert.equal((await post(base, c.path, c.body, h("alice"))).status, 403);
+    let deep: unknown = "x";
+    for (let i = 0; i < 70; i++) deep = { a: deep };
+    assert.equal((await post(base, "/v1/chat/completions", { model: "gpt-x", deep }, h("bob"))).status, 403);
+    const stats = (await (await fetch(`${base}/admin/recording`, { headers: { authorization: `Bearer ${STATS_TOKEN}` } })).json()) as {
+      references: { refused: number };
+    };
+    assert.deepEqual(stats.references, { refused: 4 });
+    assert.equal(seen.length, 0);
+  });
+  const said = lines.filter((l) => /refused$/.test(l));
+  assert.equal(said.length, 2, said.join("\n"));
+  assert.match(said[0], /^request from alice fetches by reference at \S+: refused$/);
+  assert.match(said[1], /^request from bob too large to inspect/);
 });
