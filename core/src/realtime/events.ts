@@ -74,7 +74,8 @@ export type StressEventType =
   // A new token and its market appear mid-run (issue #29). The environment lists 2-3 tokens through
   // its own Uniswap V3 factory at the window's start, so they surface through the #40 registry like
   // any agent-made market; then, per token, a demand wave drawn from a range whose lower bound is
-  // zero (a dud) buys it over the ramp, holds, and sells a fraction back during the decay. The
+  // zero (a dud) buys it over the ramp (with waveStopProb, for a memoryless number of blocks), holds,
+  // and sells a fraction back during the decay. The
   // holdings are worth nothing at the bell (ADR 0022 axiom 2), so the only way to score is to buy
   // before the wave, sell before the sell-back, and to have picked a token that got a wave.
   | "tokenLaunch";
@@ -197,7 +198,9 @@ export type StressEventConfig = {
   // token has its own wave) and is rejected if present.
   //   tokenCount      how many tokens list on this window (integer range, inclusive)
   //   liquidityUsdc   USDC seeded per pool, whole dollars; the token side is priced at 1.00 USDC
-  //   waveUsdcMult    the wave's total buying as a multiple of the pool's USDC side
+  //   waveUsdcMult    the wave's total buying as a multiple of the pool's USDC side (with
+  //                   waveStopProb: its *expected* total -- the realized one is this times the
+  //                   drawn length over the mean length)
   //   dudProb         probability that a token's wave is zero. A continuous draw on a range whose
   //                   lower bound is 0 never actually lands on 0, so the dud needs a mass of its own
   //   sellBackFrac    share of the tokens the wave bought that it sells back during the decay
@@ -206,6 +209,25 @@ export type StressEventConfig = {
   waveUsdcMult?: [number, number];
   dudProb?: [number, number];
   sellBackFrac?: [number, number];
+  // tokenLaunch only: the wave's length is memoryless. After every block it bought, a wave stops for
+  // good with this probability, per token, so its length is geometric and `rampBlocks` (one number
+  // here, not a range) is only the most it can run. Without it every token of a window buys for the
+  // window's drawn ramp, and the first buy settled how much was still to come: the per-block size
+  // gave the total away, and the end of the ramp was known to within the range. A geometric length
+  // leaves the same expected remainder at every block, so watching the wave does not tell how much
+  // of it is left -- and the hold and the sell-back follow each token's own stop, so neither does the
+  // listing block. One number rather than a range: a stop probability drawn per token makes the
+  // length a mixture of geometrics, whose stopping rate falls with age (a wave that has run long is
+  // more likely the slow-stopping kind), and age would tell how much is left again.
+  waveStopProb?: number;
+  // tokenLaunch only: each token's demand has a price it will not pay past, drawn per token from
+  // this range (multiples of the 1.00 USDC listing price) on a keyed stream of its own and never
+  // published. The wave ends for good the first block it finds the pool above it -- the same stop
+  // as the 10x cap (WAVE_PRICE_CAP_MULT), at a level nobody is told. Without it the wave bought the
+  // same amount whatever the price, so the field could buy ahead of it as hard as it liked and sell
+  // into it; now the harder a front-runner buys ahead, the sooner it ends the demand it meant to
+  // sell into, and a probe that crosses the level costs it the round trip.
+  wavePriceCeiling?: [number, number];
   // Fraction of run length for the event start position [min,max]. The seed picks.
   windowFrac: [number, number];
   // Start where the first event of this type starts, instead of drawing an independent position.
@@ -291,10 +313,25 @@ export type ResolvedTokenLaunch = {
   // Whole USDC seeded on the pool's USDC side; the token side is the same number of tokens.
   liquidityUsdc: number;
   // Total USDC the wave wallet spends over the ramp, as a multiple of liquidityUsdc. 0 for a dud.
+  // With waveStopProb this is the realized total: waveBlockUsdcMult times this token's length.
   waveUsdcMult: number;
+  // waveStopProb only: one block's buy, as a multiple of liquidityUsdc -- the drawn (expected)
+  // multiple over the mean length, so it is the same whatever the length. The driver buys it in
+  // whole units, an integer number of blocks at a time: deriving a block from the total instead
+  // left the length in the rounding of every buy (a total of L x round(mult x 1e6) units split
+  // r ways), and an agent that reads the exact amountIn could solve for r from the first buy in
+  // about half the waves. 0 for a dud.
+  waveBlockUsdcMult?: number;
   dud: boolean;
   // Share of the tokens the wave bought that it sells back during the decay.
   sellBackFrac: number;
+  // wavePriceCeiling only: the pool price (multiple of the listing price) above which this token's
+  // wave stops for good. Drawn for a dud as well, and unused.
+  priceCeilingMult?: number;
+  // waveStopProb only: the blocks this token's wave buys for, drawn memoryless (geometric, at most
+  // the event's configured rampBlocks). Its hold and sell-back start from its own last buy. Absent
+  // = the window's rampBlocks, as before the stop existed. Drawn for a dud as well, and unused.
+  rampBlocks?: number;
 };
 
 // What the launch driver should have done by a given block, per token (issue #29). Both are
@@ -305,11 +342,17 @@ export type TokenLaunchTarget = {
   launch: ResolvedTokenLaunch;
   // The window has opened (the token should be listed).
   listed: boolean;
-  // Fraction of the wave's total USDC that should have been spent by now: rises over the ramp,
-  // then 1 for the rest of the run (a wave does not un-buy; the decay is the sell-back).
+  // Fraction of the wave's total USDC that should have been spent by now: rises over the token's
+  // ramp, then 1 for the rest of the run (a wave does not un-buy; the decay is the sell-back).
   buyFrac: number;
-  // Fraction of the tokens bought that should have been sold back by now: 0 until the decay
-  // starts, rising to sellBackFrac at its end and holding there.
+  // The same, counted in whole blocks of the token's ramp: min(t + 1, ramp), 0 before it and for a
+  // dud. A wave with a per-block buy (waveBlockUsdcMult) targets exactly this many blocks' worth.
+  buyBlocks: number;
+  // t: blocks since the token's ramp began (negative before it). The driver needs it to re-time the
+  // sell-back of a wave the price cap stopped (launchSellBackFrac with the blocks it bought).
+  rampIndex: number;
+  // Fraction of the tokens bought that should have been sold back by now: 0 until the token's
+  // decay starts (its own ramp + the window's hold), rising to sellBackFrac at its end and holding there.
   sellBackFrac: number;
   // The window has closed, this block being the first one past it.
   justClosed: boolean;
@@ -432,10 +475,10 @@ export class EventSchedule {
     // window already played would be redrawn. The practice period is one regime with its own secret
     // seed, so the pairing the salt breaks up does not arise there.
     const salted = opts.saltWithEventList ?? configs.some(usesVariation);
-    const rng = Rng.fromSeed(
-      seed,
-      salted ? (STRESS_SEED_SALT ^ configDigest(configs)) >>> 0 : STRESS_SEED_SALT,
-    );
+    const salt = salted
+      ? (STRESS_SEED_SALT ^ configDigest(configs)) >>> 0
+      : STRESS_SEED_SALT;
+    const rng = Rng.fromSeed(seed, salt);
     // First pass: every draw, in list order. How many draws an entry makes is a function of the
     // config alone -- a count draws its maximum number of windows, not the number it landed on -- so
     // one entry's outcome never shifts the schedule of the entries after it.
@@ -445,6 +488,27 @@ export class EventSchedule {
       const slots = lead.count === undefined ? 1 : lead.count[1];
       const windows: DrawnWindow[] = [];
       for (let k = 0; k < slots; k++) windows.push(drawWindow(c, rng));
+      // A memoryless wave's length comes from a stream of its own per token, named by where the
+      // token sits (entry, window, token) under the same salt: the draws above stay exactly what
+      // they were, and the number of tokens a window lists cannot shift another token's length.
+      if (c.type === "tokenLaunch" && c.waveStopProb !== undefined) {
+        const stopProb = c.waveStopProb;
+        windows.forEach((w, k) =>
+          drawWaveLengths(w, stopProb, (j) =>
+            Rng.fromSeed(seed, `launch-length:${salt}:${i}:${k}:${j}`).next(),
+          ),
+        );
+      }
+      // The price ceiling likewise: a stream per token, so it is independent of everything the field
+      // can see before the wave meets it (the pool, the per-block size, the length).
+      if (c.type === "tokenLaunch" && c.wavePriceCeiling !== undefined) {
+        const range = c.wavePriceCeiling;
+        windows.forEach((w, k) =>
+          drawPriceCeilings(w, range, (j) =>
+            Rng.fromSeed(seed, `launch-ceiling:${salt}:${i}:${k}:${j}`).next(),
+          ),
+        );
+      }
       return { count, windows };
     });
     // A follower opens exactly as many windows as its anchor drew.
@@ -770,24 +834,27 @@ export class EventSchedule {
     const out: TokenLaunchTarget[] = [];
     this.events.forEach((ev, eventIndex) => {
       if (ev.type !== "tokenLaunch") return;
-      const { rampBlocks: r, holdBlocks: h, decayBlocks: d } = ev;
+      const { holdBlocks: h, decayBlocks: d } = ev;
       const listed = blockIndex >= ev.startBlock;
       // The ramp is counted from the block the pool is visible, not from the listing (see
       // TOKEN_LAUNCH_LEAD_BLOCKS): before that the wave has nothing to buy and nobody to show.
       const t = blockIndex - ev.startBlock - TOKEN_LAUNCH_LEAD_BLOCKS;
-      // The buy side is the rising half of the trapezoid and then stays up: the wave's USDC is
-      // spent by the end of the ramp and never comes back (the decay is a token sale, not a refund).
-      const buyFrac = t < 0 ? 0 : t < r ? (r === 0 ? 1 : (t + 1) / r) : 1;
-      const decayT = t - (r + h);
-      const decayFrac =
-        decayT < 0 ? 0 : d === 0 ? 1 : Math.min(1, (decayT + 1) / d);
       for (const launch of ev.launches ?? []) {
+        // Each token's own ramp under waveStopProb, the window's otherwise. The hold and the decay
+        // run from the token's last buy, so a short wave also sells back early.
+        const r = launch.rampBlocks ?? ev.rampBlocks;
+        // The buy side is the rising half of the trapezoid and then stays up: the wave's USDC is
+        // spent by the end of the ramp and never comes back (the decay is a token sale, not a refund).
+        const buyFrac = t < 0 ? 0 : t < r ? (r === 0 ? 1 : (t + 1) / r) : 1;
+        const buyBlocks = t < 0 ? 0 : Math.min(t + 1, r);
         out.push({
           eventIndex,
           launch,
           listed,
           buyFrac: launch.dud ? 0 : buyFrac,
-          sellBackFrac: launch.dud ? 0 : launch.sellBackFrac * decayFrac,
+          buyBlocks: launch.dud ? 0 : buyBlocks,
+          rampIndex: t,
+          sellBackFrac: launchSellBackFrac(launch, t, r, h, d),
           justClosed: blockIndex === ev.endBlock,
         });
       }
@@ -810,6 +877,24 @@ export class EventSchedule {
   }
 }
 
+// The share of a token's bought tokens its wave should have sold back by ramp block t, for a wave
+// that bought for `ramp` blocks: 0 until its decay starts (`hold` blocks after its last buy), rising
+// to sellBackFrac over `decay` blocks and holding there. The schedule passes the drawn length; the
+// driver passes the blocks a wave bought before the price cap stopped it.
+export function launchSellBackFrac(
+  launch: ResolvedTokenLaunch,
+  t: number,
+  ramp: number,
+  hold: number,
+  decay: number,
+): number {
+  if (launch.dud) return 0;
+  const decayT = t - (ramp + hold);
+  const frac =
+    decayT < 0 ? 0 : decay === 0 ? 1 : Math.min(1, (decayT + 1) / decay);
+  return launch.sellBackFrac * frac;
+}
+
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
@@ -824,7 +909,9 @@ function usesVariation(c: StressEventConfig): boolean {
     c.flipProb !== undefined ||
     c.recoverFrac !== undefined ||
     c.venue === "random" ||
-    c.repriceAnchorProb !== undefined
+    c.repriceAnchorProb !== undefined ||
+    c.waveStopProb !== undefined ||
+    c.wavePriceCeiling !== undefined
   );
 }
 
@@ -963,7 +1050,7 @@ function drawWindow(c: StressEventConfig, rng: Rng): DrawnWindow {
     c.type === "cexDrift" && c.kappaMultRange !== undefined
       ? lerp(c.kappaMultRange[0], c.kappaMultRange[1], kappaDraw as number)
       : undefined;
-  // tokenLaunch (issue #29): the count once, then a fixed four draws per token whatever the
+  // tokenLaunch (issue #29): the count once, then a fixed five draws per token whatever the
   // outcome -- the wave multiplier is drawn even for a dud -- so the RNG consumption is a pure
   // function of the event list and the count, not of which tokens happened to get demand.
   const launches =
@@ -1117,7 +1204,7 @@ function resolveWindow(
   };
 }
 
-// The per-token draws of a tokenLaunch window (issue #29). Exactly one draw for the count and four
+// The per-token draws of a tokenLaunch window (issue #29). Exactly one draw for the count and five
 // per token, in a fixed order, so the schedule of every event after this one does not depend on
 // how many tokens got demand.
 function drawTokenLaunches(
@@ -1150,6 +1237,69 @@ function drawTokenLaunches(
     });
   }
   return launches;
+}
+
+// The mean length of a memoryless wave that stops after each buy with probability `stopProb`, cut
+// at `cap` blocks: E[min(L, cap)] for L geometric on 1, 2, ... is (1 - (1 - p)^cap) / p.
+export function waveLengthMean(stopProb: number, cap: number): number {
+  if (!(stopProb > 0)) return cap;
+  return (1 - (1 - stopProb) ** cap) / stopProb;
+}
+
+// A memoryless wave's length from one uniform draw u in [0, 1), by inversion: P(L > n) = (1 - p)^n,
+// so L = 1 + floor(ln(1 - u) / ln(1 - p)), cut at `cap`. Every wave buys at least once (a wave that
+// never buys is a dud, which has its own draw).
+export function waveLengthFrom(
+  u: number,
+  stopProb: number,
+  cap: number,
+): number {
+  if (stopProb >= 1) return Math.min(1, cap);
+  const n = 1 + Math.floor(Math.log(1 - u) / Math.log(1 - stopProb));
+  return Math.max(1, Math.min(cap, n));
+}
+
+// Give each token of a window its memoryless length, and scale its total so that a block's buy is the
+// drawn multiple over the *mean* length: the expected total is the drawn waveUsdcMult whatever the
+// stop probability, and the size of a buy says nothing about how many follow. The window then runs
+// until its longest wave has sold back.
+function drawWaveLengths(
+  w: DrawnWindow,
+  stopProb: number,
+  uniform: (token: number) => number,
+): void {
+  // The configured rampBlocks is the cap here (one number: the parser refuses a range).
+  const cap = w.rampBlocks;
+  const mean = waveLengthMean(stopProb, cap);
+  const launches = (w.launches ?? []).map((l, j) => {
+    const rampBlocks = waveLengthFrom(uniform(j), stopProb, cap);
+    const waveBlockUsdcMult = l.dud ? 0 : l.waveUsdcMult / mean;
+    return {
+      ...l,
+      waveUsdcMult: waveBlockUsdcMult * rampBlocks,
+      waveBlockUsdcMult,
+      rampBlocks,
+    };
+  });
+  const longest = Math.max(
+    0,
+    ...launches.filter((l) => !l.dud).map((l) => l.rampBlocks),
+  );
+  w.launches = launches;
+  w.span += longest - w.rampBlocks;
+  w.rampBlocks = longest;
+}
+
+// Give each token of a window its secret price ceiling, uniform on the configured range.
+function drawPriceCeilings(
+  w: DrawnWindow,
+  [lo, hi]: [number, number],
+  uniform: (token: number) => number,
+): void {
+  w.launches = (w.launches ?? []).map((l, j) => ({
+    ...l,
+    priceCeilingMult: lerp(lo, hi, uniform(j)),
+  }));
 }
 
 // Apply a cexDrift or volBurst episode to one base's OU parameters. Kept here next to the envelope
@@ -1274,6 +1424,44 @@ function parseOne(
     const [lo, hi] = launchRanges.tokenCount;
     if (!Number.isInteger(lo) || !Number.isInteger(hi))
       throw new Error(`${label}.tokenCount must be an integer range`);
+  }
+  if (o.waveStopProb !== undefined) {
+    if (o.type !== "tokenLaunch")
+      throw new Error(`${label}.waveStopProb only applies to type "tokenLaunch"`);
+    // One number, not a range: a stop probability drawn per token makes the length a mixture of
+    // geometrics whose stopping rate falls with age, and a wave's age would say how much is left.
+    if (Array.isArray(o.waveStopProb))
+      throw new Error(
+        `${label}.waveStopProb must be one number, not a range: drawn per token, a wave that has ` +
+          "run long would more likely be one that stops slowly, and its age would tell how much is left",
+      );
+    if (
+      typeof o.waveStopProb !== "number" ||
+      !(o.waveStopProb > 0 && o.waveStopProb < 1)
+    )
+      throw new Error(
+        `${label}.waveStopProb must be a probability strictly between 0 and 1`,
+      );
+    // The length is drawn per token, so the window's ramp is only the most a wave can run.
+    if (
+      typeof o.rampBlocks !== "number" ||
+      !Number.isInteger(o.rampBlocks) ||
+      o.rampBlocks < 1
+    )
+      throw new Error(
+        `${label}.rampBlocks must be one integer >= 1 with waveStopProb: it is the most blocks a ` +
+          "wave can buy for, and each token draws its own length below it",
+      );
+  }
+  let wavePriceCeiling: [number, number] | undefined;
+  if (o.wavePriceCeiling !== undefined) {
+    if (o.type !== "tokenLaunch")
+      throw new Error(`${label}.wavePriceCeiling only applies to type "tokenLaunch"`);
+    // Above the listing price: a ceiling at or under it would stop every wave before its first buy.
+    wavePriceCeiling = parseRange(o.wavePriceCeiling, `${label}.wavePriceCeiling`, {
+      min: 1,
+      exclusiveMin: true,
+    });
   }
   if (o.type === "depeg") {
     // Which stable is not a default anyone could guess: a run can have several, and picking one
@@ -1531,6 +1719,10 @@ function parseOne(
       ? { persistBlocks: o.persistBlocks as number }
       : {}),
     ...(launchRanges ?? {}),
+    ...(o.waveStopProb !== undefined
+      ? { waveStopProb: o.waveStopProb as number }
+      : {}),
+    ...(wavePriceCeiling !== undefined ? { wavePriceCeiling } : {}),
     magnitudeRange,
     windowFrac,
     rampBlocks,

@@ -39,7 +39,7 @@ for (const sc of matrix.scenarios) {
       `  ${s.symbol.padEnd(6)} pool ${fmt(liq)} USDC  listed@${s.listedAtBlock ?? "-"}${first != null && s.listedAtBlock ? ` (rel ${s.listedAtBlock - first})` : ""}  ` +
         (s.dud
           ? `DUD`
-          : `wave target ${fmt(Number(s.waveUsdcUnits) / U)} (${fmt((Number(s.waveUsdcUnits) / U / liq) * 100)}% of side) buys ${w.length} gross ${fmt(gross)} | first step ${fmt(firstStep)} ≈ +${fmt(stepPct(firstStep))}% px, max step ${fmt(maxStep)} ≈ +${fmt(stepPct(maxStep))}% | sellbacks ${sb.length} recv ${fmt(recv)} | net paid ${fmt(gross - recv)}`),
+          : `wave target ${fmt(Number(s.waveUsdcUnits) / U)} (${fmt((Number(s.waveUsdcUnits) / U / liq) * 100)}% of side)${s.rampBlocks != null ? ` over ${s.rampBlocks} blocks` : ""} buys ${w.length} gross ${fmt(gross)} | first step ${fmt(firstStep)} ≈ +${fmt(stepPct(firstStep))}% px, max step ${fmt(maxStep)} ≈ +${fmt(stepPct(maxStep))}% | sellbacks ${sb.length} recv ${fmt(recv)} | net paid ${fmt(gross - recv)}`),
     );
   }
   if (bad.length) {

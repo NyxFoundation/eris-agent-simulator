@@ -1325,11 +1325,28 @@ gas は pin（9M、実測 5.6M）。翌ブロックにレジストリへ `uniswa
   launch だけに置くと block 0 でレジームが分かる（`test/regimeStartInvariance.test.ts` が検査）。
   deploy は registrar（setup 鍵）で `deployAgentMarketVenues` の中、`assertArtifactHasFunctions("TokenLauncher", …)` 付き。
   launcher のアドレスは `environmentAddresses` と `market_registry_deployed.tokenLauncher` に入る
-- **wave は pool の価格が上場価格の 10 倍（`WAVE_PRICE_CAP_MULT`）を超えたら買わない**（`stress_token_launch_wave_capped`、
-  summary の `waveCappedBlocks`）。full-range pool の価格は (pool の USDC / seed した USDC)² なので、公式の最大の wave
-  （seed の 1.0 倍）単独で 4 倍、ramp 1 ブロックは +10% 程度。10 倍は場が wave より先に seed の ~1.16 倍を買っても届かない値。
+- **wave は pool の価格が上場価格の 10 倍（`WAVE_PRICE_CAP_MULT`）を超えていたら、そのブロックで終わる**
+  （`stress_token_launch_wave_capped`、summary の `capStoppedAfterBlocks`）。抽選の停止と同じ扱いで、残りは買わず、
+  そのブロックから hold → 売り戻し（`waveTargets` / `capStopRamp`）。以前は上限の間は待つだけで、買い残しが溜まり続けた。
+  そのため、価格が上にある限り売り戻しに進まず、10 倍を割った最初のブロックで溜めた分（最大 73 ブロック分）を 1 本で買った。
+  保有者は、少し売って 10 倍のすぐ下に落とせばこの一気買いの時期を選べ、そこへ売れた。`scripts/measureLaunchFrontRun.ts` の
+  戦略はこの経路を使わないので、変更の前後で数字は同じ。full-range pool の価格は (pool の USDC / seed した USDC)² なので、公式の最大の期待 wave
+  （seed の 1.0 倍）単独で 4 倍、ramp 1 ブロックは最大 +8.6%。10 倍は seed の ~2.16 倍を買った所で、場が wave より先に
+  ~1.16 倍買っても届かない値。長く続いた無記憶の wave（下）は単独でも届き、そこで止まる（波の 2.9%）。
   買い占められた pool へ wave が払い続けるのを止める（需要に上値があるのは需要の性質でもある）。判定は送信前の slot0 で、
   1 回の買いが上限を ~10% 越えることはある
+- **トークンごとに秘密の上限価格がある**（2026-10-31。`tokenLaunch` の `wavePriceCeiling`、公式は上場価格の [1.5, 4] 倍）。
+  トークンごとに一様に引き、wave はプールがそれを超えていたブロックで終わる（10 倍と同じ停止。10 倍より上は 10 倍）。
+  引くのは (エントリ, 窓, トークン) ごとの鍵付きストリーム（`launch-ceiling:<salt>:<i>:<k>:<j>`、`drawPriceCeilings`）で、
+  プール・1 ブロックの額・長さ・後続イベントの draw は動かず、それらとの相関も無い（テストが検査）。値は公開しない
+  （`priceCeilingMult` は `stress_schedule` と `stress_token_launch_wave_capped` にしか出ず、scenario の公開ビューはどちらも落とす）。
+  **フロントランニングを縮めるための仕組み**: 以前の wave は価格に関係なく同じ額を買ったので、場は好きなだけ前で買って
+  そこへ売れた。今は自分の買いが見えない上値へプールを押し上げ、大きく買うほど売り先の需要を早く止める。探りは往復の
+  手数料が掛かり、上値を越えた探りは探っていた wave そのものを止める。`scripts/measureLaunchFrontRun.ts`（2,000 seed、
+  フロントランニングは公開された範囲に対して最適なサイズを選ぶ）: 上限なし → [1.5, 4] で、フロントランニング +29,742 → +8,443、
+  1 ブロックずつ先行 +28,925 → +5,540、launch-sniper +5,778 → +3,694、launch-confirm +6,508 → +2,630、wave の総買い
+  54,971 → 34,302（単独で上値に止まる波 36.6%）。上値を事前に知っていても +9,710。範囲を上げると緩む（[2, 6] で
+  +15,021 / sniper +4,925 / confirm +4,135、[3, 8] で +21,133）。範囲の表は `config/regimes/launch.yaml` のコメント
 
 - **需要はトークンごとに独立に引く**（`core/src/realtime/events.ts` の `drawTokenLaunches`）: 本数 1 回 +
   トークンあたり固定 5 回（liquidityUsdc / dudProb / dud の目 / waveUsdcMult / sellBackFrac）で、**dud でも
@@ -1344,9 +1361,31 @@ gas は pin（9M、実測 5.6M）。翌ブロックにレジストリへ `uniswa
   買いが全部 `Too little received` で revert した）。1 ブロックの上げ幅は最大で片側の 1/20 ≈ +10%。driver は
   `core/src/realtime/tokenLaunch.ts`。wave wallet は USDC → token を SwapRouter `exactInputSingle` で、
   QuoterV2 の見積もりに 15% の slippage 枠。**settled した tx から集計**（`grossBuyUsdc` / `tokensSold` /
-  `sellUsdcReceived`）し、`stress_token_launch_summary` で帳簿を閉じる
+  `sellUsdcReceived`）し、`stress_token_launch_summary`（実際の `rampBlocks` 付き）で帳簿を閉じる
+- **波の長さは無記憶**（2026-10-30。`tokenLaunch` の `waveStopProb`、公式は 0.04）。以前は窓ごとに ramp を [20, 26] から引き、
+  窓の全トークンがその長さで総額を均等に買ったので、**初手で残りが確定していた**（1 回の買いの大きさ = 総額 / ~23、
+  終わりは 6 ブロック幅で既知）。今はトークンごとに、買った各ブロックの後に確率 0.04 で止まる（幾何分布、上限
+  `rampBlocks` = 75 = 平均の 3 倍。上限まで続くのは 4.7%）。**長さは主ストリームを使わない**: (エントリ, 窓, トークン) で
+  名前を付けた鍵付きストリーム（`launch-length:<salt>:<i>:<k>:<j>`、`drawWaveLengths`）から 1 回ずつ引くので、
+  `drawTokenLaunches` の固定 5 回と後続イベントの draw は動かない。1 ブロックの買いは**引いた倍率 / 平均長**
+  （(1 − 0.96^75) / 0.04 = 23.8。期待総額は引いた倍率のまま、1 ブロックは最大で片側の 1/23.8 ≈ +8.6%）で、実際の総額は
+  倍率 × 長さ / 平均長（`ResolvedTokenLaunch.waveUsdcMult` は実現値、`rampBlocks` はそのトークンの長さ）。
+  **1 ブロック分を先に整数で決め、総額はそのちょうど長さ倍**（`waveBlockUsdcMult` → `waveBlockUsdcUnits`、driver は
+  `waveBuyTargetUnits` で整数のブロック数ぶんを目標にする）。初版は総額（L × round(実現倍率 × 1e6)）を長さで割っていたので
+  amountIn の端数に長さが残り、L（token の供給量）を読む agent が初手で 47%、8 回目で 85% の波の長さを特定できた。hold と
+  decay は**各トークン自身の停止から**数え、窓の `rampBlocks` / `endBlock` は最長の非 dud の波に合わせる。
+  `waveStopProb` が**範囲でなく 1 つの数**なのは、トークンごとに引くと幾何分布の混合になり、停止率が年齢とともに下がる
+  （長く続いた波ほど止まりにくい種類）ので、年齢が残りを教えてしまうから（parser が範囲を拒否し、`rampBlocks` も 1 つの整数を要求）。
+  **ただしフロントランニングの利益はほぼ減らない**（`npx tsx scripts/measureLaunchFrontRun.ts`、2,000 seed。`--fixed-ramp 20,26` が旧）:
+  「初手を見てから最適サイズ（上限 $60k）で前に入り、停止で出る」は +31,659 → **+29,742**（±650）、「1 ブロックずつ先行するフロントランニング」は
+  +30,716 → +28,925、launch-sniper +7,619 → +5,778、launch-confirm +5,276 → +6,508。停止確率 0.033〜0.05 のどれでも
+  +29.5k〜+30.7k。フロントランニングの取り分は wave の残りの買いのほぼ一定割合（$60k の手元で総額の ~55%）で、期待総額を保つ限り
+  確認時点の期待残量は変わらない。長さを知らないことのコストは ~$450（長さを事前に知っていても +30,181）しかない —
+  前に入った直後に止まっても失うのは往復の手数料だけだから。消えたのは**日程**（1 回の買いから総額が分からない、ramp の
+  終わりと売り戻しの開始が初手から読めない、固定 hold の sniper が売り戻しに当たる、出口はテープから読むしかない）
 - **wallet は launch / wave の固定 3 組のスロット**（`LAUNCH_WALLET_SLOTS`。`launch:<k>` / `launch-wave:<k>`、
-  k 番目の上場がスロット k）を**全 run で** flow map に載せ、各 100k USDC の固定額を入れる（`launchWalletFunding`。
+  k 番目の上場がスロット k）を**全 run で** flow map に載せ、launch 側 100k / wave 側 **320k** USDC の固定額を入れる
+  （`launchWalletFunding`。wave 側は上限まで続いた無記憶の波 = 1.0 倍 × 75 / 23.8 × 100k ≈ 315k を賄う額。以前は 100k。
   引きがそれを超えたときだけ増やす）。以前はトークンごとに 1 組を作って引いた額ちょうど（dud は 0）を入れていたので、
   setup ブロックの送信者数と残高から block 0 で launch・上場数・dud・波の大きさが読めた。上場は引いた
   `liquidityUsdc` ちょうどを seed し、波は引いた総額へ向けて買うので、多めの残高は使われない。

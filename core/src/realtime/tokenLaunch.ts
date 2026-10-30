@@ -6,7 +6,9 @@
 // registry like any agent-made market. Then, per token, a *wave wallet*
 // buys the token with USDC over the ramp, holds, and sells a seeded fraction back during the decay.
 // A dud sends nothing. Holdings at the bell are worth zero (ADR 0022 axiom 2), so the whole regime
-// is: buy before the wave, sell before the sell-back, and pick a token that gets a wave.
+// is: buy before the wave, sell before the sell-back, and pick a token that gets a wave. With the
+// event's waveStopProb each token's ramp is memoryless (events.ts drawWaveLengths): the same buy every
+// block until a stop nobody can see coming, and the hold and the sell-back counted from that stop.
 //
 // Two decisions carried over from the other process events, because both were paid for once:
 //
@@ -69,11 +71,14 @@ import {
   type EnvBid,
   type EnvBidContext,
 } from "./envBid.js";
-import type {
-  EventSchedule,
-  ResolvedStressEvent,
-  ResolvedTokenLaunch,
-  StressEventConfig,
+import {
+  launchSellBackFrac,
+  waveLengthMean,
+  type EventSchedule,
+  type ResolvedStressEvent,
+  type ResolvedTokenLaunch,
+  type StressEventConfig,
+  type TokenLaunchTarget,
 } from "./events.js";
 
 // The fee tier every launch pool opens at. 0.3% rather than the environment's 0.05% WETH/USDC tier:
@@ -93,13 +98,16 @@ export const tokenLauncherEventAbi = parseAbi([
 
 // The wave stops buying once the pool prices the token above this multiple of its 1.00 USDC listing.
 //
-// The honest path never gets near it. The pool is a full-range position, so its price is
-// (USDC in the pool / USDC seeded)^2; the largest wave config/regimes/launch.yaml can draw is 1.0x the
-// seeded USDC, which on its own ends at 4x, and one block of the ramp moves the price ~+10%. 10x
-// leaves the field room to buy a further ~1.16x of the pool's depth ahead of the wave before the cap
-// binds. What it bounds is the other case: a pool somebody has bought out (or priced) so far that the
-// wave would be paying for nothing -- the exploit this file was rewritten for paid 37,500 USDC for
-// 6.5e-14 tokens. A demand that stops at some price is also simply what demand is.
+// The honest path rarely gets near it. The pool is a full-range position, so its price is
+// (USDC in the pool / USDC seeded)^2; the largest expected wave config/regimes/launch.yaml can draw is
+// 1.0x the seeded USDC, which on its own ends at 4x, and one block of the ramp moves the price
+// ~+8.6%. 10x is ~2.16x of the pool's depth bought: room for the field to buy ~1.16x ahead of such a
+// wave, and the end of the longest memoryless waves on their own (a wave that runs to the length cap
+// spends up to 3.15x its expected total; 2.9% of waves stop here with nobody ahead of them,
+// scripts/measureLaunchFrontRun.ts). What it bounds is the other case: a pool somebody has bought out
+// (or priced) so far that the wave would be paying for nothing -- the exploit this file was rewritten
+// for paid 37,500 USDC for 6.5e-14 tokens. A demand that stops at some price is also simply what
+// demand is, so a wave that finds the pool above the cap ends there for good (waveTargets).
 export const WAVE_PRICE_CAP_MULT = 10;
 // The listing price, USDC per whole token.
 export const LAUNCH_LISTING_PRICE_USDC = 1;
@@ -116,7 +124,10 @@ const GAS_SWAP = 700_000n;
 
 // The environment is moving the price on purpose; the bound is only against a pathological fill.
 const WAVE_SLIPPAGE_BPS = 1_500n;
-// Deltas below this fraction of the wave's total are rounding, not schedule.
+// Buy deltas below this fraction of one block's buy are rounding, not schedule. (It was of the
+// wave's total, which for a wave longer than 100 blocks -- a memoryless one can be -- is more than a
+// block's buy, so the wave would have bought every other block.) Sell-back deltas: of the tokens held
+// when the decay began.
 const MIN_DELTA_BPS = 100n;
 // Blocks to wait for a submitted transaction before treating it as lost.
 const PENDING_TIMEOUT_BLOCKS = 3;
@@ -135,10 +146,14 @@ export const LAUNCH_WAVE_WALLET_PREFIX = "launch-wave";
 // regime under it, and a schedule that draws more refuses to start (launchWalletFunding).
 export const LAUNCH_WALLET_SLOTS = 3;
 // Each slot's USDC, whatever it lists: the largest pool and the largest wave config/regimes/launch.yaml
-// can draw (100k seeded, a 1.0x wave). The listing seeds exactly its drawn `liquidityUsdc` and the
-// wave buys toward its drawn total, so a wallet holding more changes nothing it does.
+// can draw. The listing seeds exactly its drawn `liquidityUsdc` and the wave buys toward its drawn
+// total, so a wallet holding more changes nothing it does. The pool side is 100k. The wave's is its
+// longest possible run: a memoryless wave (waveStopProb) buys the drawn multiple over the *mean*
+// length per block, so one that runs to the cap spends cap / mean times that -- 75 / 23.8 = 3.15x a
+// 1.0x wave on a 100k pool, ~315k (it was 100k when every wave bought exactly its multiple). The
+// largest of these push the pool past WAVE_PRICE_CAP_MULT before they are done, and the cap stops them.
 export const LAUNCH_WALLET_USDC_UNITS = 100_000n * 10n ** BigInt(TOKENS.USDC.decimals);
-export const LAUNCH_WAVE_USDC_UNITS = 100_000n * 10n ** BigInt(TOKENS.USDC.decimals);
+export const LAUNCH_WAVE_USDC_UNITS = 320_000n * 10n ** BigInt(TOKENS.USDC.decimals);
 
 export function launchWalletKey(slot: number): string {
   return `${LAUNCH_WALLET_PREFIX}:${slot}`;
@@ -169,6 +184,8 @@ export type TokenLaunchState = {
   liquidityUsdcUnits: bigint;
   tokenSupplyWei: bigint;
   waveUsdcUnits: bigint;
+  // One block's buy, for a wave with a per-block size (waveStopProb). Undefined for a fixed ramp.
+  waveBlockUsdcUnits?: bigint;
   symbol: string;
   phase: "pending" | "listing" | "live" | "failed";
   token?: Address;
@@ -182,9 +199,9 @@ export type TokenLaunchState = {
   heldAtDecayStart?: bigint;
   pending: Pending | null;
   approved: { usdc: boolean; token: boolean };
-  // Whether the wave is currently refusing to buy above WAVE_PRICE_CAP_MULT, and for how many blocks.
-  waveCapped: boolean;
-  waveCappedBlocks: number;
+  // Set when the wave found the pool above WAVE_PRICE_CAP_MULT: the ramp blocks it had bought by
+  // then. The cap ends the wave for good, the way a drawn stop does (waveTargets).
+  capStoppedAfter?: number;
   // Measured totals, from settled transactions.
   grossBuyUsdc: bigint;
   tokensSold: bigint;
@@ -252,9 +269,22 @@ export function launchPriceUsdcPerToken(
   return tokenIsToken0 ? raw * 10 ** gap : 1 / (raw * 10 ** -gap);
 }
 
-/** True when the wave should refuse to buy at this price. */
-export function waveBuyCapped(priceUsdcPerToken: number): boolean {
-  return !(priceUsdcPerToken <= WAVE_PRICE_CAP_MULT * LAUNCH_LISTING_PRICE_USDC);
+/** The price above which this token's wave stops: its secret ceiling if it has one, never past the cap. */
+export function waveCapUsdcPerToken(
+  launch: Pick<ResolvedTokenLaunch, "priceCeilingMult">,
+): number {
+  return (
+    Math.min(WAVE_PRICE_CAP_MULT, launch.priceCeilingMult ?? Infinity) *
+    LAUNCH_LISTING_PRICE_USDC
+  );
+}
+
+/** True when the wave should refuse to buy at this price (and so stop: waveTargets). */
+export function waveBuyCapped(
+  priceUsdcPerToken: number,
+  launch: Pick<ResolvedTokenLaunch, "priceCeilingMult"> = {},
+): boolean {
+  return !(priceUsdcPerToken <= waveCapUsdcPerToken(launch));
 }
 
 /** Whether this run deploys the token launcher: wherever there is a registry and a Uniswap venue.
@@ -354,10 +384,20 @@ export function tokenLaunchCeiling(configs: StressEventConfig[]): {
     const liquidity = Math.round(c.liquidityUsdc ? c.liquidityUsdc[1] : 0);
     const units = BigInt(liquidity) * USDC_UNIT;
     if (units > liquidityUsdcUnits) liquidityUsdcUnits = units;
+    // A memoryless wave that runs to its cap spends cap / mean-length times its drawn multiple
+    // (events.ts drawWaveLengths); a fixed ramp spends exactly the multiple.
+    const cap = Array.isArray(c.rampBlocks) ? c.rampBlocks[1] : c.rampBlocks;
+    const mult = c.waveUsdcMult ? c.waveUsdcMult[1] : 0;
+    const block =
+      c.waveStopProb !== undefined
+        ? mult / waveLengthMean(c.waveStopProb, cap)
+        : undefined;
     const wave = waveUsdcUnits({
       index: 0,
       liquidityUsdc: liquidity,
-      waveUsdcMult: c.waveUsdcMult ? c.waveUsdcMult[1] : 0,
+      waveUsdcMult: block !== undefined ? block * cap : mult,
+      waveBlockUsdcMult: block,
+      rampBlocks: block !== undefined ? cap : undefined,
       dud: false,
       sellBackFrac: 0,
     });
@@ -367,11 +407,82 @@ export function tokenLaunchCeiling(configs: StressEventConfig[]): {
 }
 
 // The wave's total USDC, from its multiple of the pool's USDC side. Rounded to whole units on a
-// 1e6 grid so two runs of the same scenario endow the same wallet.
+// 1e6 grid so two runs of the same scenario endow the same wallet. A wave with a per-block size is
+// that block times its length, exactly, so that every buy is a whole number of blocks.
 export function waveUsdcUnits(launch: ResolvedTokenLaunch): bigint {
+  const block = waveBlockUsdcUnits(launch);
+  if (block !== undefined && launch.rampBlocks !== undefined)
+    return block * BigInt(launch.rampBlocks);
   if (launch.dud || launch.waveUsdcMult <= 0) return 0n;
   const mult = BigInt(Math.round(launch.waveUsdcMult * 1_000_000));
   return (BigInt(launch.liquidityUsdc) * USDC_UNIT * mult) / 1_000_000n;
+}
+
+// One block's buy of a memoryless wave, on the same 1e6 grid, from the per-block multiple alone:
+// nothing in it depends on the length. Undefined for a fixed ramp (no per-block size).
+export function waveBlockUsdcUnits(
+  launch: ResolvedTokenLaunch,
+): bigint | undefined {
+  if (launch.waveBlockUsdcMult === undefined) return undefined;
+  if (launch.dud || launch.waveBlockUsdcMult <= 0) return 0n;
+  const mult = BigInt(Math.round(launch.waveBlockUsdcMult * 1_000_000));
+  return (BigInt(launch.liquidityUsdc) * USDC_UNIT * mult) / 1_000_000n;
+}
+
+// The USDC the wave should have spent by this block. A per-block wave is an integer number of
+// blocks' worth; a fixed ramp a fraction of its total, as before the stop existed.
+export function waveBuyTargetUnits(
+  state: Pick<TokenLaunchState, "waveUsdcUnits" | "waveBlockUsdcUnits">,
+  target: Pick<TokenLaunchTarget, "buyFrac" | "buyBlocks">,
+): bigint {
+  if (state.waveBlockUsdcUnits !== undefined)
+    return state.waveBlockUsdcUnits * BigInt(target.buyBlocks);
+  return scaleUnits(state.waveUsdcUnits, target.buyFrac);
+}
+
+// The ramp a wave that finds the pool above the cap at this block is cut to: the blocks before this
+// one, never more than its own length (a wave catching up on missed buys after its ramp keeps its
+// scheduled sell-back).
+export function capStopRamp(
+  state: Pick<TokenLaunchState, "launch" | "event">,
+  target: Pick<TokenLaunchTarget, "rampIndex">,
+): number {
+  return Math.max(0, Math.min(rampOf(state), target.rampIndex));
+}
+
+// What the driver reconciles toward this block. The schedule's targets, until the price cap stops
+// the wave: then nothing more to buy, and the sell-back runs from the stop -- the same hold and
+// decay as a drawn stop at that block.
+export function waveTargets(
+  state: Pick<
+    TokenLaunchState,
+    | "launch"
+    | "event"
+    | "waveUsdcUnits"
+    | "waveBlockUsdcUnits"
+    | "grossBuyUsdc"
+    | "capStoppedAfter"
+  >,
+  target: Pick<
+    TokenLaunchTarget,
+    "buyFrac" | "buyBlocks" | "rampIndex" | "sellBackFrac"
+  >,
+): { buyTarget: bigint; sellBackFrac: number } {
+  if (state.capStoppedAfter === undefined)
+    return {
+      buyTarget: waveBuyTargetUnits(state, target),
+      sellBackFrac: target.sellBackFrac,
+    };
+  return {
+    buyTarget: state.grossBuyUsdc,
+    sellBackFrac: launchSellBackFrac(
+      state.launch,
+      target.rampIndex,
+      state.capStoppedAfter,
+      state.event.holdBlocks,
+      state.event.decayBlocks,
+    ),
+  };
 }
 
 /// Stage the launches: resolve wallets, sizes and the factory, and refuse to start on a deployment
@@ -436,13 +547,12 @@ export async function setupTokenLaunch(
         tokenSupplyWei:
           BigInt(launch.liquidityUsdc) * 10n ** BigInt(LAUNCH_TOKEN_DECIMALS),
         waveUsdcUnits: waveUsdcUnits(launch),
+        waveBlockUsdcUnits: waveBlockUsdcUnits(launch),
         symbol: `LT${eventIndex}${launch.index}`,
         phase: "pending" as const,
         listAttempts: 0,
         pending: null,
         approved: { usdc: false, token: false },
-        waveCapped: false,
-        waveCappedBlocks: 0,
         grossBuyUsdc: 0n,
         tokensSold: 0n,
         sellUsdcReceived: 0n,
@@ -546,33 +656,46 @@ export async function stepTokenLaunch(
         state.waveWallet.address,
       );
       if (state.waveStartUsdc === undefined) state.waveStartUsdc = usdcNow;
-      const buyTarget = scaleUnits(state.waveUsdcUnits, target.buyFrac);
+      const { buyTarget, sellBackFrac } = waveTargets(state, target);
       const buyDelta =
         buyTarget > state.grossBuyUsdc ? buyTarget - state.grossBuyUsdc : 0n;
-      const minDelta = (state.waveUsdcUnits * MIN_DELTA_BPS) / 10_000n;
+      const minDelta =
+        state.waveBlockUsdcUnits !== undefined
+          ? (state.waveBlockUsdcUnits * MIN_DELTA_BPS) / 10_000n
+          : (state.waveUsdcUnits * MIN_DELTA_BPS) /
+            10_000n /
+            BigInt(Math.max(1, rampOf(state)));
       if (buyDelta > 0n && buyDelta >= minDelta) {
         const amountIn = buyDelta > usdcNow ? usdcNow : buyDelta;
         const price = await poolPrice(ctx, runtime, state);
-        if (amountIn > 0n && waveBuyCapped(price)) {
-          state.waveCappedBlocks++;
-          if (!state.waveCapped) {
-            state.waveCapped = true;
-            logger.event({
-              type: "stress_token_launch_wave_capped",
-              eventIndex: state.eventIndex,
-              index: state.index,
-              symbol: state.symbol,
-              blockIndex,
-              blockNumber,
-              pool: state.pool,
-              priceUsdcPerToken: price,
-              capUsdcPerToken: WAVE_PRICE_CAP_MULT * LAUNCH_LISTING_PRICE_USDC,
-              unboughtUsdcUnits: buyDelta.toString(),
-            });
-          }
+        if (amountIn > 0n && waveBuyCapped(price, state.launch)) {
+          // The wave stops here for good, as if its stop had been drawn at this block: what it has
+          // not bought is dropped and its hold and sell-back run from here. It used to wait out the
+          // cap with the unbought target accumulating, which kept it from ever reaching the
+          // sell-back while the price stayed up, and the first block back under the cap bought the
+          // whole backlog in one swap (up to 73 blocks' worth) -- a release any holder could time by
+          // selling the pool just under the cap, and then sell into.
+          state.capStoppedAfter = capStopRamp(state, target);
+          logger.event({
+            type: "stress_token_launch_wave_capped",
+            eventIndex: state.eventIndex,
+            index: state.index,
+            symbol: state.symbol,
+            blockIndex,
+            blockNumber,
+            pool: state.pool,
+            priceUsdcPerToken: price,
+            capUsdcPerToken: waveCapUsdcPerToken(state.launch),
+            secretCeiling: state.launch.priceCeilingMult !== undefined &&
+              state.launch.priceCeilingMult < WAVE_PRICE_CAP_MULT,
+            stoppedAfterBlocks: state.capStoppedAfter,
+            unboughtUsdcUnits: (state.waveUsdcUnits > state.grossBuyUsdc
+              ? state.waveUsdcUnits - state.grossBuyUsdc
+              : 0n
+            ).toString(),
+          });
           continue;
         }
-        state.waveCapped = false;
         if (amountIn > 0n) {
           await sendSwap(
             ctx,
@@ -591,7 +714,7 @@ export async function stepTokenLaunch(
         }
       }
       // ---- the sell-back ----
-      if (target.sellBackFrac > 0 && state.token) {
+      if (sellBackFrac > 0 && state.token) {
         const held = await balanceOf(
           ctx,
           state.token,
@@ -600,7 +723,7 @@ export async function stepTokenLaunch(
         if (state.heldAtDecayStart === undefined) state.heldAtDecayStart = held;
         const sellTarget = scaleUnits(
           state.heldAtDecayStart,
-          target.sellBackFrac,
+          sellBackFrac,
         );
         const sellDelta =
           sellTarget > state.tokensSold ? sellTarget - state.tokensSold : 0n;
@@ -660,7 +783,10 @@ export function summarizeTokenLaunch(
       dud: state.launch.dud,
       liquidityUsdc: state.launch.liquidityUsdc,
       waveUsdcUnits: state.waveUsdcUnits.toString(),
-      waveCappedBlocks: state.waveCappedBlocks,
+      // The blocks the schedule had this wave buy for (memoryless under waveStopProb).
+      rampBlocks: rampOf(state),
+      // The ramp blocks it bought before the price cap stopped it; null = it ran its length.
+      capStoppedAfterBlocks: state.capStoppedAfter ?? null,
       grossBuyUsdcUnits: state.grossBuyUsdc.toString(),
       tokensSoldWei: state.tokensSold.toString(),
       sellUsdcReceivedUnits: state.sellUsdcReceived.toString(),
@@ -1151,6 +1277,11 @@ function reportClosed(
 // ---------------------------------------------------------------------------
 
 const ZERO = "0x0000000000000000000000000000000000000000" as Address;
+
+// The blocks this token's wave buys for: its own memoryless length, or the window's ramp.
+function rampOf(state: Pick<TokenLaunchState, "launch" | "event">): number {
+  return state.launch.rampBlocks ?? state.event.rampBlocks;
+}
 
 async function poolPrice(
   ctx: SimContext,
