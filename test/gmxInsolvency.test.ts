@@ -340,13 +340,14 @@ test("live (per-block sync) and sweep (one sync) agree at every boundary", async
   assert.equal(sweep.ledger.chargesAt(160, []).get(ALICE.toLowerCase())?.chargedUsd, 50_000);
 });
 
-test("leverage cap: the factor is 0.33 (3.03x) and the key is Keys.minCollateralFactorKey", () => {
-  assert.equal(GMX_MIN_COLLATERAL_FACTOR, 33n * 10n ** 28n);
-  assert.equal(gmxMaxLeverageFromFactor(GMX_MIN_COLLATERAL_FACTOR), 3.03);
+test("leverage cap: the factor is 0.198 (5.05x) and the key is Keys.minCollateralFactorKey", () => {
+  assert.equal(GMX_MIN_COLLATERAL_FACTOR, 198n * 10n ** 27n);
+  assert.equal(gmxMaxLeverageFromFactor(GMX_MIN_COLLATERAL_FACTOR), 5.05);
   assert.equal(gmxMaxLeverageFromFactor(0n), undefined);
-  assert.ok(Math.abs(GMX_MAX_LEVERAGE - 3.0303) < 1e-3);
-  // Stays solvent through the largest official gap (spike, 32%) with room for the closing fee.
-  assert.ok(GMX_MAX_LEVERAGE * 0.32 < 0.98);
+  assert.ok(Math.abs(GMX_MAX_LEVERAGE - 5.0505) < 1e-3);
+  // A losing leg is not liquidatable after the first of three ramp steps of the largest official gap
+  // (spike 32% / 3), so it cannot be liquidated before the last step and leave the other leg naked.
+  assert.ok(1 / GMX_MAX_LEVERAGE - 0.011 > 0.32 / 3);
   // keccak256(abi.encode(keccak256(abi.encode("MIN_COLLATERAL_FACTOR")), market))
   const base = keccak256(
     encodeAbiParameters([{ type: "string" }], ["MIN_COLLATERAL_FACTOR"]),

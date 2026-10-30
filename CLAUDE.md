@@ -244,7 +244,7 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   （position fee 0.04% / 0.06%、impact 9e-11 / 3e-11・指数 2 / 1・上限 0.5% / 0.4%、borrowing は
   `borrowingRateConfig_LowerMax_WithHigherOptimal`）。impact は Arbitrum の OI に合わせた係数なので、この pool では
   $1M の偏りで ~0.9bps しか効かない（**効くのは fee**。深度に合わせて盛るのは較正の仕事として見送った）。
-  レバレッジは patch では**建てるとき 5%（20 倍）・清算 1%**（run の setup が建てる側を 33% = ~3.03 倍に上書きする。下の B2）。**これが Config 経由で GMX が受け付ける上限**で
+  レバレッジは patch では**建てるとき 5%（20 倍）・清算 1%**（run の setup が建てる側を 19.8% = ~5.05 倍に上書きする。下の B2）。**これが Config 経由で GMX が受け付ける上限**で
   （`ConfigUtils.validateRange` が MIN_COLLATERAL_FACTOR > 5% と _FOR_LIQUIDATION > 1% を revert する。
   10% / 5% を入れたら deploy が落ちた）、Arbitrum の 0.5〜1% よりは厳しい。
   **swap も同じ**: keeper は `OrderCreated` を種類を問わず全部執行するので、`rawTx` の `MarketSwap` 注文が
@@ -267,8 +267,13 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   事後 sweep（窓を 1 回読む）が同じ ledger を同じ境界で引くので `interval_series_agreement` は 0 のまま（`core/src/realtime/gmxShortfall.ts`）。
   控除は境界の値に入るので P に効く。`gmx_insolvent_close` イベント、summary の `agents[].gmxShortfallChargedUsd`、
   練習期間の再開は `LiveScorerSnapshot.gmxShortfall`。**口座をまたぐストラドル（2 体で片側ずつ）は対象外**（1 参加単位 1 体が前提）。
-  **(B2) レバレッジ上限 ~3.03 倍**（`GMX_MIN_COLLATERAL_FACTOR` = 0.33。`sdk/src/protocols/gmxKeys.ts`）。最大 gap 32% に対し、
-  6 倍未満の建玉は ramp の 1 ステップ目では清算対象にすらならず gap 全体を被るので、債務超過しないには レバ × 0.32 + 決済費用 < 1。
+  **(B2) レバレッジ上限 ~5.05 倍**（`GMX_MIN_COLLATERAL_FACTOR` = 0.198。`sdk/src/protocols/gmxKeys.ts`）。債務超過は B1 が
+  請求するので、上限が塞ぐのは B1 で消えない「負け脚が gap の最終段より前に清算され、勝ち脚が裸で残りを取る」分。清算は検知の
+  1 ブロック後に着くので、それには 3 段 ramp の 1 段目（spike 32% / 3 = 10.7%、crash 22% / 3 = 7.3%）で清算線
+  （≈ 1/レバ − 1.1%）に届く必要があり ~8.4 倍以上。2 段 ramp なら清算は gap の満額で着く。**この余裕は gap の形（1 段の幅と段数）に
+  依存する**ので crash / spike を較正し直したら導き直す。5 倍で残るのは片側建玉の有限責任分（5 倍ショートが spike で証拠金を超えて
+  失う最大サイズの 12%、12 レジーム一様で期待値は証拠金の ~3% / エポック。3 倍なら 0）。当初は B1 なしでも債務超過しない
+  ~3.03 倍（レバ × 0.32 + 決済費用 < 1）で出したが、現実（Arbitrum は 100 倍）からの乖離を小さくするため 5 倍にした（2026-10-30）。
   **keeper で拒否するのではなく GMX 自身に執行させる**: `setupGlobal` が DataStore の `MIN_COLLATERAL_FACTOR` を CONTROLLER として
   直接書く（Config.setUint は 5% 超を validateRange で revert するため）。上限を超える increase は executeOrder の中で GMX が
   cancel し、**証拠金と実行手数料を同じ tx で返す**（keeper 拒否だと注文は OrderVault に `requestExpirationTime` 300 秒残り、
@@ -279,6 +284,7 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   残りは**清算後に裸で残った勝ち脚が ramp の残りを取る分**（短い脚が 1 ステップ目で清算され、ロングだけが 2 ステップ目を被る）。
   これは債務超過ではないので B1 では消えず、B2 で消える: 上限ありでは 19.5 倍の注文は `InsufficientCollateralUsd` で cancel・返金され
   P +6,798（noop +6,799）、3 倍ストラドルは +6,687（noop − 手数料 112）、3 倍の片側ショートは −1,978（証拠金 12k のうち 8.8k 失い債務超過なし）。
+  **この実測は上限 3.03 倍のとき**で、5 倍の上限では測っていない（5 倍で 1 段目に清算されないことは上の算術による）。
   `interval_series_agreement` は両 run で差 0。
   **指値・ストップ注文は今も執行されない**
   （keeper は新しい `OrderCreated` しか見ない。SDK のアクションは成行のみ）`basis-arb` の往復コスト既定は 0 → 12bps。
