@@ -654,6 +654,26 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     #144 で一度中央値にしたが、自分しか LP のいないプールを窓の 3 ブロックだけずらして境界前に戻すと、同じ流動性が
     ずらした側の分割で評価され、預けた額の数十 % が架空の価値になった（fair からずれたプールの持分は fair で評価すると
     必ず大きい）。境界ブロックの分割なら同じブロックの swap は財布と LP で相殺される
+  - **Uniswap V3 の LP NFT は「自分で取得したもの」だけを評価・観測する**（`sdk/src/protocols/uniswapLpOwnership.ts`）。
+    以前は保有者列挙（`tokenOfOwnerByIndex`）の先頭 `LP_POSITIONS_LIMIT`（128）件を評価していたが、NPM の `mint` は
+    `recipient` を誰にでもでき、保有順は挿入順なので、エポック序盤に相手へダスト建玉を 128 件 mint すると相手が後から
+    建てた LP が全部上限の外に押し出されて鐘で 0 になった（~0.4M gas × 128、tip 0 ならほぼ無料。相手の観測は上限なしで
+    列挙していたので異常が見えず、ERC-721 は `rosterTransfers` の対象外で flag も出ない）。今は NPM の
+    `Transfer(from, to=agent, tokenId)` が **agent 自身が送った tx（tx.from = agent）** の中で出たものだけが自分の建玉で、
+    上限 128 はそれにだけ掛かる（超過は従来どおり本人の責任 = `uniswap-lp-unscanned`）。他人の tx で mint・送付された
+    NFT は評価も一覧もせず、`balanceOf` との差を `uniswap-lp-received`（reason `received`）で報告する。送り出した NFT は
+    誰の価値にもならないので、NFT による価値移転と LP NFT の「贈り物」攻撃も消える。台帳は Transfer ログ（受け取りが
+    あったブロックだけ tx 付きで block を 1 回読んで送信者を引く = 読取量は NFT の本数でなくブロック数で頭打ち）から作り、
+    ライブ採点（毎ブロック同期・境界の後に prune）と事後 sweep（窓を 1 回同期）が同じ起点 `lpLedgerFromBlock`
+    （coordinator が agent 起動直前のブロックを渡す。agent は最初の競技ブロックより前に取引できるため）から同じログを読むので
+    `interval_series_agreement` は 0 のまま。起点より前の保有は保有者列挙で seed する（上限 128・出所不明・自分で取得した
+    ものより後ろに並ぶので押し出せない）。評価時は `ownerOf` で chain と突き合わせ、ずれた建玉は評価せず `read-failed`。
+    練習期間は `LiveScorerSnapshot.lpOwnership` で持ち越し、それの無い旧 checkpoint は再起動後最初の同期ブロックで seed
+    し直す。runtime の観測もプロセス内に同じ台帳を持ち、`protocols.uniswap.positions` は採点と同じ集合（最大 128 件）、
+    載らない NFT の数は `unlistedPositionCount`（ログが読めないブロックだけ上限付き列挙に落ちる）。coordinator の
+    終了時 `netPnlUsdc` も採点の台帳を使う。**既知の限界**: agent が送った tx の中で起きた受け取り（相手のコントラクトの
+    callback が mint する等）は本人の行為として数える／第 2 EOA・自作コントラクトから mint した建玉は received 扱い／
+    期間途中で再起動した自己ホスト runtime の観測台帳は列挙から seed し直す（採点側は連続）
   - **エポック順序は抽選 seed から導出**（`npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k 60`。`core/src/competition/schedule.ts` = SHA-256 カウンタ + 棄却法 + Fisher-Yates、レジームはエポックごとに独立・一様（issue #186）。`--starts-at <ISO> --every-minutes <N>`（または `--ends-at <ISO>` で窓に均等配置）で各エポックに `startsAt` を付けると matrix.json の `schedule` 経由で dashboard が「次のエポック開始予定」を出し、`backtest --follow-schedule` がその時刻を待って各エポックを始める。コミットメントには入らない）。`npm run competition -- commit <file>` が正規化 JSON の sha256 を出す（非公開 seed は 9/23 前、抽選 seed は 11/30 に公表。原本は結果発表後）。形は `config/competition/*.example.yaml`
   - **ライブ週の編成は [ADR 0026](docs/adr/0026-live-week-schedule.md)（Proposed）**: k = 60（レジームはエポックごとに i.i.d. 一様に引く = issue #186。平均 5 回 ± 2.1、どれかが 0 回になる確率 6.4%）・1 エポック 360 ブロック・ガス用 ETH 3（ベンチマークも同額。公式レジームの `funding.ethWei` は別変更）・168 時間に 168 分おきで均等配置し `--follow-schedule` の 1 プロセスで走らせる。**60 エポックはブロック時間で 12 時間 = 週の 7%**。週を埋めるなら「360 ブロックのままエポックを増やす（非公開 seed の追加 commit が要る）」が推奨で、エポックを伸ばすのは全 12 レジームの再較正になる（ADR の §5）
   - **公式レジーム（12 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）/ `spike`（crash の鏡像 = 上方向のギャップ + 同じ窓の引き抜き。バスケットを持っているだけの側が報われる唯一のレジーム。issue #105）/ `depeg-persist`（`depeg` の `persist: true` 版。ディスカウントが最終採点ブロックまで戻らず、買い戻しは teardown。「戻ると信じて持つ」が構造で勝てない唯一のレジーム。issue #106）/ `cdp-incident`（Liquity victim = ICR 1.20 の Trove 2 本 + 12〜16% 暴落 + 同じ窓の `eusdDepeg` と引き抜き。清算・償還・借り手防御の 3 skill。issue #107。victim は `core/src/liquityVictims.ts`、`stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei`、`stress_liquity_*` イベント）/ `launch`（run 途中に 2〜3 の新トークンが環境の Uniswap V3 factory 経由で USDC の薄いプールに上場し、トークンごとに需要の波が来るか dud かをシードが決める。鐘の時点の保有は 0 = ADR 0022 公理 2。issue #29。下の「新規トークンの上場」節）。**Liquity の 14 日 bootstrap 期間**: deployer は deploy 時に warp するが、state dump を新しい anvil に `--load-state` すると時計が実時間に戻って期間内に逆戻りし、**全 backtest run で `liquityRedeem` が revert していた**（実測: redemption-arb が 8 ブロック連続で redeem を決めて全部 `Redemptions are not allowed during bootstrap phase`）。`setupLiquity` が期間内なら `evm_increaseTime` で飛ばす（`liquity_bootstrap_warped`）。**抽選はエポックごとにレジームを独立・一様に引く**（`schedule.ts`、issue #186。以前は各レジーム k/R 回をシャッフルしていたが、それだと状態を引き継ぐ agent が既出レジームを数えて残りを推測できた）。非公開セットは**各レジーム k 本以上**の seed が要る（全エポックが同じレジームを引きうる）。**乱数ストリームはレジーム名でも分かれる**（`run.regime` → `setScenarioRegime`、flow bot へは `ERIS_SCENARIO_REGIME`。issue #186。以前は同じ seed の calm と crash が同じ価格ショック・フローを引いていた。backtest が自動で書く。agent には渡さない）

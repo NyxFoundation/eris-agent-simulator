@@ -2973,6 +2973,15 @@ export async function runRealtimeSimulation(
     const agentStateRoot = agentStateRootFromEnv();
     // Before the first spawn: the readiness wait counts only log lines from these processes.
     const agentsSpawningAt = Date.now();
+    // The first block an agent this coordinator launches can act in. The LP ownership ledger reads
+    // NPM Transfer logs from here (sdk protocols/uniswapLpOwnership.ts): an agent trades before the
+    // epoch's first block (issue #207), and a position it -- or anyone else -- put in its hands then
+    // has to be told apart by its transaction's sender like any other. What is held before this block
+    // (an external participant, funded at setup) is seeded from the holder enumeration. A resumed
+    // period's ledger comes from its checkpoint instead.
+    const agentsFromBlock = cp
+      ? cp.runStartBlock
+      : Number(await publicClient.getBlockNumber({ cacheTime: 0 })) + 1;
     for (const agent of agentRuntimes) {
       // An agent whose process had already ended before the restart stays ended (rules §2.3: a
       // process that exited is not started again); the coordinator's own death is not such an exit.
@@ -3945,6 +3954,9 @@ export async function runRealtimeSimulation(
       // ADR 0011: under economicGas block B's history carries the prices written for B+1, so B is
       // read once it is history, never while it is the head (liveScoring.ts).
       readLagBlocks: config.economicGas ? 1 : 0,
+      // Which LP positions are an agent's own is read from the block the agents could first act
+      // in, before the epoch's first block (sdk protocols/uniswapLpOwnership.ts).
+      lpLedgerFromBlock: agentsFromBlock,
     });
     // A resumed period's series so far: the boundary lines every segment of it appended, cut to the
     // checkpoint, and the scorer's bookkeeping from the checkpoint.
@@ -5790,6 +5802,8 @@ export async function runRealtimeSimulation(
           markMedianBlocks: config.markMedianBlocks,
           ...(marketRegistry ? { marketRegistry: marketRegistry.address } : {}),
           v0Rule: v0RuleFor(config.resetUnit),
+          // The live scorer's: the two LP ownership ledgers read the same logs from the same block.
+          lpLedgerFromBlock: agentsFromBlock,
         });
         valueSeries = meta;
         alphaByAgent = meta.alphaByAgent;
@@ -6118,6 +6132,10 @@ export async function runRealtimeSimulation(
     }
     const rosterTransfersByAgent = rosterScan?.byAgent ?? {};
 
+    // The end-of-run value (netPnlUsdc) counts the LP positions the score counted: the scoring
+    // ledger's, not a holder enumeration another address could have filled (uniswapLpOwnership.ts).
+    const lpOwnership = liveScorer.uniswapLpOwnership;
+    if (lpOwnership) ctx.uniswapLpOwnership = lpOwnership;
     const agentsSummary = [];
     for (const agent of agentRuntimes) {
       const initialValue = valueUsdc(

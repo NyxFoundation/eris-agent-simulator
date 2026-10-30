@@ -6,6 +6,10 @@ import type { StablePrices } from "../stables.js";
 import type { UnpricedAmount } from "../valuation.js";
 import type { GmxInsolvencyLedger } from "./gmxInsolvency.js";
 import type {
+  LpOwnershipLedger,
+  LpOwnershipTracker,
+} from "./uniswapLpOwnership.js";
+import type {
   AgentObservation,
   BalanceSnapshot,
   BundleActionItem,
@@ -82,6 +86,15 @@ export interface SimContext {
   //   lending         the permissionless lending singleton agents open markets in.
   marketRegistry?: Address;
   lending?: Address;
+  // Which Uniswap V3 positions are each agent's own (protocols/uniswapLpOwnership.ts), for the
+  // adapter's live reads (observe / valueUsdc). The coordinator hands in its scoring ledger so the
+  // end-of-run value counts the same positions the score did; the agent runtime (read.ts) one it
+  // keeps for the process. Absent, the adapter keeps one per client object, which only lasts as long
+  // as a caller keeps using the same client.
+  uniswapLpOwnership?: LpOwnershipTracker;
+  // The block an observation is read at (the runtime pins every read of it there: pinnedClient.ts),
+  // so the LP ownership ledger answers for the same block. Absent: the chain's head.
+  observationBlock?: number;
   // Flow wallet per protocol/kind
   flowWallet(protocol: ProtocolId, kind: FlowKind): FlowWallet;
   // Look up a flow wallet by an arbitrary key (e.g. "aave:actor0" of the aave borrower pool; throws if unregistered).
@@ -152,6 +165,12 @@ export type ValuationContext = {
   // PnL of its opposite-side positions in the same market (cross-margin per account). Absent = no
   // charge, which is what a caller that does not track the logs gets.
   gmxInsolvency?: GmxInsolvencyLedger;
+  // Which Uniswap V3 position NFTs each agent obtained itself (protocols/uniswapLpOwnership.ts),
+  // already fed every NPM Transfer up to blockNumber. Given, the Uniswap adapter values exactly
+  // those (at most LP_POSITIONS_LIMIT per agent) and reports the rest of what the agent holds as
+  // received. Absent, it falls back to the holder enumeration -- which another address can crowd,
+  // so every scoring path (liveScoring.ts, reconstruct.ts) passes it.
+  uniswapLp?: LpOwnershipLedger;
 };
 
 // A holding the adapter could not fold into its value, either because it cannot be priced (#41) or

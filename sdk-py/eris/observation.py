@@ -312,6 +312,7 @@ class UniswapObservation(BaseModel):
     stale: StaleMark | None = None
     pool: Pool
     positions: list[LpPositionObservation]
+    unlisted_position_count: float | None = Field(None, alias='unlistedPositionCount')
     markets: dict[str, UniswapMarketObservation] | None = None
 
 

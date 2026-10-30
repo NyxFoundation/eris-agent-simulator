@@ -507,7 +507,13 @@ export type UniswapObservation = {
     tickSpacing: number;
     liquidity?: string;
   };
+  // The position NFTs the agent obtained itself (a mint or transfer in a transaction it sent), at
+  // most LP_POSITIONS_LIMIT -- exactly the set its score values (protocols/uniswapLpOwnership.ts).
   positions: LpPositionObservation[];
+  // Position NFTs the agent holds that are not in `positions`, when there are any: ones another
+  // address minted or sent to it (never valued, and they cannot crowd its own out), or its own past
+  // LP_POSITIONS_LIMIT.
+  unlistedPositionCount?: number;
   // ADR 0013: non-WETH markets (WBTC/USDC etc.). The WETH market stays on pool/positions.
   markets?: Record<string, UniswapMarketObservation>;
 };

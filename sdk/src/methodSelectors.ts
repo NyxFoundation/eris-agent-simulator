@@ -68,6 +68,7 @@ export const METHOD_SELECTORS: Record<string, string> = {
   "0x5e0d443f": "get_dy",
   "0x5f788d65": "provideToSP",
   "0x617ba037": "supply",
+  "0x6352211e": "ownerOf",
   "0x653d46e7": "liquidateTroves",
   "0x66ca4a21": "getBorrowingRateWithDecay",
   "0x67df02ca": "get_dx",

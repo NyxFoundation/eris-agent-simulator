@@ -13,6 +13,7 @@ import { baseTokens, tokenInfo } from "@eris/sdk/markets.js";
 import { observationFor } from "@eris/sdk/observation.js";
 import { PoolDiscovery } from "@eris/sdk/discoveredPools.js";
 import { readFairPrice, readFairPriceFor } from "@eris/sdk/priceFeed.js";
+import { LpOwnershipTracker } from "@eris/sdk/protocols/uniswapLpOwnership.js";
 import { readRunStart } from "@eris/sdk/runStart.js";
 import { type EpochOrdinal, epochOrdinalFromEnv } from "@eris/sdk/epoch.js";
 import {
@@ -185,6 +186,16 @@ export class Reader {
           ),
         )
       : undefined;
+    // Which Uniswap V3 positions are this agent's own: the ones it obtained in a transaction it sent
+    // (sdk protocols/uniswapLpOwnership.ts). Listed in the observation exactly as the scorer values
+    // them, and read at most LP_POSITIONS_LIMIT a block, however many NFTs other addresses send here.
+    // One for the process, on the shared ctx so the account value (accountValue.ts) reads the same
+    // set; it begins at the first observed block, seeded from what the agent holds there.
+    if (this.enabledIds.includes("uniswap") && !this.ctx.uniswapLpOwnership)
+      this.ctx.uniswapLpOwnership = new LpOwnershipTracker({
+        publicClient: this.ctx.publicClient,
+        accounts: [opts.address],
+      });
     const factory = process.env.ERIS_VULN_FACTORY;
     this.discovery = factory
       ? new PoolDiscovery(
@@ -221,7 +232,7 @@ export class Reader {
       });
     }
     this.ctx.fairPrices = fairPrices;
-    const ctx: SimContext = { ...this.ctx, publicClient };
+    const ctx: SimContext = { ...this.ctx, publicClient, observationBlock: bn };
     // Issue #40: the registry read is several round trips (the entry list, every entry's current
     // codehash, the oracle owners, the block's transfers) and the block is two seconds long, so it
     // is issued alongside the venue reads rather than after them.
@@ -259,6 +270,8 @@ export class Reader {
       this.enabledIds,
       registry,
     );
+    // The LP ownership ledger only has to answer for this block and later ones from here on.
+    this.ctx.uniswapLpOwnership?.ledger.prune(bn - 1);
     this.firstBlock ??= bn;
     this.firstSeenAtMs ??= Date.now();
     if (this.period) this.observeSelfHostedClock(observation, bn);

@@ -38,7 +38,7 @@ LP トークンは**プールの準備金に対する比例持分**で値付け�
 
 ### 値付けから外れた保有の報告
 
-`ScoringExclusionReason` は 4 種（`valuation.ts:42`）。
+`ScoringExclusionReason` は 6 種（`sdk/src/valuation.ts`）。
 
 | reason | 意味 | 値に含まれるか |
 |---|---|---|
@@ -46,8 +46,10 @@ LP トークンは**プールの準備金に対する比例持分**で値付け�
 | `read-failed` | 読み取りに失敗したので保有が**不明**（0 ではない） | 含まない |
 | `unrealizable` | 値付けはできるが run 終了までに換金できない（LST のキュー） | 含まない |
 | `par-fallback` | 市場が quote を返さなかったので **$1 として計上した** | **含む** |
+| `mid-fallback` | 自分サイズの quote が返らなかったので probe の mid で計上した | **含む** |
+| `received` | 他人の tx で mint・送付された Uniswap V3 の LP NFT（`uniswap-lp-received`。`uniswapLpOwnership.ts`） | 含まない |
 
-4 種すべてを `summary.json` の `valueSeries.unpricedHoldings` に報告する。**`summary.json` の 0 が取引損失と誤読されてはならず、1 ドルもまた同じ。**
+すべてを `summary.json` の `valueSeries.unpricedHoldings` に報告する。**`summary.json` の 0 が取引損失と誤読されてはならず、1 ドルもまた同じ。**
 
 ### 未申告トークンの検出
 
