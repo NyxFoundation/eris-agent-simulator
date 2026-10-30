@@ -271,7 +271,9 @@ const createOrderParamsComponents = [
   { name: "dataList", type: "bytes32[]" },
 ] as const;
 
-const exchangeRouterAbi = [
+// Exported for the runtime's raw-calldata guard tests (example/agents/runtime/rawTxGuard.ts): the
+// guard's createOrder shape has to match the one the adapter encodes.
+export const exchangeRouterAbi = [
   {
     type: "function",
     name: "multicall",

@@ -427,7 +427,9 @@ async function main(): Promise<void> {
         action,
         rawTxAllowlist({
           observation,
-          runContracts: [priceFeed, marketRegistry, lending],
+          runContracts: { priceFeed, marketRegistry, lending },
+          // Every recipient a revised strategy names must be this address.
+          self: address,
         }),
       );
       return verdict.ok
