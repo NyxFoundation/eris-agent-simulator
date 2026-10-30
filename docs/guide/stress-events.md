@@ -194,6 +194,24 @@ factory — so they surface through the [agent-created-market registry](../adr/0
 one block later as a `uniswapV3Pool` plus an `erc20` entry, `creator` = the launch wallet.
 `agentMarkets.enabled: true` is required; the coordinator refuses the event without it.
 
+Each listing is **one transaction** to the environment's `TokenLauncher` (`contracts/TokenLauncher.sol`),
+sent by the launch wallet: it deploys the token with CREATE2 under a salt only the environment knows,
+refuses if a pool for that token already exists, creates and initializes the pool, and seeds the full
+range with non-zero minimums, all before anyone else can act. The position NFT goes to the launch
+wallet. The launcher is deployed (and the launch wallets approve it) at setup in every run that has
+the registry and Uniswap, so its presence says nothing about the regime. Until 2026-10 the listing was
+five transactions whose token address followed from the launch wallet's public nonce, and the Uniswap
+factory does not check that a token has code: anyone could create and initialize the future token's
+pool at a price of their choosing, so the environment's mint went in at that price and the wave bought
+from them. The token's `erc20` entry now comes from the launcher's `Launched` event and is
+**`verified: true`** (the token was deployed inside environment code; a top-level CREATE is always
+published unverified, an internal CREATE not at all).
+
+The wave stops buying when the pool prices the token above **10× the listing price**
+(`WAVE_PRICE_CAP_MULT`, `stress_token_launch_wave_capped`). The largest official wave on its own takes
+a full-range pool to 4×, so the cap binds only once the field has bought ahead of it by more than about
+1.16× the pool's seeded USDC.
+
 Then, **per token and independently**, a demand wave: a dedicated wave wallet buys the token with
 `waveUsdcMult × liquidityUsdc` of USDC over the ramp, holds, and sells `sellBackFrac` of what it
 bought back during the decay. With probability `dudProb` the wave is zero — a dud — and the draw is a
@@ -217,14 +235,13 @@ consecutive blocks of net buying.
 A launch pool is one that *looks like the environment's listing*, not any USDC pool the registry
 shows (issue #216). Anyone can list a token of their own, and the registry publishes it the same way;
 the two reference agents are frozen in `full-field.yaml`, so a pool set up for them to buy would move
-the field's mean and spread through their losses. Nothing in the observation names the launch wallets
-(they come from the hidden seed), so `launchPools` filters on the listing's shape: the token has its own
-`erc20` entry, the pool's creator deployed it, its code has not moved since registration, and — when the
-agent can compute it from the repository's `AgentERC20` artifact (`launchTokenCodehash`, one deployless
-`eth_call`) — its code *is* the environment's fixed-supply, owner-less token. A participant who deploys
-that same bytecode from the key that creates the pool passes, and that is accepted: such a token is the
-same kind of thing as a launch, with the same one risk (its price). What stays out is every token with
-other code and every pool whose creator did not deploy the token.
+the field's mean and spread through their losses. Nothing in the observation names the launch wallets,
+so `launchPools` keys on the token's own `erc20` entry being **verified** — which only a launcher listing
+produces — and keeps the older shape checks underneath: the pool's creator is the token entry's creator,
+the code has not moved since registration, and, when the agent can compute it from the repository's
+`AgentERC20` artifact (`launchTokenCodehash`, one deployless `eth_call`; CREATE2 stores the same runtime
+code), it *is* the environment's fixed-supply, owner-less token. Before the launcher, a participant who
+deployed that same bytecode from the key that created the pool passed; now no participant listing does.
 
 No teardown: the pools stay for the scenario snapshot to revert, and the environment's leftovers
 sit in flow wallets nobody scores. `stress_token_launch_summary` closes the books per token (gross

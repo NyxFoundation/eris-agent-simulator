@@ -311,6 +311,8 @@ import {
   stepTokenLaunch,
   summarizeTokenLaunch,
   launchWalletFunding,
+  grantLauncherApprovals,
+  tokenLauncherEnabled,
   type TokenLaunchRuntime,
 } from "./tokenLaunch.js";
 import { grantDeployerStandingApprovals } from "./standingApprovals.js";
@@ -2162,13 +2164,33 @@ export async function runRealtimeSimulation(
       // regime (none includes `lending`) as a venue the rules do not list, callable, labelled
       // `verified` by the registry, and worth nothing at the bell (ADR 0022) -- which the scope
       // list could only describe, not resolve (ascon-web#18, 2026-10-05).
+      // The token launcher (issue #29) goes up with the registry in every run that has a Uniswap
+      // venue, callable only by the launch wallet slots -- which every run has -- so its presence
+      // and its approvals are the same in every official regime.
+      const launchWalletsForLauncher = tokenLauncherEnabled({
+        agentMarkets: config.agentMarkets,
+        uniswapEnabled: enabledIds.includes("uniswap"),
+      })
+        ? launchSlots.map((e) => {
+            const w = flowWalletMap.get(e.launchKey);
+            if (!w) throw new Error(`token launch wallet missing: ${e.launchKey}`);
+            return w;
+          })
+        : [];
       marketRegistry = await deployAgentMarketVenues(
         ctx,
         registrarPk,
         config.agentMarketsPerBlockCap,
         logger,
         enabledIds.includes("lending"),
+        launchWalletsForLauncher.map((w) => w.address),
       );
+      if (marketRegistry.tokenLauncher)
+        await grantLauncherApprovals(
+          ctx,
+          marketRegistry.tokenLauncher,
+          launchWalletsForLauncher.map((w) => w.privateKey),
+        );
       ctx.marketRegistry = marketRegistry.address;
       if (marketRegistry.lending) ctx.lending = marketRegistry.lending;
       // The scorer's valuation context has no SimContext, so the singleton reaches it here.
@@ -2191,6 +2213,7 @@ export async function runRealtimeSimulation(
         priceFeedAddress as string,
         marketRegistry?.address as string | undefined,
         marketRegistry?.lending as string | undefined,
+        marketRegistry?.tokenLauncher as string | undefined,
         FLASH_ARB_ADDRESS as string,
       ]
         .filter((a): a is string => typeof a === "string")
@@ -2772,6 +2795,8 @@ export async function runRealtimeSimulation(
             if (!w) throw new Error(`token launch wallet missing: ${key}`);
             return { address: w.address, privateKey: w.privateKey };
           },
+          tokenLauncher: marketRegistry?.tokenLauncher,
+          seed: config.seed,
         },
         logger,
       );

@@ -1,8 +1,9 @@
 // New tokens listing mid-run, and the demand that gives a listing a value (issue #29).
 //
 // At the window's start the environment lists each token of the event through its own Uniswap V3
-// factory -- deploy, approve, create-and-initialize at 1.00 USDC, seed a full-range position -- so
-// it surfaces through the #40 registry like any agent-made market. Then, per token, a *wave wallet*
+// factory -- deploy, create and initialize at 1.00 USDC, seed a full-range position, all in one call
+// to the environment's TokenLauncher (contracts/TokenLauncher.sol) -- so it surfaces through the #40
+// registry like any agent-made market. Then, per token, a *wave wallet*
 // buys the token with USDC over the ramp, holds, and sells a seeded fraction back during the decay.
 // A dud sends nothing. Holdings at the bell are worth zero (ADR 0022 axiom 2), so the whole regime
 // is: buy before the wave, sell before the sell-back, and pick a token that gets a wave.
@@ -21,22 +22,35 @@
 // Keys: every launch has its own launch wallet and its own wave wallet, both derived from the seed
 // the way the flow wallets are. No two senders share a key, so the driver never races the oracle,
 // the registrar or the deployer on a nonce.
+//
+// *One transaction, under a secret address.* The listing used to be five transactions from the launch
+// wallet, the first a CREATE whose address follows from the wallet and its nonce -- both public from
+// block 0, and the nonce does not move until the window. The Uniswap factory does not check that a
+// token has code, so anyone could create and initialize the future token's pool at a price of their
+// choosing; `createAndInitializePoolIfNecessary` then skipped the initialize and the zero-minimum mint
+// went in at that price (measured on anvil: the whole supply against 0.000001 USDC, bought back for
+// 1 USDC and sold to the wave for ~37k). Now the launcher deploys the token with CREATE2 under a salt
+// derived from the environment's wallet secret (launchSalt), refuses if the pool already exists, and
+// creates, initializes and mints in the same transaction, with non-zero minimums.
 import {
+  decodeEventLog,
   encodeDeployData,
   encodeFunctionData,
   getContractAddress,
   maxUint256,
+  parseAbi,
   type Address,
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   erc20Abi,
-  nonfungiblePositionManagerAbi,
+  poolAbi,
   quoterV2Abi,
   swapRouterAbi,
   uniswapV3FactoryAbi,
 } from "@eris/sdk/abis.js";
+import { sendBatch } from "@eris/sdk/chain.js";
 import { TOKENS, UNISWAP } from "@eris/sdk/constants.js";
 import { readForgeArtifact } from "@eris/sdk/forge.js";
 import {
@@ -45,6 +59,8 @@ import {
 } from "@eris/sdk/protocols/uniswap.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
+import { environmentKey } from "../walletKeys.js";
+import { requireStandingApprovals } from "./standingApprovals.js";
 import {
   FLAT_FEE_MEDIAN_WEI,
   LAUNCH_WAVE_SLIPPAGE_BPS,
@@ -64,19 +80,38 @@ import type {
 // a thin new market is a different kind of venue from the deep one, and a wider fee is what a
 // launch pool on a real chain charges. Tick spacing 60, so the full range is ±887220.
 export const LAUNCH_POOL_FEE = 3000;
-const LAUNCH_TICK_LOWER = -887220;
-const LAUNCH_TICK_UPPER = 887220;
-const LAUNCH_TOKEN_DECIMALS = 18;
+export const LAUNCH_TICK_LOWER = -887220;
+export const LAUNCH_TICK_UPPER = 887220;
+export const LAUNCH_TOKEN_DECIMALS = 18;
+
+// What the coordinator checks the TokenLauncher artifact declares before deploying it.
+export const TOKEN_LAUNCHER_REQUIRED_FUNCTIONS = ["launch", "isCaller"];
+
+export const tokenLauncherEventAbi = parseAbi([
+  "event Launched(address indexed caller, address indexed token, address indexed pool, uint256 tokenId, uint256 tokenSupply, uint256 usdcDeposited, uint256 tokenDeposited, uint128 liquidity)",
+]);
+
+// The wave stops buying once the pool prices the token above this multiple of its 1.00 USDC listing.
+//
+// The honest path never gets near it. The pool is a full-range position, so its price is
+// (USDC in the pool / USDC seeded)^2; the largest wave config/regimes/launch.yaml can draw is 1.0x the
+// seeded USDC, which on its own ends at 4x, and one block of the ramp moves the price ~+10%. 10x
+// leaves the field room to buy a further ~1.16x of the pool's depth ahead of the wave before the cap
+// binds. What it bounds is the other case: a pool somebody has bought out (or priced) so far that the
+// wave would be paying for nothing -- the exploit this file was rewritten for paid 37,500 USDC for
+// 6.5e-14 tokens. A demand that stops at some price is also simply what demand is.
+export const WAVE_PRICE_CAP_MULT = 10;
+// The listing price, USDC per whole token.
+export const LAUNCH_LISTING_PRICE_USDC = 1;
 const DEADLINE_FAR_FUTURE = BigInt(2 ** 32 - 1);
 
 // Gas is pinned on every transaction the driver sends: the listing batch lands in one block and
 // each transaction depends on the one before it (the approve targets a token that does not exist
 // yet when it is signed), so `eth_estimateGas` would fail against the current state rather than
 // the state the transaction will actually run in.
-const GAS_DEPLOY = 1_500_000n;
+// The launcher call: CREATE2 of the token (~0.7M), createPool (~4.6M), initialize and the mint.
+const GAS_LAUNCH = 9_000_000n;
 const GAS_APPROVE = 120_000n;
-const GAS_CREATE_POOL = 6_000_000n;
-const GAS_MINT = 1_200_000n;
 const GAS_SWAP = 700_000n;
 
 // The environment is moving the price on purpose; the bound is only against a pathological fill.
@@ -147,6 +182,9 @@ export type TokenLaunchState = {
   heldAtDecayStart?: bigint;
   pending: Pending | null;
   approved: { usdc: boolean; token: boolean };
+  // Whether the wave is currently refusing to buy above WAVE_PRICE_CAP_MULT, and for how many blocks.
+  waveCapped: boolean;
+  waveCappedBlocks: number;
   // Measured totals, from settled transactions.
   grossBuyUsdc: bigint;
   tokensSold: bigint;
@@ -158,7 +196,88 @@ export type TokenLaunchRuntime = {
   launches: TokenLaunchState[];
   usdc: Address;
   factory: Address;
+  launcher: Address;
+  seed: number;
 };
+
+/**
+ * The CREATE2 salt of a listing. From the environment's wallet secret (walletKeys.ts), not the scenario
+ * key: the scenario key is public for the public scenario set and published after the results, and a
+ * salt anyone can compute is a token address anyone can pre-create a pool for. The launcher refuses a
+ * pre-created pool, so a known salt would cost a griefed listing rather than the wave's USDC -- but
+ * the attempt number is in the salt too, so even a retry lands somewhere nobody could predict.
+ * Never passed to an agent.
+ */
+export function launchSalt(
+  seed: number,
+  eventIndex: number,
+  index: number,
+  attempt: number,
+): Hex {
+  return environmentKey("launch-salt", `${seed}:${eventIndex}:${index}:${attempt}`);
+}
+
+/** The launch token's constructor arguments, shared by the CREATE2 prediction and the call. */
+export function launchTokenArgs(state: {
+  eventIndex: number;
+  index: number;
+  symbol: string;
+  tokenSupplyWei: bigint;
+}): readonly [string, string, number, bigint] {
+  return [
+    `Launch Token ${state.eventIndex}-${state.index}`,
+    state.symbol,
+    LAUNCH_TOKEN_DECIMALS,
+    state.tokenSupplyWei,
+  ];
+}
+
+/** Where the launcher's CREATE2 puts the token. */
+export function predictLaunchToken(
+  launcher: Address,
+  salt: Hex,
+  initCode: Hex,
+): Address {
+  return getContractAddress({ opcode: "CREATE2", from: launcher, salt, bytecode: initCode });
+}
+
+/** USDC per whole launch token at a pool's sqrtPriceX96. */
+export function launchPriceUsdcPerToken(
+  sqrtPriceX96: bigint,
+  tokenIsToken0: boolean,
+): number {
+  // token1 per token0 in raw units, then to human units by the decimals gap.
+  const raw = (Number(sqrtPriceX96) / 2 ** 96) ** 2;
+  const gap = LAUNCH_TOKEN_DECIMALS - TOKENS.USDC.decimals;
+  return tokenIsToken0 ? raw * 10 ** gap : 1 / (raw * 10 ** -gap);
+}
+
+/** True when the wave should refuse to buy at this price. */
+export function waveBuyCapped(priceUsdcPerToken: number): boolean {
+  return !(priceUsdcPerToken <= WAVE_PRICE_CAP_MULT * LAUNCH_LISTING_PRICE_USDC);
+}
+
+/** Whether this run deploys the token launcher: wherever there is a registry and a Uniswap venue.
+ *  A function of the deployment, not of the schedule -- a launcher only in `launch` would name it. */
+export function tokenLauncherEnabled(opts: {
+  agentMarkets: boolean;
+  uniswapEnabled: boolean;
+}): boolean {
+  return opts.agentMarkets && opts.uniswapEnabled;
+}
+
+/// Every launch wallet slot approves the launcher for USDC, in every run that has one. The launcher
+/// pulls only from its caller and only the launch wallets can call it.
+export async function grantLauncherApprovals(
+  ctx: SimContext,
+  launcher: Address,
+  launchWalletKeys: Hex[],
+): Promise<void> {
+  for (const pk of launchWalletKeys)
+    await sendBatch(ctx.publicClient, ctx.walletClient, ctx.chain, pk, [
+      { to: TOKENS.USDC.address, data: approveData(launcher, maxUint256) },
+    ]);
+}
 
 // USDC units per whole dollar.
 const USDC_UNIT = 10n ** BigInt(TOKENS.USDC.decimals);
@@ -265,6 +384,9 @@ export async function setupTokenLaunch(
     agentMarkets: boolean;
     uniswapEnabled: boolean;
     walletByKey: (key: string) => LaunchWallet;
+    // The TokenLauncher the registry setup deployed (MarketRegistryRuntime.tokenLauncher).
+    tokenLauncher: Address | undefined;
+    seed: number;
   },
   logger: RunLogger,
 ): Promise<TokenLaunchRuntime> {
@@ -290,8 +412,14 @@ export async function setupTokenLaunch(
       "stress event tokenLaunch: the NonfungiblePositionManager at " +
         `${UNISWAP.nonfungiblePositionManager} does not answer factory(); is uniswap deployed?`,
     );
-  // The artifact is read once here so a missing build fails at setup, not on the window's block.
+  if (!opts.tokenLauncher)
+    throw new Error(
+      "stress event tokenLaunch: no TokenLauncher was deployed (it goes up with the market registry " +
+        "wherever there is a Uniswap factory). Is `npm run build:contracts` current?",
+    );
+  // The artifacts are read once here so a missing build fails at setup, not on the window's block.
   readForgeArtifact("AgentERC20");
+  readForgeArtifact("TokenLauncher");
   const launches: TokenLaunchState[] = schedule
     .tokenLaunches()
     .map(({ eventIndex, event, launch }, slot) => {
@@ -313,16 +441,28 @@ export async function setupTokenLaunch(
         listAttempts: 0,
         pending: null,
         approved: { usdc: false, token: false },
+        waveCapped: false,
+        waveCappedBlocks: 0,
         grossBuyUsdc: 0n,
         tokensSold: 0n,
         sellUsdcReceived: 0n,
         closedReported: false,
       };
     });
+  // The approval is granted at setup in every run (grantLauncherApprovals); staging only checks it.
+  for (const l of launches)
+    await requireStandingApprovals(
+      ctx,
+      l.launchWallet.address,
+      [{ token: TOKENS.USDC.address, spender: opts.tokenLauncher }],
+      "tokenLaunch",
+    );
   logger.event({
     type: "stress_token_launch_setup",
     factory,
+    launcher: opts.tokenLauncher,
     fee: LAUNCH_POOL_FEE,
+    waveCapMult: WAVE_PRICE_CAP_MULT,
     launches: launches.map((l) => ({
       eventIndex: l.eventIndex,
       index: l.index,
@@ -334,7 +474,13 @@ export async function setupTokenLaunch(
       endBlock: l.event.endBlock,
     })),
   });
-  return { launches, usdc: TOKENS.USDC.address, factory };
+  return {
+    launches,
+    usdc: TOKENS.USDC.address,
+    factory,
+    launcher: opts.tokenLauncher,
+    seed: opts.seed,
+  };
 }
 
 export type TokenLaunchSent = {
@@ -406,6 +552,27 @@ export async function stepTokenLaunch(
       const minDelta = (state.waveUsdcUnits * MIN_DELTA_BPS) / 10_000n;
       if (buyDelta > 0n && buyDelta >= minDelta) {
         const amountIn = buyDelta > usdcNow ? usdcNow : buyDelta;
+        const price = await poolPrice(ctx, runtime, state);
+        if (amountIn > 0n && waveBuyCapped(price)) {
+          state.waveCappedBlocks++;
+          if (!state.waveCapped) {
+            state.waveCapped = true;
+            logger.event({
+              type: "stress_token_launch_wave_capped",
+              eventIndex: state.eventIndex,
+              index: state.index,
+              symbol: state.symbol,
+              blockIndex,
+              blockNumber,
+              pool: state.pool,
+              priceUsdcPerToken: price,
+              capUsdcPerToken: WAVE_PRICE_CAP_MULT * LAUNCH_LISTING_PRICE_USDC,
+              unboughtUsdcUnits: buyDelta.toString(),
+            });
+          }
+          continue;
+        }
+        state.waveCapped = false;
         if (amountIn > 0n) {
           await sendSwap(
             ctx,
@@ -493,6 +660,7 @@ export function summarizeTokenLaunch(
       dud: state.launch.dud,
       liquidityUsdc: state.launch.liquidityUsdc,
       waveUsdcUnits: state.waveUsdcUnits.toString(),
+      waveCappedBlocks: state.waveCappedBlocks,
       grossBuyUsdcUnits: state.grossBuyUsdc.toString(),
       tokensSoldWei: state.tokensSold.toString(),
       sellUsdcReceivedUnits: state.sellUsdcReceived.toString(),
@@ -544,8 +712,19 @@ async function advanceListing(
       state.listing = undefined;
       state.phase = "pending";
     } else if (status === "reverted") {
-      // Which transaction reverted is in the receipts; the last one is enough to say the listing
-      // did not happen, and the retry re-derives everything from a fresh nonce.
+      // The launcher reverts as a whole, so nothing was listed. The likeliest named cause is a pool
+      // somebody created first for the predicted address (PoolAlreadyExists) -- which needs the salt,
+      // so it should not happen; reported so it is visible if it does. The retry uses a new salt.
+      let preempted = false;
+      if (state.token) {
+        const existing = (await ctx.publicClient.readContract({
+          address: runtime.factory,
+          abi: uniswapV3FactoryAbi,
+          functionName: "getPool",
+          args: [state.token, runtime.usdc, LAUNCH_POOL_FEE],
+        })) as Address;
+        preempted = existing !== ZERO;
+      }
       logger.event({
         type: "stress_token_launch_failed",
         eventIndex: state.eventIndex,
@@ -555,17 +734,36 @@ async function advanceListing(
         blockNumber,
         attempt: state.listAttempts,
         hashes: state.listing.hashes,
-        error: "listing batch reverted",
+        token: state.token ?? null,
+        preempted,
+        error: preempted
+          ? "listing reverted: a pool for the predicted token address already existed"
+          : "listing reverted",
       });
+      state.token = undefined;
       state.listing = undefined;
       state.phase = state.listAttempts >= LIST_ATTEMPTS ? "failed" : "pending";
     } else {
-      const pool = (await ctx.publicClient.readContract({
-        address: runtime.factory,
-        abi: uniswapV3FactoryAbi,
-        functionName: "getPool",
-        args: [state.token as Address, runtime.usdc, LAUNCH_POOL_FEE],
-      })) as Address;
+      // The launcher's own event names what it made; the prediction is only what was signed.
+      const receipt = await ctx.publicClient.getTransactionReceipt({ hash: last });
+      let launched: { token: Address; pool: Address } | undefined;
+      for (const log of receipt.logs) {
+        if (log.address.toLowerCase() !== runtime.launcher.toLowerCase()) continue;
+        try {
+          const decoded = decodeEventLog({
+            abi: tokenLauncherEventAbi,
+            topics: log.topics,
+            data: log.data,
+          });
+          const args = decoded.args as { token: Address; pool: Address };
+          launched = { token: args.token, pool: args.pool };
+        } catch {
+          // not the Launched event
+        }
+      }
+      if (!launched) throw new Error("listing succeeded but the launcher emitted no Launched event");
+      state.token = launched.token;
+      const pool = launched.pool;
       state.pool = pool;
       state.phase = "live";
       state.listedAtBlock = blockNumber;
@@ -623,10 +821,9 @@ async function advanceListing(
   });
 }
 
-// Deploy, approve both sides to the position manager, create-and-initialize at 1.00 USDC, and
-// seed the full range -- five transactions from one key with consecutive nonces, so they land in
-// one block in order. The token's address is known before it exists (CREATE is a function of the
-// sender and the nonce), which is what lets the approve and the pool creation be signed now.
+// One call to the launcher: CREATE2 the token under this attempt's salt, refuse a pool that already
+// exists, create and initialize it at 1.00 USDC, and seed the full range from the launch wallet's
+// USDC. The position NFT and any rounding dust come back to the launch wallet.
 async function sendListingBatch(
   ctx: SimContext,
   runtime: TokenLaunchRuntime,
@@ -634,33 +831,19 @@ async function sendListingBatch(
   priorityFeeWei: bigint,
 ): Promise<Hex[]> {
   const account = privateKeyToAccount(state.launchWallet.privateKey);
-  const nonce = await ctx.publicClient.getTransactionCount({
-    address: account.address,
-    blockTag: "pending",
+  const salt = launchSalt(runtime.seed, state.eventIndex, state.index, state.listAttempts);
+  const tokenArtifact = readForgeArtifact("AgentERC20");
+  const args = launchTokenArgs(state);
+  const initCode = encodeDeployData({
+    abi: tokenArtifact.abi,
+    bytecode: tokenArtifact.bytecode,
+    args,
   });
-  const token = getContractAddress({
-    from: account.address,
-    nonce: BigInt(nonce),
-  });
+  const token = predictLaunchToken(runtime.launcher, salt, initCode);
   state.token = token;
-  const { abi, bytecode } = readForgeArtifact("AgentERC20");
-  const deployData = encodeDeployData({
-    abi,
-    bytecode,
-    args: [
-      `Launch Token ${state.eventIndex}-${state.index}`,
-      state.symbol,
-      LAUNCH_TOKEN_DECIMALS,
-      state.tokenSupplyWei,
-    ],
-  });
-  const [token0, token1] =
-    token.toLowerCase() < runtime.usdc.toLowerCase()
-      ? [token, runtime.usdc]
-      : [runtime.usdc, token];
-  const tokenIsToken0 = token0.toLowerCase() === token.toLowerCase();
+  const tokenIsToken0 = token.toLowerCase() < runtime.usdc.toLowerCase();
   const sqrtPriceX96 = sqrtPriceX96For({
-    humanPrice: 1,
+    humanPrice: LAUNCH_LISTING_PRICE_USDC,
     token0Decimals: tokenIsToken0
       ? LAUNCH_TOKEN_DECIMALS
       : TOKENS.USDC.decimals,
@@ -668,69 +851,41 @@ async function sendListingBatch(
       ? TOKENS.USDC.decimals
       : LAUNCH_TOKEN_DECIMALS,
   });
-  const npm = UNISWAP.nonfungiblePositionManager;
-  const txs: Array<{ to?: Address; data: Hex; gas: bigint }> = [
-    { data: deployData, gas: GAS_DEPLOY },
-    { to: token, data: approveData(npm, maxUint256), gas: GAS_APPROVE },
-    { to: runtime.usdc, data: approveData(npm, maxUint256), gas: GAS_APPROVE },
-    {
-      to: npm,
-      data: encodeFunctionData({
-        abi: nonfungiblePositionManagerAbi,
-        functionName: "createAndInitializePoolIfNecessary",
-        args: [token0, token1, LAUNCH_POOL_FEE, sqrtPriceX96],
-      }),
-      gas: GAS_CREATE_POOL,
-    },
-    {
-      to: npm,
-      data: encodeFunctionData({
-        abi: nonfungiblePositionManagerAbi,
-        functionName: "mint",
-        args: [
-          {
-            token0,
-            token1,
-            fee: LAUNCH_POOL_FEE,
-            tickLower: LAUNCH_TICK_LOWER,
-            tickUpper: LAUNCH_TICK_UPPER,
-            amount0Desired: tokenIsToken0
-              ? state.tokenSupplyWei
-              : state.liquidityUsdcUnits,
-            amount1Desired: tokenIsToken0
-              ? state.liquidityUsdcUnits
-              : state.tokenSupplyWei,
-            // The pool did not exist a moment ago and nobody else holds the token, so there is no
-            // price to be moved away from before this lands.
-            amount0Min: 0n,
-            amount1Min: 0n,
-            recipient: account.address,
-            deadline: DEADLINE_FAR_FUTURE,
-          },
-        ],
-      }),
-      gas: GAS_MINT,
-    },
-  ];
+  const { abi } = readForgeArtifact("TokenLauncher");
+  const data = encodeFunctionData({
+    abi,
+    functionName: "launch",
+    args: [
+      {
+        salt,
+        name: args[0],
+        symbol: args[1],
+        decimals: args[2],
+        supply: args[3],
+        usdcAmount: state.liquidityUsdcUnits,
+        expectedToken: token,
+        sqrtPriceX96,
+      },
+    ],
+  });
+  const nonce = await ctx.publicClient.getTransactionCount({
+    address: account.address,
+    blockTag: "pending",
+  });
   const block = await ctx.publicClient.getBlock();
   const baseFee = block.baseFeePerGas ?? 0n;
-  const hashes: Hex[] = [];
-  let n = nonce;
-  for (const tx of txs) {
-    hashes.push(
-      await ctx.walletClient.sendTransaction({
-        account,
-        chain: ctx.chain,
-        ...(tx.to ? { to: tx.to } : {}),
-        data: tx.data,
-        gas: tx.gas,
-        nonce: n++,
-        maxFeePerGas: baseFee + priorityFeeWei,
-        maxPriorityFeePerGas: priorityFeeWei,
-      }),
-    );
-  }
-  return hashes;
+  const hash = await ctx.walletClient.sendTransaction({
+    account,
+    chain: ctx.chain,
+    to: runtime.launcher,
+    data,
+    // Pinned: the estimate would run against a state the transaction does not run in.
+    gas: GAS_LAUNCH,
+    nonce,
+    maxFeePerGas: baseFee + priorityFeeWei,
+    maxPriorityFeePerGas: priorityFeeWei,
+  });
+  return [hash];
 }
 
 // ---------------------------------------------------------------------------
@@ -994,6 +1149,23 @@ function reportClosed(
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+const ZERO = "0x0000000000000000000000000000000000000000" as Address;
+
+async function poolPrice(
+  ctx: SimContext,
+  runtime: TokenLaunchRuntime,
+  state: TokenLaunchState,
+): Promise<number> {
+  const slot0 = (await ctx.publicClient.readContract({
+    address: state.pool as Address,
+    abi: poolAbi,
+    functionName: "slot0",
+  })) as readonly [bigint, ...unknown[]];
+  const tokenIsToken0 =
+    (state.token as Address).toLowerCase() < runtime.usdc.toLowerCase();
+  return launchPriceUsdcPerToken(slot0[0], tokenIsToken0);
+}
 
 function approveData(spender: Address, amount: bigint): Hex {
   return encodeFunctionData({
