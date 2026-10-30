@@ -431,6 +431,22 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   （再現に要らない: ADR 0027 (c) が再現するのはシナリオと、アドレスで読む採点だけ）。agent の env には渡さない
   （`ERIS_WALLET_SECRET*` は環境専用）。`npm run manifest -- --participant` は AUTO の鍵を出すのにこのファイルが要り、
   無ければ拒否する（config だけの manifest では AUTO の `address` が欠落する）。`run_started_realtime.walletKeys` が出所を記録
+- **環境の全署名者の pending nonce はゲートウェイで封じる**（`RPC_PENDING_SEALED_SENDERS`。一覧は
+  `core/src/realtime/environmentWallets.ts` の `environmentSigners`）。ゲートウェイは nonce 割り当てのために
+  `eth_getTransactionCount(addr, "pending")` を通すので、環境の財布では「未採掘の環境 tx がある」が 1 ブロック先に見えた:
+  deployer は gap の窓で引き抜きを送る、informed flow 財布は次ブロックの fair が自 venue のプール価格から 30bps 超離れたときだけ
+  取引する（= 次の価格の位置）、launch の wave 財布は dud なら何も送らない、whale は print を名指す。以前は役割鍵 4 本だけを
+  封じていた（README は残りを「向きの無い瞬間」と書いていた）。今は役割鍵・全 flow 財布（venue ごとの informed / uninformed・
+  Aave actor・whale・launch / launch-wave の 3 スロット）・vuln-pools owner・両 victim・treasury を "latest" で答える。
+  anvil は pending を EIP-1898 のオブジェクト（`{"blockNumber":"pending"}`）でも、アドレスを `0x` 無し・20 バイトの配列でも読む
+  （1.7.1 で実測。どれも文字列照合の封印を素通りしていた）ので、オブジェクト内の pending も封じ、正規形（`0x` + 40 桁）でない
+  アドレスへの pending 問い合わせは誰のものでも latest で答える。coordinator は flow map（`deriveFlowWallets`）と nonce floor を同じ一覧から作り、自分に帰属させるアドレスが一覧に無ければ
+  起動時に落ちる。`test/environmentWallets.test.ts` が全 `environmentKey(` 呼び出しの kind を `ENVIRONMENT_KEY_KINDS` と照合し、
+  署名する kind が一覧の読まない場所で導出されたら落ちる。値は `npx tsx scripts/liveWeek.ts sealed-senders`（役割鍵は env →
+  `.env.local` で 4 本とも必須、財布の秘密は `--wallet-secret` か `ERIS_WALLET_SECRET_FILE` で必須）: ライブ週は `run-week.sh` が
+  公式 12 レジーム ∪ プランのレジームで計算し（34 本）、練習 devnet は `--config config/practice.yaml` の出力（30 本）を
+  `infra/monitoring/.env` の `ASCON_PENDING_SEALED_SENDERS` に書いて gateway を作り直す（役割鍵・財布の秘密・venue / actor 数が
+  変わったら作り直す）。環境自身は anvil に直結するので封じても困らない。agent の財布（AUTO 含む）と運用ツールのプローブは封じない
 - **ロスターは登録リストであって起動リストではない**。`external: true` + `address`（参加者が鍵を持つ。**運営が
   作った鍵は運営が持っている鍵**なのでこちらを推奨）/ `wallet`（運営が発行して渡す）。`command`/`args`/`dir`/`env`
   は**黙殺せず拒否**する（黙って落とすと「運営が動かしている」ように読めるロスターになる）。

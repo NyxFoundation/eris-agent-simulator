@@ -199,11 +199,15 @@ function defaultBlockTag(c) {
 // The exemption above answers for any address, so it also told everyone when the environment had
 // something unmined: the deployer sends the liquidity pull (and in cdp-incident the eUSD sale) in the
 // block a price gap opens, so its pending nonce jumping 3 or 4 named the moment -- and for
-// cdp-incident the direction -- one block before the price moved. For the environment's own signers
-// the pending count is answered as of "latest". Rewritten, not refused, like the tag above: a client
-// asking about an address it does not own has no nonce to allocate, and refusing would only tell it
-// which addresses are on the list (they are public anyway: every venue names its admin).
-// RPC_PENDING_SEALED_SENDERS: comma-separated addresses, case-insensitive.
+// cdp-incident the direction -- one block before the price moved. Every other environment wallet does
+// the same in its own way (an informed flow wallet trades only when the next fair price is outside a
+// band around its pool's, a launch wave wallet only for a token that is not a dud, the whale names its
+// print). For the environment's own signers the pending count is answered as of "latest". Rewritten,
+// not refused, like the tag above: a client asking about an address it does not own has no nonce to
+// allocate, and refusing would only tell it which addresses are on the list (readable on-chain
+// anyway: they are funded, own contracts or send at setup).
+// RPC_PENDING_SEALED_SENDERS: comma-separated addresses, case-insensitive. Every address the
+// environment signs with (core/src/realtime/environmentWallets.ts; `scripts/liveWeek.ts sealed-senders`).
 const PENDING_SEALED_SENDERS = new Set(
   (process.env.RPC_PENDING_SEALED_SENDERS ?? "")
     .split(",").map((a) => a.trim().toLowerCase()).filter(Boolean),
@@ -212,11 +216,25 @@ for (const a of PENDING_SEALED_SENDERS) {
   if (!/^0x[0-9a-f]{40}$/.test(a)) throw new Error(`RPC_PENDING_SEALED_SENDERS: not an address: ${a}`);
 }
 let pendingSenderSealed = 0;
+// The form a sender allocating its own nonce names itself in.
+const CANONICAL_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 function sealSenderPending(c) {
   if (c?.method !== "eth_getTransactionCount" || !Array.isArray(c.params)) return false;
   const [address, tag] = c.params;
-  if (typeof address !== "string" || !PENDING_SEALED_SENDERS.has(address.toLowerCase())) return false;
-  if (typeof tag !== "string" || !isPending(tag)) return false;
+  // The pending tag in every form anvil reads: the string in any case, and inside an EIP-1898 object
+  // -- `{"blockNumber": "pending"}` is answered from the pool (measured, anvil 1.7.1), and a check on
+  // the string alone let it through for a listed address.
+  if (someString(tag, isPending) === false) return false;
+  // anvil also takes the address without its 0x and as an array of 20 bytes (measured, 1.7.1), and
+  // either went past a lookup keyed on the canonical string. A form the list cannot be checked
+  // against is answered as of latest too: fail closed, like the gas cap. The client that needs the
+  // pending count -- a sender allocating its own nonce -- names itself canonically.
+  if (
+    typeof address === "string" &&
+    CANONICAL_ADDRESS.test(address) &&
+    !PENDING_SEALED_SENDERS.has(address.toLowerCase())
+  )
+    return false;
   c.params[1] = "latest";
   pendingSenderSealed++;
   return true;

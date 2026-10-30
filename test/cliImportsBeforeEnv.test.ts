@@ -17,7 +17,13 @@ import { dirname, join, resolve } from "node:path";
 const ROOT = resolve(import.meta.dirname, "..");
 const FORBIDDEN = resolve(ROOT, "sdk/src/constants.ts");
 
-const ENTRY_POINTS = ["core/src/cli/sim-realtime.ts", "core/src/cli/backtest.ts"];
+// scripts/liveWeek.ts too: `sealed-senders` sets ERIS_LOCAL_DEPLOY and then loads the regimes (they
+// fund WBTC, which only the local registry has) and the environment's wallet list.
+const ENTRY_POINTS = [
+  "core/src/cli/sim-realtime.ts",
+  "core/src/cli/backtest.ts",
+  "scripts/liveWeek.ts",
+];
 
 // One static value import per match: `import x from`, `import { x } from`, `import * as x from`,
 // `export { x } from`, `export * from`. A `type` right after the keyword is a type-only form.

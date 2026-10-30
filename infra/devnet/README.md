@@ -85,6 +85,7 @@ production start, and the daily and weekly routine. `block-gaps.mjs` (cadence an
 | the seed | `.env.practice` (`ERIS_PRACTICE_SEED=`) | **gitignored; the unit will not start without it.** Publish it after the period (rules §7.2) |
 | the scenario key | `.env.practice` (`ERIS_SCENARIO_KEY_FILE=`, a file from `competition -- keygen`) | **outside the repo; the unit will not start without it.** The run records only its commitment (ADR 0027) |
 | the wallet secret | `.env.practice` (`ERIS_WALLET_SECRET_FILE=`, a file from `competition -- wallet-keygen`) | **outside the repo; the unit will not start without it. Never published**, not even after the period. Changing it moves every AUTO agent and flow wallet to a new address (issue #189) |
+| the gateway's sealed senders | `infra/monitoring/.env` (`ASCON_PENDING_SEALED_SENDERS=`) | **every address the environment signs with** (role keys, flow / whale / launch wallets, vuln pool owner; ~30). The gateway answers their pending nonce as of "latest", because an environment wallet's names its unmined transaction a block early ([rpc-gateway](../rpc-gateway/README.md)). Compose will not start the gateway without it. Generate it below, and again whenever the role keys, the wallet secret or the venues / Aave actor count in `config/practice.yaml` change |
 | venue state | `backtest/state/venues-state.json` | **gitignored, and the chain container mounts it** |
 
 `.env.local` is read in-process (`core/src/cli/bootstrapEnv.ts`) relative to the working directory,
@@ -100,6 +101,22 @@ and drive a world where nothing can be traded. Produce it first, from a deployer
 ```sh
 npm run gen:state-dump
 ```
+
+**The gateway's sealed senders** come from the same keys the coordinator runs with: the role keys in
+`.env.local` (read the way the coordinator reads them, the shell's env first) and the period's wallet
+secret. In the coordinator's checkout, at the commit the period runs:
+
+```sh
+npx tsx scripts/liveWeek.ts sealed-senders --config config/practice.yaml \
+  --wallet-secret ~/.eris-secrets/practice-wallet-secret.yaml
+# stderr: [sealed-senders] 30 addresses over 1 config(s): role 4, flow 25, vuln-pools 1
+# stdout: the value for ASCON_PENDING_SEALED_SENDERS in infra/monitoring/.env
+(cd infra/monitoring && docker compose up -d rpc-gateway-live)   # recreate the gateway with it
+```
+
+Recreating the gateway does not touch the chain or the coordinator (it talks to anvil directly, never
+through the gateway); participants' requests fail for the seconds it takes to come back. Check it:
+`curl -s localhost:8546/metrics | grep rpc_pending_sender_sealed_total` counts the rewritten queries.
 
 ## A restart resumes the period
 

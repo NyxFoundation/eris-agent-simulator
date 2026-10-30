@@ -159,19 +159,7 @@ test("voidEpoch drops a completed epoch's result so --resume re-runs it, keeping
   assert.throws(() => voidEpoch(JSON.stringify({ schema: 1 }), 1, "x"), /schema-2/);
 });
 
-test("sealed-senders lists the four role keys' addresses, and refuses a missing one", async () => {
-  const { generatePrivateKey, privateKeyToAccount } = await import("viem/accounts");
-  const { sealedSenders } = await import("../scripts/liveWeek.js");
-  const env = {
-    ADMIN_PRIVATE_KEY: generatePrivateKey(),
-    KEEPER_PRIVATE_KEY: generatePrivateKey(),
-    SETUP_PRIVATE_KEY: generatePrivateKey(),
-    DEPLOYER_PRIVATE_KEY: generatePrivateKey(),
-  };
-  const listed = sealedSenders(env).split(",");
-  assert.deepEqual(
-    new Set(listed),
-    new Set(Object.values(env).map((k) => privateKeyToAccount(k).address.toLowerCase())),
-  );
-  assert.throws(() => sealedSenders({ ...env, DEPLOYER_PRIVATE_KEY: "" }), /DEPLOYER_PRIVATE_KEY/);
-});
+// sealed-senders (every environment signer, not only the role keys) is tested in
+// test/environmentWallets.test.ts, beside the list it prints; that scripts/liveWeek.ts does not
+// statically reach sdk/src/constants.ts (sealed-senders sets ERIS_LOCAL_DEPLOY first) in
+// test/cliImportsBeforeEnv.test.ts.

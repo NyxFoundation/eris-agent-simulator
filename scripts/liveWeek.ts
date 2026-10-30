@@ -10,19 +10,27 @@
  *   tsx scripts/liveWeek.ts pools <daemon.json>                     networks docker's address pools yield
  *   tsx scripts/liveWeek.ts restamp <plan> <start ISO> <minutes> <out>   rehearsal only: re-time a plan
  *   tsx scripts/liveWeek.ts void <matrix dir> <s> <reason>         mark a completed epoch for re-execution
- *   tsx scripts/liveWeek.ts sealed-senders                          the role keys' addresses (env), for the gateway
+ *   tsx scripts/liveWeek.ts sealed-senders [--wallet-secret <file>] [--scenarios <set|plan>]... [--config <yaml>]...
+ *                                     every address the environment signs with, for the gateway
+ *                                     (RPC_PENDING_SEALED_SENDERS); the live week and the practice devnet
  *
  * The fingerprint is the runner's own (core/src/backtest/resume.ts rosterFingerprint over the
  * roster's `agents`, parsed the way `backtest --agents` parses it), so the value printed on the night
  * is the one matrix.json will carry.
  */
 import { copyFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { rosterFingerprint } from "../core/src/backtest/resume.js";
-import { environmentSignerOwners } from "../core/src/realtime/environmentSigners.js";
+import { resolveRegimePath } from "../core/src/backtest/shared.js";
 import type { RoleKeys } from "../core/src/realtime/roleKeyGuard.js";
+// Nothing above may import sdk/src/constants.ts (directly or through chain.ts): it picks the
+// deployment's addresses at import time, and sealed-senders has to set ERIS_LOCAL_DEPLOY first (the
+// regimes fund WBTC, which only the local registry has). The modules that need it are imported
+// dynamically, in sealedSenders.
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** The baseline every live-week field carries (excluded from the field's mean and spread). */
 export const BASELINE_ID = "noop";
@@ -209,29 +217,134 @@ export function voidEpoch(
   return `${JSON.stringify(m, null, 2)}\n`;
 }
 
+const ROLE_KEY_ENV = {
+  admin: "ADMIN_PRIVATE_KEY",
+  keeper: "KEEPER_PRIVATE_KEY",
+  setup: "SETUP_PRIVATE_KEY",
+  deployer: "DEPLOYER_PRIVATE_KEY",
+} as const;
+
 /**
- * The addresses whose pending nonce the gateway answers as of "latest" (RPC_PENDING_SEALED_SENDERS):
- * the four role keys the week runs with. The deployer sends the liquidity pull in the block a gap
- * opens, so its pending nonce named the moment one block early. All four are required: a key left
- * out would fall back to a default inside the coordinator and leave the real signer unlisted.
+ * The four role keys, from env. All four are required: a key left out would fall back to a default
+ * inside the coordinator and leave the real signer unlisted.
  */
-export function sealedSenders(env: NodeJS.ProcessEnv): string {
-  const names = {
-    admin: "ADMIN_PRIVATE_KEY",
-    keeper: "KEEPER_PRIVATE_KEY",
-    setup: "SETUP_PRIVATE_KEY",
-    deployer: "DEPLOYER_PRIVATE_KEY",
-  } as const;
+export function roleKeysFromEnv(env: NodeJS.ProcessEnv): RoleKeys {
   const keys = {} as RoleKeys;
-  for (const [role, name] of Object.entries(names)) {
+  for (const [role, name] of Object.entries(ROLE_KEY_ENV)) {
     const v = env[name]?.trim();
     if (!v || !/^0x[0-9a-fA-F]{64}$/.test(v)) throw new Error(`${name} is not set to a private key`);
     keys[role as keyof RoleKeys] = v as RoleKeys[keyof RoleKeys];
   }
-  return [...environmentSignerOwners(keys).keys()].join(",");
+  return keys;
 }
 
-function main(argv: string[]): void {
+/**
+ * The config files a scenario set or plan runs: `regimes: [...]` (the cartesian form) or
+ * `epochs: [{regime}]` (an ordered plan), resolved the way `backtest --scenarios` resolves them.
+ */
+export function scenarioRegimePaths(setText: string, root: string = ROOT): string[] {
+  const doc = parseYaml(setText) as { regimes?: unknown; epochs?: unknown } | null;
+  const names = Array.isArray(doc?.epochs)
+    ? (doc.epochs as Array<{ regime?: unknown }>).map((e) => e?.regime)
+    : Array.isArray(doc?.regimes)
+      ? doc.regimes
+      : null;
+  if (!names || names.length === 0)
+    throw new Error('a scenario set needs a non-empty "regimes" array or an "epochs" plan');
+  return [
+    ...new Set(
+      names.map((r) => {
+        if (typeof r !== "string") throw new Error("every regime in a scenario set must be a string");
+        return resolveRegimePath(root, r);
+      }),
+    ),
+  ];
+}
+
+export type SealedSenders = {
+  /** Sorted, lowercase, distinct: the value of RPC_PENDING_SEALED_SENDERS. */
+  addresses: string[];
+  /** How many of them each kind contributed (role, flow, vuln-pools, ...), for the operator. */
+  byKind: Record<string, number>;
+};
+
+/**
+ * The addresses whose pending nonce the gateway answers as of "latest" (RPC_PENDING_SEALED_SENDERS):
+ * every account the environment signs with in a run of any of `configs`
+ * (core/src/realtime/environmentWallets.ts), under the wallet secret in `walletSecretPath` -- the
+ * role keys, every flow wallet (informed, uninformed, the Aave actors, the whale, the launch listing
+ * and wave slots), the vuln pool owner, the victim cohorts, the treasury when there is one. A union
+ * over configs, because a matrix runs several regimes against one gateway.
+ *
+ * Not only the role keys: an informed flow wallet trades only when the next block's fair price is
+ * more than 30bps from its venue's pool, so its pending nonce said where the next price was a block
+ * before it was mined; a launch wave wallet's said the token was not a dud; the whale's named the
+ * print.
+ */
+export async function sealedSenders(opts: {
+  env: NodeJS.ProcessEnv;
+  walletSecretPath: string;
+  configs: ReadonlyArray<string>;
+}): Promise<SealedSenders> {
+  const roleKeys = roleKeysFromEnv(opts.env);
+  if (opts.configs.length === 0) throw new Error("sealed-senders needs at least one config");
+  // Before anything imports sdk/src/constants.ts. Every chain a gateway fronts here (the live
+  // week's backtest anvil, the practice devnet) is a local deploy.
+  process.env.ERIS_LOCAL_DEPLOY ??= "1";
+  const { installWalletSecret, readWalletSecretFile } = await import("../core/src/walletKeys.js");
+  const { loadRunConfig } = await import("../core/src/runConfig.js");
+  const { environmentSigners } = await import("../core/src/realtime/environmentWallets.js");
+  installWalletSecret(readWalletSecretFile(opts.walletSecretPath));
+  // The role keys and the treasury go in as overrides, so the config resolves them from `env` (the
+  // config's own source reads only process.env).
+  const overrides: Record<string, string> = {};
+  for (const [role, name] of Object.entries(ROLE_KEY_ENV))
+    overrides[name] = roleKeys[role as keyof RoleKeys];
+  const treasury = opts.env.TREASURY_PRIVATE_KEY?.trim();
+  if (treasury) overrides.TREASURY_PRIVATE_KEY = treasury;
+  const kindOf = new Map<string, string>();
+  for (const path of opts.configs) {
+    const { config } = loadRunConfig(path, overrides);
+    for (const s of environmentSigners(config)) if (!kindOf.has(s.address)) kindOf.set(s.address, s.kind);
+  }
+  const byKind: Record<string, number> = {};
+  for (const kind of kindOf.values()) byKind[kind] = (byKind[kind] ?? 0) + 1;
+  return { addresses: [...kindOf.keys()].sort(), byKind };
+}
+
+/** Parse `sealed-senders` flags into the configs to enumerate and the wallet secret file. */
+export function sealedSendersArgs(
+  args: ReadonlyArray<string>,
+  env: NodeJS.ProcessEnv,
+  root: string = ROOT,
+): { configs: string[]; walletSecretPath: string } {
+  const configs: string[] = [];
+  const sets: string[] = [];
+  let walletSecretPath = env.ERIS_WALLET_SECRET_FILE?.trim() || undefined;
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i];
+    const value = args[i + 1];
+    if (flag !== "--config" && flag !== "--scenarios" && flag !== "--wallet-secret")
+      throw new Error(`sealed-senders: unknown argument ${flag}`);
+    if (!value || value.startsWith("--")) throw new Error(`sealed-senders: ${flag} needs a value`);
+    i++;
+    if (flag === "--config") configs.push(resolve(value));
+    else if (flag === "--scenarios") sets.push(resolve(value));
+    else walletSecretPath = resolve(value);
+  }
+  // Without a file the keys would come from a fresh random secret: addresses no run uses.
+  if (!walletSecretPath)
+    throw new Error(
+      "sealed-senders needs the wallet secret the coordinator runs with: --wallet-secret <file> or ERIS_WALLET_SECRET_FILE",
+    );
+  // The official set when nothing is named: the live week's regimes.
+  if (configs.length === 0 && sets.length === 0)
+    sets.push(resolve(root, "config/scenarios/public.yaml"));
+  for (const set of sets) configs.push(...scenarioRegimePaths(readFileSync(set, "utf8"), root));
+  return { configs: [...new Set(configs)], walletSecretPath };
+}
+
+async function main(argv: string[]): Promise<void> {
   const [cmd, ...a] = argv;
   const read = (p: string | undefined): string => {
     if (!p) throw new Error(`missing argument for ${cmd}`);
@@ -277,9 +390,22 @@ function main(argv: string[]): void {
       console.log(`s=${sRaw} voided; the previous matrix.json is ${backup}`);
       return;
     }
-    case "sealed-senders":
-      console.log(sealedSenders(process.env));
+    case "sealed-senders": {
+      // The role keys as the coordinator resolves them: the shell's env first, then .env.local
+      // (sim-realtime's bootstrapCliEnv), whose keys the practice coordinator runs with.
+      const { loadEnvLocal } = await import("../core/src/cli/bootstrapEnv.js");
+      loadEnvLocal(join(ROOT, ".env.local"));
+      const { configs, walletSecretPath } = sealedSendersArgs(a, process.env);
+      const sealed = await sealedSenders({ env: process.env, walletSecretPath, configs });
+      console.error(
+        `[sealed-senders] ${sealed.addresses.length} addresses over ${configs.length} config(s): ` +
+          Object.entries(sealed.byKind)
+            .map(([kind, n]) => `${kind} ${n}`)
+            .join(", "),
+      );
+      console.log(sealed.addresses.join(","));
       return;
+    }
     default:
       throw new Error(
         "usage: liveWeek.ts field|fingerprint|images|keys-missing|pools|restamp|void|sealed-senders ...",
@@ -288,10 +414,8 @@ function main(argv: string[]): void {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try {
-    main(process.argv.slice(2));
-  } catch (error) {
+  main(process.argv.slice(2)).catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : error);
     process.exit(1);
-  }
+  });
 }
