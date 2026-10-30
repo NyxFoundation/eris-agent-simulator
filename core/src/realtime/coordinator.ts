@@ -311,6 +311,8 @@ import {
   stepTokenLaunch,
   summarizeTokenLaunch,
   launchWalletFunding,
+  grantLauncherApprovals,
+  tokenLauncherEnabled,
   type TokenLaunchRuntime,
 } from "./tokenLaunch.js";
 import { grantDeployerStandingApprovals } from "./standingApprovals.js";
@@ -366,6 +368,12 @@ import {
   watchVulnSwaps,
   type VulnRuntime,
 } from "./vulnPools.js";
+import {
+  postRunReadFailedHoldings,
+  readPostRunValues,
+  withRunDir,
+  type PostRunValueFailure,
+} from "./postRunValues.js";
 import {
   deriveStressVictims,
   openStressVictimPositions,
@@ -2156,13 +2164,33 @@ export async function runRealtimeSimulation(
       // regime (none includes `lending`) as a venue the rules do not list, callable, labelled
       // `verified` by the registry, and worth nothing at the bell (ADR 0022) -- which the scope
       // list could only describe, not resolve (ascon-web#18, 2026-10-05).
+      // The token launcher (issue #29) goes up with the registry in every run that has a Uniswap
+      // venue, callable only by the launch wallet slots -- which every run has -- so its presence
+      // and its approvals are the same in every official regime.
+      const launchWalletsForLauncher = tokenLauncherEnabled({
+        agentMarkets: config.agentMarkets,
+        uniswapEnabled: enabledIds.includes("uniswap"),
+      })
+        ? launchSlots.map((e) => {
+            const w = flowWalletMap.get(e.launchKey);
+            if (!w) throw new Error(`token launch wallet missing: ${e.launchKey}`);
+            return w;
+          })
+        : [];
       marketRegistry = await deployAgentMarketVenues(
         ctx,
         registrarPk,
         config.agentMarketsPerBlockCap,
         logger,
         enabledIds.includes("lending"),
+        launchWalletsForLauncher.map((w) => w.address),
       );
+      if (marketRegistry.tokenLauncher)
+        await grantLauncherApprovals(
+          ctx,
+          marketRegistry.tokenLauncher,
+          launchWalletsForLauncher.map((w) => w.privateKey),
+        );
       ctx.marketRegistry = marketRegistry.address;
       if (marketRegistry.lending) ctx.lending = marketRegistry.lending;
       // The scorer's valuation context has no SimContext, so the singleton reaches it here.
@@ -2185,6 +2213,7 @@ export async function runRealtimeSimulation(
         priceFeedAddress as string,
         marketRegistry?.address as string | undefined,
         marketRegistry?.lending as string | undefined,
+        marketRegistry?.tokenLauncher as string | undefined,
         FLASH_ARB_ADDRESS as string,
       ]
         .filter((a): a is string => typeof a === "string")
@@ -2766,6 +2795,8 @@ export async function runRealtimeSimulation(
             if (!w) throw new Error(`token launch wallet missing: ${key}`);
             return { address: w.address, privateKey: w.privateKey };
           },
+          tokenLauncher: marketRegistry?.tokenLauncher,
+          seed: config.seed,
         },
         logger,
       );
@@ -4785,6 +4816,8 @@ export async function runRealtimeSimulation(
                       account: refusal.account,
                       callbackContract: refusal.callbackContract,
                       callbackGasLimit: refusal.callbackGasLimit.toString(),
+                      // -1 when the order could not be read.
+                      orderType: refusal.orderType,
                       reason: refusal.reason,
                     }),
                   // Issue #225: fills past the per-block bound wait for the next pass. Recorded so a
@@ -6087,23 +6120,46 @@ export async function runRealtimeSimulation(
 
     const agentsSummary = [];
     for (const agent of agentRuntimes) {
-      const final = await getBalances(publicClient, agent.address);
       const initialValue = valueUsdc(
         agent.initial,
         finalFairPrices,
         finalStablePrices,
       );
-      let finalValue = valueUsdc(final, finalFairPrices, finalStablePrices);
-      const protocolValues: Record<string, number> = {};
-      for (const adapter of adapters) {
-        const v = await adapter.valueUsdc(
-          ctx,
-          agent.address,
-          null,
-          finalFairPrice,
+      // Nothing between the bell and logger.summary may throw on one agent's account: a missing
+      // summary.json used to exclude the epoch for everyone (postRunValues.ts has the measured
+      // attack). The wallet read is environment tokens only, so an agent cannot make it fail -- but
+      // a node that drops one call would cost the summary just the same, so it is held to the same
+      // rule.
+      let finalValue = 0;
+      const valueFailures: PostRunValueFailure[] = [];
+      try {
+        const final = await getBalances(publicClient, agent.address);
+        finalValue = valueUsdc(final, finalFairPrices, finalStablePrices);
+      } catch (error) {
+        valueFailures.push({
+          adapter: "wallet",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      const protocol = await readPostRunValues(adapters, (adapter) =>
+        adapter.valueUsdc(ctx, agent.address, null, finalFairPrice),
+      );
+      finalValue += protocol.totalUsdc;
+      valueFailures.push(...protocol.failures);
+      if (valueFailures.length > 0) {
+        logger.event({
+          type: "summary_value_read_failed",
+          agentId: agent.id,
+          failures: valueFailures,
+          note:
+            "a read behind this agent's netPnlUsdc failed at the end of the run and counted 0. " +
+            "pnlUsdc (the rules' P) is the boundary series and does not use these reads",
+        });
+        console.error(
+          `[post-run] ${agent.id}: end-of-run value read failed for ` +
+            `${valueFailures.map((f) => f.adapter).join(", ")}; counted 0 in netPnlUsdc ` +
+            "(see summary_value_read_failed)",
         );
-        protocolValues[adapter.id] = v;
-        finalValue += v;
       }
       // Rules §4.4.1: P = V_K − V_0 with each end at its own marks (the 5-block median of §4.1),
       // read off the boundary series. netPnlUsdc below marks both ends at the final prices; when
@@ -6125,6 +6181,12 @@ export async function runRealtimeSimulation(
         initialValueUsdc: initialValue,
         finalValueUsdc: finalValue,
         netPnlUsdc: finalValue - initialValue,
+        // Reads behind finalValueUsdc that failed and counted 0, so the netPnlUsdc above is not
+        // mistaken for a trading loss (the read-failed shape scoring_unpriced_holdings uses).
+        // Absent when every read returned.
+        ...(valueFailures.length > 0
+          ? { unpricedHoldings: postRunReadFailedHoldings(valueFailures) }
+          : {}),
         ...(rulesPnl
           ? {
               pnlUsdc: rulesPnl.pnlUsdc,
@@ -6292,6 +6354,11 @@ export async function runRealtimeSimulation(
     );
     // Repeated, because the startup copy has scrolled out of sight by now.
     if (sandboxWarning) console.error(agentSandboxBanner(sandboxWarning));
+  } catch (error) {
+    // The run directory travels with the failure: the boundary series in it is written live, and
+    // when it reached the end block the backtest still scores the epoch from it rather than
+    // excluding it for everyone (backtest/scenarioScores.ts scoresFromIntervals).
+    throw withRunDir(error, logger.runDir);
   } finally {
     try {
       await (gatedMiner as GatedMiner | null)?.stop();

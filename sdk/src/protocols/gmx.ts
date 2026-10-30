@@ -84,7 +84,22 @@ export const EXECUTION_FEE = 30_000_000_000_000_000n; // 0.03 ETH
 // 30M block (`run.blockGasLimit`) ahead of every participant, the keeper's fee sitting above the
 // participant cap. Whether anvil admits by declared limit or by gas used was not measured.
 export const GMX_KEEPER_EXECUTE_GAS = 6_000_000n;
-const ORDER_TYPE = { MarketIncrease: 2, MarketDecrease: 4 } as const;
+/**
+ * GMX's `Order.OrderType` (gmx-synthetics contracts/order/Order.sol), by its uint8 value. Liquidation
+ * is an order type too, but the liquidation keeper does not go through orders (liquidatePositions).
+ */
+export const GMX_ORDER_TYPE = {
+  MarketSwap: 0,
+  LimitSwap: 1,
+  MarketIncrease: 2,
+  LimitIncrease: 3,
+  MarketDecrease: 4,
+  LimitDecrease: 5,
+  StopLossDecrease: 6,
+  Liquidation: 7,
+  StopIncrease: 8,
+} as const;
+const ORDER_TYPE = GMX_ORDER_TYPE;
 const DECREASE_SWAP_NO_SWAP = 0;
 const FLOAT_PRECISION = 10n ** 30n;
 
@@ -301,7 +316,7 @@ const exchangeRouterAbi = [
 ] as const;
 
 // Order.Props as Reader.getOrder returns it (gmx-synthetics contracts/order/Order.sol). Only the
-// addresses are read (gmxKeeperRefusal); the rest is declared so the tuple decodes.
+// account, callback and order type are read (gmxKeeperRefusal); the rest is declared so the tuple decodes.
 const orderPropsComponents = [
   {
     name: "addresses",
@@ -361,11 +376,21 @@ const readerGetOrderAbi = [
   },
 ] as const;
 
+/** `Order.isMarketOrder`: the three types the keeper executes. A liquidation order is not one (GMX says so too). */
+export function isGmxMarketOrderType(orderType: number): boolean {
+  return (
+    orderType === GMX_ORDER_TYPE.MarketSwap ||
+    orderType === GMX_ORDER_TYPE.MarketIncrease ||
+    orderType === GMX_ORDER_TYPE.MarketDecrease
+  );
+}
+
 /** What the keeper needs to know about an order before it executes it. */
 export type GmxKeeperOrder = {
   account: Address;
   callbackContract: Address;
   callbackGasLimit: bigint;
+  orderType: number;
 };
 
 /** An order the keeper read and did not execute, and why. */
@@ -374,7 +399,7 @@ export type GmxKeeperRefusal = GmxKeeperOrder & { key: Hex; reason: string };
 /**
  * Why the keeper must not execute this order, or null if it may.
  *
- * GMX calls an order's callbackContract inside executeOrder (afterOrderExecution /
+ * Refused: an order with a callback. GMX calls an order's callbackContract inside executeOrder (afterOrderExecution /
  * afterOrderCancellation with the order's callbackGasLimit, refundExecutionFee with the DataStore's
  * own limit). The keeper's transaction is placed just under the oracle's, above every participant
  * (coordinator `keeperFee`), so a callback is the creator's code at the top of the next block: it
@@ -388,8 +413,29 @@ export type GmxKeeperRefusal = GmxKeeperOrder & { key: Hex; reason: string };
  * The patched deploy (deployer/vendor/gmx-localhost.patch) also zeroes both callback gas limits, so
  * on a current deploy such an order cannot be created; this is the half that holds on a chain baked
  * before that (core/src/realtime/gmxCallbacks.ts reports which one a run is on).
+ *
+ * Also refused: any order that is not a market order (limit / stop swaps, increases and decreases;
+ * `Order.isMarketOrder`). The keeper tries each new order once, in the block after it was created, at that block's oracle
+ * price -- which is written to storage before the block is mined. A conditional order whose trigger
+ * is not met reverts the keeper's tx (InvalidOrderPrices) and is never retried; one whose trigger
+ * is met fills at the first price of the move. An agent that re-arms a stop every block therefore
+ * had a zero-lag conditional order: it filled at the first block of every crash/spike gap and rode
+ * the rest of the 2-3 block ramp, which the official regimes never give back (recoverFrac 0), at up
+ * to 20x. Everyone else acts on a price observed one block late and fills one block after sending
+ * (ADR 0029 and scripts/measurePredictability.ts measure with that lag). Executing conditional
+ * orders properly would mean re-checking every resting order against every price, a matching
+ * engine the keeper does not have; the SDK's actions are market orders only.
+ *
+ * A refused order's collateral and execution fee stay in the OrderVault until its account cancels
+ * it (ExchangeRouter.cancelOrder; GMX lets a non-market order be cancelled at any time). They are
+ * not counted while they sit there.
  */
 export function gmxKeeperRefusal(order: GmxKeeperOrder): string | null {
+  if (!isGmxMarketOrderType(order.orderType))
+    return (
+      `non-market order type ${order.orderType}: the keeper executes market orders only ` +
+      `(the collateral stays in the OrderVault until the account cancels the order)`
+    );
   if (order.callbackContract !== zeroAddress)
     return (
       `order sets callbackContract ${order.callbackContract} ` +
@@ -445,6 +491,7 @@ async function keeperExecutableKeys(
         account: zeroAddress,
         callbackContract: zeroAddress,
         callbackGasLimit: 0n,
+        orderType: -1,
         reason: `order could not be read: ${r.error}`,
       });
       continue;
@@ -453,6 +500,7 @@ async function keeperExecutableKeys(
       account: r.order.addresses.account,
       callbackContract: r.order.addresses.callbackContract,
       callbackGasLimit: r.order.numbers.callbackGasLimit,
+      orderType: r.order.numbers.orderType,
     };
     // Reader.getOrder returns an empty struct for a key with no order (already executed or cancelled).
     if (order.account === zeroAddress) continue;

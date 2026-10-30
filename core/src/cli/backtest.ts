@@ -49,10 +49,14 @@ import {
 } from "../scenarioKey.js";
 import {
   foldRepeats,
+  INTERVALS_FALLBACK_EPOCH_FLAG,
   readRunSummary,
   scenarioFlags,
+  scoresFromIntervals,
   scoresFromSummary,
+  type RosterIdentity,
 } from "../backtest/scenarioScores.js";
+import { runDirOfError } from "../realtime/postRunValues.js";
 import {
   assertResumable,
   mergeStoredResults,
@@ -490,15 +494,30 @@ async function main(): Promise<void> {
   // this run's resolved values, so an override cannot leave an agent observing a different world
   // (ADR 0016 §2).
   const regimeDocs = new Map<string, RegimeDoc>();
-  const rosterOf = (doc: RegimeDoc): string[] => {
+  const rosterIdentitiesOf = (doc: RegimeDoc): RosterIdentity[] => {
     const agents = (rosterAgents ?? doc.agents) as
-      Array<{ id?: unknown }> | undefined;
+      | Array<{ id?: unknown; baseline?: unknown; participant?: unknown }>
+      | undefined;
     return Array.isArray(agents)
-      ? agents
-          .map((a) => a?.id)
-          .filter((id): id is string => typeof id === "string")
+      ? agents.flatMap((a) =>
+          typeof a?.id === "string"
+            ? [
+                {
+                  id: a.id,
+                  ...(typeof a.baseline === "boolean"
+                    ? { baseline: a.baseline }
+                    : {}),
+                  ...(typeof a.participant === "string"
+                    ? { participant: a.participant }
+                    : {}),
+                },
+              ]
+            : [],
+        )
       : [];
   };
+  const rosterOf = (doc: RegimeDoc): string[] =>
+    rosterIdentitiesOf(doc).map((a) => a.id);
   // Parse (and cache) a regime file. Separated from writing the effective YAML so the pre-flight
   // checks below can read a regime without also producing a file that the run loop immediately
   // overwrites.
@@ -916,7 +935,8 @@ async function main(): Promise<void> {
           `[backtest] s=${scenario.s}: agent state restored from "${from}"`,
         );
       }
-      const expectedAgents = rosterOf(loadRegimeDoc(scenario));
+      const roster = rosterIdentitiesOf(loadRegimeDoc(scenario));
+      const expectedAgents = roster.map((a) => a.id);
       // The coordinator reads this scenario's effective regime (passed as --config below). The
       // agents are handed their own config by the coordinator, not this file.
       const effectivePath = effectivePathFor(scenario);
@@ -925,6 +945,28 @@ async function main(): Promise<void> {
       const runDirs: string[] = [];
       const blocksPerRepeat: Array<number | undefined> = [];
       let lastError: string | undefined;
+      // Repeats whose P came off intervals.jsonl because the run wrote no summary.json.
+      let fallbackRepeats = 0;
+      // No summary.json does not by itself make the epoch invalid for everyone: when the live
+      // boundary series reached the end block, P is read off it (scoresFromIntervals). Returns
+      // false when it did not, which keeps the exclusion.
+      const scoreFromIntervals = (runDir: string, because: string): boolean => {
+        const fallback = scoresFromIntervals(runDir, roster, because);
+        if (!fallback.ok) {
+          console.error(
+            `[backtest] ${label}: no P from intervals.jsonl either (${fallback.reason})`,
+          );
+          return false;
+        }
+        perRepeat.push(fallback.scores);
+        blocksPerRepeat.push(undefined);
+        fallbackRepeats++;
+        console.error(
+          `[backtest] ${label}: ${because}; scored from intervals.jsonl (series reached end block ` +
+            `${fallback.endBlock})`,
+        );
+        return true;
+      };
       // With state carrying, the repeats of one scenario are not repeats unless each starts from
       // the same place: repeat 2 would otherwise begin from what repeat 1 left behind, and the
       // spread across repeats -- the reason the flag exists -- would be measuring a sequence.
@@ -963,6 +1005,7 @@ async function main(): Promise<void> {
           } else {
             lastError = `summary.json not found (${runDir})`;
             console.error(`[backtest] warning: ${lastError}`);
+            scoreFromIntervals(runDir, "summary.json not found");
           }
         } catch (error) {
           // Except the live week's posture: recording it as an excluded epoch would run the next
@@ -970,9 +1013,15 @@ async function main(): Promise<void> {
           if (isLiveWeekRefusal(error)) throw error;
           // One scenario blowing up must not abandon the rest of the matrix. It is recorded as an
           // excluded scenario, which keeps it out of the aggregation instead of scoring everyone
-          // zero for an environment failure (ADR 0017 §4).
+          // zero for an environment failure (ADR 0017 §4) -- unless the epoch finished before the
+          // failure, which its boundary series says (scoreFromIntervals).
           lastError = error instanceof Error ? error.message : String(error);
           console.error(`[backtest] scenario ${label} failed: ${lastError}`);
+          const failedRunDir = runDirOfError(error);
+          if (failedRunDir !== undefined) {
+            runDirs.push(failedRunDir);
+            scoreFromIntervals(failedRunDir, `the run threw: ${lastError}`);
+          }
         }
       }
       if (agentStateRoot !== undefined && matrixMode && perRepeat.length > 0) {
@@ -997,7 +1046,10 @@ async function main(): Promise<void> {
       // looks, not only on each dead agent's record (issue #102).
       const last = results[results.length - 1];
       if (last.agents) {
-        const epochFlags = scenarioFlags(last.agents);
+        const epochFlags = [
+          ...(fallbackRepeats > 0 ? [INTERVALS_FALLBACK_EPOCH_FLAG] : []),
+          ...scenarioFlags(last.agents),
+        ];
         if (epochFlags.length > 0) {
           last.flags = epochFlags;
           console.error(

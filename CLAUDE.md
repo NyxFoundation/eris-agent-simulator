@@ -247,7 +247,7 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   レバレッジは patch では**建てるとき 5%（20 倍）・清算 1%**（run の setup が建てる側を 19.8% = ~5.05 倍に上書きする。下の B2）。**これが Config 経由で GMX が受け付ける上限**で
   （`ConfigUtils.validateRange` が MIN_COLLATERAL_FACTOR > 5% と _FOR_LIQUIDATION > 1% を revert する。
   10% / 5% を入れたら deploy が落ちた）、Arbitrum の 0.5〜1% よりは厳しい。
-  **swap も同じ**: keeper は `OrderCreated` を種類を問わず全部執行するので、`rawTx` の `MarketSwap` 注文が
+  **swap も同じ**: keeper は成行の `MarketSwap` 注文も執行するので、`rawTx` の `MarketSwap` 注文が
   fair・手数料 0・impact 0 で通り、AMM-vs-fair の裁定が片側の AMM 手数料で済んでいた。swap fee 0.05% / 0.07%、
   swap impact 3e-10 / 2e-10・指数 2（Arbitrum の値）を入れた。GM の deposit / withdraw は keeper が拾わないので執行されない。
   **清算 keeper がある**（`liquidatePositions`。以前は注文を執行するだけで**清算は一度も起きず**、crash を 20 倍の逆張りで
@@ -286,8 +286,14 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   P +6,798（noop +6,799）、3 倍ストラドルは +6,687（noop − 手数料 112）、3 倍の片側ショートは −1,978（証拠金 12k のうち 8.8k 失い債務超過なし）。
   **この実測は上限 3.03 倍のとき**で、5 倍の上限では測っていない（5 倍で 1 段目に清算されないことは上の算術による）。
   `interval_series_agreement` は両 run で差 0。
-  **指値・ストップ注文は今も執行されない**
-  （keeper は新しい `OrderCreated` しか見ない。SDK のアクションは成行のみ）`basis-arb` の往復コスト既定は 0 → 12bps。
+  **指値・ストップ注文は keeper が拒否する**
+  （成行 = `MarketSwap` / `MarketIncrease` / `MarketDecrease` だけを執行。それ以外は `gmxKeeperRefusal` が拒否して
+  `keeper_order_refused`（`orderType` 付き）。SDK のアクションは成行のみで、作れるのは `rawTx` だけ。以前は keeper が
+  新しい注文を種類を問わず次ブロックで 1 回だけ試し、価格はブロックの前に storage へ書かれているので、毎ブロック張り直す
+  stop が**遅れ 0 の条件付き注文**になった = crash / spike のギャップの最初のブロックで約定し、戻らない残りの ramp を
+  最大 20 倍で取れた。他の全員は 1 ブロック遅れで観測して 1 ブロック後に約定する（ADR 0029 の LAG = 2）。
+  条件不成立なら `InvalidOrderPrices` で revert して再試行されなかった。拒否した注文の証拠金と実行手数料は
+  OrderVault に残って 0 評価で、本人が `cancelOrder` するまで戻らない（成行以外はいつでも cancel できる）） `basis-arb` の往復コスト既定は 0 → 12bps。
   **採点は「今閉じたら残る額」**（`positionExitValueUsd`。Reader の `getAccountPositionInfoList` を fair で引き、
   証拠金 + 基準 PnL + 決済時と建玉時に繰り延べた impact − 決済手数料・未払い borrowing・funding + 受け取る funding）。
   建玉時の手数料は証拠金から既に引かれているので、額面（証拠金 + PnL）のままだと**鐘の後まで持ち越した建玉は手数料を
@@ -592,6 +598,24 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     `matrix.json` / `standings.json` を**同じディレクトリに**回次順で書き直す（`createdAt` は初回のまま、`resumedAt` を追加）。
     `scenarioSet` / `k` / `resetUnit` / `repeat` が違えば fail-fast、同じパスで中身が変わったセットも回次単位で拒否
     （`core/src/backtest/resume.ts`）。summary.json → AgentScore の変換は `core/src/backtest/scenarioScores.ts` に分離
+  - **summary.json が無くてもエポックを全員から外さない**（境界系列が終了ブロックまで届いていれば）。以前は鐘の後の
+    netPnl ループ（各アダプタの live `valueUsdc`）が例外を投げると summary を書かずに落ち、そのエポックは `invalid` で
+    全員の S から消えた。**agent が意図的に起こせた**: LST vault へ `requestWithdraw(1 wei)` を ~3,250 本（各 ~25 万 gas、
+    tip 0 で無料）積むと `accountSummaryAt` が 30M の block gas limit を超えて revert する（anvil 1.5.1 実測）。閾値の手前に
+    居て負けているエポックでだけ越えれば、負けたエポックだけを消せた。今は 2 層: (1) 鐘から `logger.summary` までの読取
+    （財布の `getBalances` と各アダプタ）は失敗しても投げず、その分を netPnl で 0 と数えて agent レコードの
+    `unpricedHoldings`（`read-failed`、source `summary-value:<adapter>`）と `summary_value_read_failed` イベントに出す
+    （`core/src/realtime/postRunValues.ts`）。P は live の境界系列なのでこの読取に依存しない。(2) run が投げた・summary が
+    無いとき、backtest は run ディレクトリ（例外に `runDir` を載せて運ぶ）の `intervals.jsonl` から P を読み直す
+    （`scoresFromIntervals`。`run-start.json` の終了ブロックに最後の境界が一致するときだけ。値は V_0 規則適用済みで
+    `epochPnlFromSeries` も同じなので summary と同じ数）。そのエポックは `pnlSource: "intervals-fallback"`・agent と
+    エポックの `flags` に出る（netPnl・alpha・事後の規則検査は走っていない）。系列が終了ブロックに届いていなければ従来どおり除外
+  - **gas を agent が決められる読取は共有 Multicall3 に入れない**（`core/src/realtime/isolatedReads.ts`）。`accountSummaryAt` は
+    owner の全 request を走査する（1 本 9,248 gas、3,180 本で 29.4M・3,250 本で 30M 超）。aggregate3 の中では chunk の 63/64 を
+    取って後続に ~0.5M しか残さず、実測では後ろに 100 本並べた aggregate3 が丸ごと `MemoryOOG` で落ちた（viem の ~1 KB chunk では
+    LST 読取 24 本は生き残ったが、余裕であって保証ではない）。今は `ValuationRead.isolatedGas` を付けた読取を 1 本ずつ
+    `LST_ACCOUNT_SUMMARY_GAS` = 10M（= maxTxGas、~1,080 request）で `eth_call` し、超えた agent だけ `read-failed`。境界読取・事後 sweep・
+    market.json が同じ分け方なので `interval_series_agreement` は変わらない。**練習期間で 1 か月 request を積む agent は 10M に届きうる**
   - **agent にはエポック番号を渡す**（issue #167）。env `ERIS_EPOCH_INDEX`（プラン上の s）/ `ERIS_EPOCH_COUNT`（k）と
     `obs.epoch = {index, count}`（`sdk/src/epoch.ts`）。重み w_s が s で変わるのに、毎エポック同じ初期状態から再起動される
     agent には今が何本目か知る手段が無かった。s は**この起動で何本目かではなくプランの値**なので `--resume`・再実行・
@@ -1164,11 +1188,34 @@ ours なのは 2 つだけ（core は無改変）:
 
 ### 新規トークンの上場（`launch` レジーム = `tokenLaunch` イベント。issue #29。**ローカルデプロイ + `agentMarkets.enabled` 必須**）
 
-#40 の上に載る。環境が窓の開始ブロックで **2〜3 の新 ERC-20 を自分の Uniswap V3 factory 経由で上場**
-（`AgentERC20` を deploy → NPM へ approve → `createAndInitializePoolIfNecessary` を 1.00 USDC で → full-range
-mint。**1 鍵から nonce 連番の 5 tx を 1 ブロックに積む**。approve は存在しないトークン宛に署名するので
-gas は全部 pin する = `eth_estimateGas` は今の state で失敗する）。翌ブロックにレジストリへ `uniswapV3Pool` +
-`erc20`（`creator` = launch wallet。隠さない = 決定 3「常に正直」）。
+#40 の上に載る。環境が窓の開始ブロックで **2〜3 の新 ERC-20 を自分の Uniswap V3 factory 経由で上場**する。
+上場は **launch wallet から `TokenLauncher`（`contracts/TokenLauncher.sol`）への 1 tx**: `AgentERC20` を
+**秘密の salt で CREATE2** → `factory.getPool == 0` を確認 → `createPool` + `initialize`（1.00 USDC）→ launch wallet
+から USDC を `transferFrom` → full-range mint（最小量は希望量の 99%）→ NFT と端数は launch wallet へ、`Launched` を emit。
+gas は pin（9M、実測 5.6M）。翌ブロックにレジストリへ `uniswapV3Pool`（作成者 = tx の送信者 = launch wallet）+
+`erc20`（**launcher の `Launched` から**。`creator` = launch wallet、**`verified: true`**。隠さない = 決定 3「常に正直」）。
+
+- **以前は 5 tx（CREATE → approve ×2 → `createAndInitializePoolIfNecessary` → mint、最小量 0）で、盗めた**
+  （2026-10-30 に anvil で実証）。launch wallet は block 0 から見え nonce は窓まで動かないので、トークンのアドレス
+  `CREATE(wallet, nonce)` は事前に計算でき、Uniswap の factory はトークンにコードがあるかを見ない。誰でも先に
+  その pool を作ってほぼ 0 の価格で initialize でき、環境の `createAndInitializePoolIfNecessary` は initialize を飛ばし、
+  最小量 0 の mint がその価格で入った（59,999.87 トークン対 0.000001 USDC。攻撃者は全供給を 1 USDC で買い、
+  wave が 37,500 USDC で 6.5e-14 トークンを買い、攻撃者は 37,387 USDC を持ち去った）
+- **salt は財布の秘密から**（`launchSalt` = `environmentKey("launch-salt", "<seed>:<eventIndex>:<index>:<attempt>")`）。
+  scenario key ではない（公開セットでは公開鍵で、本番の鍵も結果発表後に公開される）。agent には渡さない。attempt を
+  混ぜるので revert 後の再試行も別アドレス。仮に salt が漏れても `getPool == 0` の確認で上場が revert するだけ
+  （妨害であって窃取ではない。launch wallet の USDC は動かない = anvil で実測）
+- **launcher は全 run で setup 時に deploy**（`tokenLauncherEnabled` = agentMarkets かつ uniswap。公式 12 本すべて真）。
+  呼べるのは launch wallet の固定 3 スロットだけ（constructor で固定）で、3 スロットとも setup で USDC を launcher へ
+  approve する（`grantLauncherApprovals`。`setupTokenLaunch` は `requireStandingApprovals` で確かめるだけ）。
+  launch だけに置くと block 0 でレジームが分かる（`test/regimeStartInvariance.test.ts` が検査）。
+  deploy は registrar（setup 鍵）で `deployAgentMarketVenues` の中、`assertArtifactHasFunctions("TokenLauncher", …)` 付き。
+  launcher のアドレスは `environmentAddresses` と `market_registry_deployed.tokenLauncher` に入る
+- **wave は pool の価格が上場価格の 10 倍（`WAVE_PRICE_CAP_MULT`）を超えたら買わない**（`stress_token_launch_wave_capped`、
+  summary の `waveCappedBlocks`）。full-range pool の価格は (pool の USDC / seed した USDC)² なので、公式の最大の wave
+  （seed の 1.0 倍）単独で 4 倍、ramp 1 ブロックは +10% 程度。10 倍は場が wave より先に seed の ~1.16 倍を買っても届かない値。
+  買い占められた pool へ wave が払い続けるのを止める（需要に上値があるのは需要の性質でもある）。判定は送信前の slot0 で、
+  1 回の買いが上限を ~10% 越えることはある
 
 - **需要はトークンごとに独立に引く**（`core/src/realtime/events.ts` の `drawTokenLaunches`）: 本数 1 回 +
   トークンあたり固定 5 回（liquidityUsdc / dudProb / dud の目 / waveUsdcMult / sellBackFrac）で、**dud でも
@@ -1196,14 +1243,15 @@ gas は全部 pin する = `eth_estimateGas` は今の state で失敗する）�
   Swap ログの純フロー / QuoterV2 / **exact approve + exactInputSingle の rawBundle**。登録 `swap` action は
   market set の外に届かない）。参照 agent は `launch-sniper`（見た瞬間に買い固定ホールド）と
   `launch-confirm`（連続 N ブロックの純買いで入り純売りで出る）。`full-field.yaml` に frozen で入っている
-  （vuln の教訓: 読める agent が居ない regime は何も測れない）。**`launchPools` は環境の上場の形をしたプールだけ返す**
+  （vuln の教訓: 読める agent が居ない regime は何も測れない）。**`launchPools` は環境の上場だけ返す**
   （issue #216 (4)。以前は USDC × 未登録トークンの registry プールを全部返し、参加者が自作プールを置けば frozen の
-  参照 agent 2 体が買って μ/σ が動いた）: トークン自身の `erc20` エントリがあり、プール作成者がそのトークンを
-  deploy し、登録後にコードが動いておらず、`launchTokenCodehash`（repo の `AgentERC20` artifact を `to` 無しの
-  `eth_call` で走らせた runtime code の keccak。artifact が無ければ null = 形だけで判定し agent ログに 1 回残す）
-  が取れていれば codehash も一致するもの。launch wallet のアドレスは観測にもマニフェストにも無い（seed 由来で、
-  公開すると窓の前に上場数が漏れる）ので作成者照合はできない。**同じ bytecode を同じ鍵から deploy した参加者の
-  プールは通る**（固定供給・owner 無しの同種トークンで、リスクは価格だけ = 戦略の判断に委ねる）
+  参照 agent 2 体が買って μ/σ が動いた）: 主条件は**トークン自身の `erc20` エントリが `verified`**（launcher の
+  `Launched` からしか作られない。参加者の top-level CREATE は unverified、内部 CREATE は登録されない）。その下に
+  従来の形の検査を残す: プール作成者 = トークンエントリの作成者、登録後にコードが動いていない、
+  `launchTokenCodehash`（repo の `AgentERC20` artifact を `to` 無しの `eth_call` で走らせた runtime code の keccak。
+  CREATE2 で deploy しても runtime code は同じ = anvil で一致を実測。artifact が無ければ null = 形だけで判定し
+  agent ログに 1 回残す）が取れていれば一致。launch wallet のアドレスは観測にもマニフェストにも無い。
+  以前は「同じ bytecode を同じ鍵から deploy した参加者のプール」が通っていたが、今は参加者の上場は 1 つも通らない
 - **実測（seed 101, 2026-09-12, main + PR #81 の burst 吸収を手元適用）**は PR #29 の本文。**main の anvil backlog
   burst（PR #81 で修正中）がある環境では最初の ~200 ブロックが 1 秒で流れて窓ごと飛ぶ**。この regime だけの
   問題ではなく windowFrac を持つ全イベントが同じ目に遭う

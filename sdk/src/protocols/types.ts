@@ -109,6 +109,13 @@ export type ValuationRead = {
   abi: any;
   functionName: string;
   args?: readonly unknown[];
+  // A read whose cost the agent being read controls (it loops over state the agent can grow at
+  // will). Set, the reader issues it as its own `eth_call` capped at this gas, never inside the
+  // shared Multicall3: there the aggregate forwards 63/64 of what is left to it, so one agent's
+  // oversized read would take the rest of the batch -- other agents' reads, the fair price -- down
+  // with it (sdk/src/untrustedRead.ts rule 1). A capped read that runs out is a failed read
+  // (undefined), the same as any other.
+  isolatedGas?: bigint;
 };
 
 export type ValuationAgent = { id: string; address: Address };
@@ -239,12 +246,14 @@ export interface ProtocolAdapter {
       fromBlock?: bigint;
       toBlock?: bigint;
       // A keeper that read an order and declined to execute it says so here (gmx: an order with a
-      // participant callback). Without it the adapter writes to stderr.
+      // participant callback, or one that is not a market order). Without it the adapter writes to stderr.
       onOrderRefused?: (refusal: {
         key: string;
         account: string;
         callbackContract: string;
         callbackGasLimit: bigint;
+        // GMX Order.OrderType; -1 when the order could not be read.
+        orderType: number;
         reason: string;
       }) => void;
       // Issue #225: the GMX keeper had more executable orders than MAX_ORDER_FILLS_PER_BLOCK; how

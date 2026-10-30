@@ -51,6 +51,7 @@ import type { GmxInsolvencyLedger } from "@eris/sdk/protocols/gmxInsolvency.js";
 import { GmxShortfallTracker } from "./gmxShortfall.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
 import { readRegistryEntries } from "@eris/sdk/marketRegistry.js";
+import { readIsolated, splitIsolatedReads } from "./isolatedReads.js";
 import {
   readUntrustedBatch,
   type UntrustedReadResult,
@@ -159,6 +160,8 @@ type MulticallContract = {
   abi: any;
   functionName: string;
   args?: readonly unknown[];
+  // Set on a read whose cost the agent being read controls: issued alone, capped (isolatedReads.ts).
+  isolatedGas?: bigint;
 };
 
 // Number of cross-section multicall reads per agent (for index computation).
@@ -397,7 +400,22 @@ export async function readValueSnapshotAtBlock(opts: {
   let failedReads = 0;
   const failedReadTargets = new Map<string, FailedReadTarget>();
 
-  const call: MulticallFn = async (contracts, blockNumber) => {
+  const noteFailed = (contract: MulticallContract): void => {
+    failedReads++;
+    // Name the read, not just the fact that one failed: the whole point of #44 is being able to
+    // say which holding went missing.
+    mergeFailedReads(failedReadTargets, [
+      {
+        address: contract.address,
+        functionName: contract.functionName,
+        count: 1,
+      },
+    ]);
+  };
+  const viaMulticall = async (
+    contracts: MulticallContract[],
+    blockNumber: bigint,
+  ): Promise<unknown[]> => {
     if (contracts.length === 0) return [];
     const results = (await publicClient.multicall({
       contracts: contracts as never,
@@ -407,21 +425,26 @@ export async function readValueSnapshotAtBlock(opts: {
     })) as Array<{ status: "success" | "failure"; result?: unknown }>;
     return results.map((r, i) => {
       if (r.status === "failure") {
-        failedReads++;
-        // Name the read, not just the fact that one failed: the whole point of #44 is being able to
-        // say which holding went missing.
-        mergeFailedReads(failedReadTargets, [
-          {
-            address: contracts[i].address,
-            functionName: contracts[i].functionName,
-            count: 1,
-          },
-        ]);
+        noteFailed(contracts[i]);
         return undefined;
       }
       return r.result;
     });
   };
+  // A read whose gas an agent controls goes alone, capped (isolatedReads.ts): inside the shared
+  // aggregate it would take 63/64 of the chunk and every read listed after it.
+  const call: MulticallFn = (contracts, blockNumber) =>
+    splitIsolatedReads(
+      contracts,
+      (shared) => viaMulticall(shared, blockNumber),
+      async (alone) => {
+        const results = await readIsolated(publicClient, alone, blockNumber);
+        results.forEach((r, i) => {
+          if (r === undefined) noteFailed(alone[i]);
+        });
+        return results;
+      },
+    );
 
   // ADR 0013: extra bases (other than WETH). Under the fork default this is empty.
   const extraBases = baseTokens()
