@@ -242,7 +242,8 @@ lending / cdp +$9k / エポック。[1, 2] ではどの規則も手数料以下�
 - in-block のコントラクトが遅れている AMM の価格を 1 ブロック先に取れるのは残る。深さで上が決まる裁定で、コントラクトを置けば
   誰でも使える（このレジームの裁定そのもの）
 - 練習期間: `core/src/practiceEpisodes.ts` のギャップも `rampBlocks: [1, 2]`（以前は 3。2〜4% のギャップで 1 回 0.7〜1.3% が
-  L = 1 で残った）。走っている期間の `config/practice.yaml` は書き換えていない。運営が
-  `npm run gen:practice-episodes -- --revise-from-day N`（N は再起動より後に始まる日）で書き換えて再起動する
-  （`infra/devnet/README.md`「Revising a period」）。seed だけの stream なので、day N より前の窓は変わらない
+  L = 1 で残った）。走っている期間の `config/practice.yaml` は 2026-10-31 に
+  `npm run gen:practice-episodes -- --revise-from-day 23` で書き換えた（crash / spike の 58 行。day 22 以前は 3 段のまま）。
+  seed だけの stream なので、day 23 より前の窓は変わらない。day 23 の窓は run の 953,733 ブロック目より後にしか開かないので、
+  再起動の時点で head がそこ（から 300 ブロック手前）より前なら revise の検査を通る（`infra/devnet/README.md`「Revising a period」）
 - in-block の読み取りと keeper の 1 ブロックはコードの読みによる。チェーンでは未実測
