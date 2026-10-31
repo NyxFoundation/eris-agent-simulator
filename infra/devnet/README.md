@@ -256,15 +256,18 @@ period running in October: no reversion toward the opening price, gaps that stay
 4. Tell participants. The price moves differently from the restart on and the episodes from day N.
    Nothing they hold changes, and the manifest is unchanged.
 
-**Pending (ADR 0029 Amendment 5, 2026-10-30): the gaps' ramp.** The generator now writes crash / spike
-with `rampBlocks: [1, 2]`; the period running since October still has `rampBlocks: 3` on every gap
-line, including the days revised from day 23. A contract an agent calls every block reads a step inside
-the block it lands in and its GMX order fills in the next, so the third block of a 3-block ramp (a third
-of a 2-4% gap, before leverage) goes to whoever joins. Revise as above —
-`npm run gen:practice-episodes -- --revise-from-day N` with N a day that starts after the restart — and
-restart; nothing else in the config changes. Check the diff (`--print` writes it to stdout instead): it
-should touch only crash / spike lines from `# day N` on, two a day. The volBurst lines from the day-23
-revision come back byte for byte (a dry run from day 30 on 2026-10-30 changed 48 lines, all gaps).
+**The gaps' ramp (ADR 0029 Amendment 5), revised from day 23 on 2026-10-31.** The generator writes
+crash / spike with `rampBlocks: [1, 2]`: a contract an agent calls every block reads a step inside the
+block it lands in and its GMX order fills in the next, so the third block of a 3-block ramp (a third of
+a 2-4% gap, before leverage) went to whoever joined. `config/practice.yaml` was rewritten with
+`--revise-from-day 23` (58 lines, two gaps a day from day 23; day 22 and earlier keep `rampBlocks: 3`).
+It takes effect when the box's pin moves to it and the coordinator restarts. **Restart only while the
+chain head is below ~954,000** (`docker exec ascon-anvil cast block-number --rpc-url
+http://127.0.0.1:8545`): day 23's windows open no earlier than run block 953,733 (`windowFrac` 0.955863
+of the base 997,770; run start ~1,413), and the coordinator refuses a revision whose rewritten window
+could open before the head + 300 blocks (checked over 50 seeds: refused from a head offset of ~954,000,
+accepted below). Past that, revert this file to the commit before the revision, rerun with
+`--revise-from-day 26` and merge that instead; days 24-25 have no lines (the extension appended from day 26).
 
 Adding a participant mid-period still does not need a restart — that is what
 `run.registrationsFile` is for ([practice devnet](../../docs/guide/practice-devnet.md)), and entries
