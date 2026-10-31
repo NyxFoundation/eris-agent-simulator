@@ -76,13 +76,21 @@ LLM の手掛かりは現在の戦略コードだけになり、**一度も swap
 知りようがない**（実測: USDC-only 配布で `lp-provider` が 18/18 シナリオ無取引 =
 `docs/scoring-metric-measurements.md` §5.8）。「持っていないことは何もしない理由にならない」も明記する。
 改訂は `{notes, executorTs}` か `{notes, revertTo: <version>}` を返し、`executorTs: null` は
-「今の戦略を維持」。生成コードは **cheatcode 静的検査 + `import` の語の拒否 → vm コンパイル**を通ってから
+「今の戦略を維持」。生成コードは **cheatcode 静的検査 + import 呼び出しの拒否 → vm コンパイル**を通ってから
 設置される。**コンパイルは本体を 1 行も実行しない**（`vm.compileFunction` で関数本体としてパースするだけ）。
 以前は `(async function decide(obs, ctx) {…})` を `Script` で評価していて、本体が `});` で閉じて後ろに文を
 書けた = 改訂を検証する**親プロセス**（鍵を env に持つ）でコンパイル時に実行され、`import()` の reject 理由
-（Node が自分の realm で作る Error）から `process.env` の鍵まで読めた。**`import` は本体のどこにあっても拒否**
-（コメント・文字列の中も。字句解析しないと区別できず、誤検出は改訂 1 回、見逃しは realm）。Node は文脈ごとの
-import フックを `--experimental-vm-modules` 無しでは呼ばないので、語で止める。**vm のコンテキストは空で作る**
+（Node が自分の realm で作る Error）から `process.env` の鍵まで読めた。**コードとしての `import(` / `import.` は拒否**
+（`import()`・`import.source()`・`import.meta`）。Node は文脈ごとの import フックを `--experimental-vm-modules` 無しでは
+呼ばない（24.22.1 で実測: フックは呼ばれずホストの TypeError）ので、ソースで止める。コメント・文字列と区別するために
+本体を **esbuild で整形し**（tsx が使うパーサ。コメントが消え、空白が正規化される）、整形した出力に正規表現を当て、
+**整形した出力そのものを実行する**（検査したものと実行するものが同じなので、HTML 形式のコメントや `//` 中の U+2028 の
+ようにパーサ間で読みが違う書き方でも、検査をすり抜けて V8 に届かない）。コメント・プロパティ名（`obs.import`）の `import`
+は通り、文字列の中の `"import("` と `import` という名前のメソッド定義は誤検出として拒否される（文字列を飛ばすと出力上の 2 つ目の
+字句解析になり、正規表現リテラルを文字列と読み違えると本物のコードを飛ばす）。以前は語ごと拒否していた（コメントの
+`// import price …` でも改訂が落ち、再開時の再検証で `agent.ts` に戻った）。esbuild は `"imp" + "ort(…)"` を 1 つの文字列に
+畳むので、そう書いた改訂は実行前に拒否される。原文も関数本体として V8 でパースし（包みを閉じる本体は従来どおり構文エラー）、
+実行するのは整形した `decide` の宣言。**vm のコンテキストは空で作る**
 （issue #215。`createContext(Object.create(null))`。以前はホストの `Object` / `JSON` / `Math` を渡していて
 `Object.constructor("return process")()` でホスト realm に出られ、worker の `process.env` から鍵が読めた。
 プロトタイプ無しなのは、`{}` だと `this.constructor` がホストの `Object` になるため）。さらに

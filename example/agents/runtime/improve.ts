@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { isProxy } from "node:util/types";
 import { PYTHON_ACTION_VOCABULARY } from "@eris/sdk/pythonVocabulary.js";
 import { compileFunction, createContext, Script } from "node:vm";
+import { transformSync } from "esbuild";
 import { parse as parseYaml } from "yaml";
 import { DecideTimeoutError, withDecideTimeout } from "./decideTimeout.js";
 import { findCheatcodeUsage } from "@eris/sdk/strategyStaticCheck.js";
@@ -699,17 +700,64 @@ const executorBody = (source: string) =>
 
 // `import()` rejects with an error Node creates in its own realm, so the rejection reason of a
 // dynamic import is a host object in any context: `e.constructor.constructor("return process")()`.
-// Node only calls a context's own import hook behind --experimental-vm-modules, so the word is
-// refused in the source instead. The keyword cannot be written with escapes, and with code
-// generation from strings off in the context, eval and the Function constructors cannot assemble it.
-// Matched anywhere, comments and strings included: telling those apart reliably is a JavaScript
-// tokenizer, and a false positive costs one revision where a false negative costs the realm.
-const IMPORT_WORD = /(?<![\w$])import(?![\w$])/;
+// Node only calls a context's own import hook behind --experimental-vm-modules (measured, Node
+// 24.22.1: the hook is not called and the rejection is the host's TypeError), so an import call has
+// to be refused in the source.
+//
+// What has to be refused is an import call or meta-property *in code*: `import(...)`,
+// `import.source(...)` and the like, `import.meta`. An import declaration is a syntax error in a
+// function body, the keyword cannot be written with escapes, and with code generation from strings
+// off in the context, eval and the Function constructors cannot assemble one. Telling code from a
+// comment, a string or a property name (`obs.import`) takes a JavaScript parser, so the source goes
+// through esbuild's (tsx already compiles every agent with it): the printed code has no comments
+// left, one canonical spacing, and an import call in it reads `import(` or `import.`. That text is
+// what is checked, and that text -- not the source -- is what is compiled and run: a construct the
+// two parsers read differently (HTML-like comments, a U+2028 inside a `//` comment) cannot hide a
+// call from the check and still reach V8, because V8 never sees the source.
+//
+// The pattern: `import` not part of a longer name, not a property name (one dot before it; `...` is
+// a spread and is not excused), then `(` or `.`. Strings are still in the printed code, so a string
+// holding the text of a call (`"import(x)"`) is refused, and so is a method *named* import
+// (`{ import() {} }`). Skipping strings would be a second tokenizer over the printed code, and one
+// that misreads a regex literal as a string skips real code; a false refusal costs one revision, a
+// missed call costs the realm.
+const IMPORT_CALL = /(?<![\w$])(?<!(?<!\.)\.)import\s*[(.]/;
 
-function findImport(source: string): number | null {
-  const lines = source.split("\n");
-  for (let i = 0; i < lines.length; i++) if (IMPORT_WORD.test(lines[i])) return i + 1;
-  return null;
+type Printed = { ok: true; code: string } | { ok: false; reason: string };
+
+function printExecutor(source: string): Printed {
+  let code: string;
+  try {
+    code = transformSync(`async function decide(obs, ctx) {\n${source}\n}`, {
+      loader: "js",
+      legalComments: "none",
+      logLevel: "silent",
+    }).code;
+  } catch (error) {
+    const first = (error as { errors?: Array<{ text?: string; location?: { line?: number } }> })
+      .errors?.[0];
+    const line = first?.location?.line;
+    return {
+      ok: false,
+      reason:
+        `compile failed: ${first?.text ?? hostErrorText(error, "the source does not parse")}` +
+        (typeof line === "number" ? ` (line ${line - 1})` : ""),
+    };
+  }
+  const found = IMPORT_CALL.exec(code);
+  if (found) {
+    const at = code.lastIndexOf("\n", found.index) + 1;
+    const end = code.indexOf("\n", found.index);
+    const text = code.slice(at, end === -1 ? undefined : end).trim().slice(0, 120);
+    return {
+      ok: false,
+      reason:
+        `generated code calls import() or uses import.meta (\`${text}\`): there is no module system ` +
+        `in the strategy's sandbox. The word in a comment or as a property name is fine; in a string, ` +
+        `not followed by ( or .`,
+    };
+  }
+  return { ok: true, code };
 }
 
 // Text for something caught where generated code may have supplied it. Only a string or an error of
@@ -792,14 +840,8 @@ export function compileExecutor(source: string): CompileResult {
           .map((f) => `${f.rule} "${f.match}" (line ${f.line})`)
           .join("; "),
     };
-  const importLine = findImport(source);
-  if (importLine !== null)
-    return {
-      ok: false,
-      reason:
-        `generated code uses the word "import" (line ${importLine}): there is no module system ` +
-        `in the strategy's sandbox, and the word is refused anywhere in the body, comments included`,
-    };
+  const printed = printExecutor(source);
+  if (!printed.ok) return printed;
 
   try {
     // Empty: the context's own Math, JSON, Object, Array, BigInt, Map, Set and the rest are what a
@@ -810,7 +852,7 @@ export function compileExecutor(source: string): CompileResult {
     // `this.constructor` at the top of the strategy is the host's Object and
     // `this.constructor.constructor("return process")()` is the host's process.
     // No code from strings: eval and the Function constructors throw an EvalError of the context,
-    // so the source is all the code there is (see IMPORT_WORD). No wasm either (EXECUTOR_LOCKDOWN
+    // so the printed source is all the code there is (see IMPORT_CALL). No wasm either (EXECUTOR_LOCKDOWN
     // also removes the WebAssembly namespace).
     const sandbox = createContext(Object.create(null), {
       codeGeneration: { strings: false, wasm: false },
@@ -821,7 +863,14 @@ export function compileExecutor(source: string): CompileResult {
     new Script(EXECUTOR_LOCKDOWN, { filename: "executor-lockdown.js" }).runInContext(sandbox);
     // The source is the *body* of decide(obs, ctx). Wrapping it here rather than asking the model to
     // emit a complete module keeps the contract small and means there is no import syntax to parse.
-    const decide = compileFunction(executorBody(source), ["obs", "ctx"], {
+    // The source itself is parsed as a function body first, so a body that closes the wrapper is
+    // refused as before (and the model gets V8's message for a syntax error); what runs is the
+    // printed declaration (IMPORT_CALL above), called the same way.
+    compileFunction(executorBody(source), ["obs", "ctx"], {
+      parsingContext: sandbox,
+      filename: "generated-executor.js",
+    });
+    const decide = compileFunction(`${printed.code}\nreturn decide(obs, ctx);`, ["obs", "ctx"], {
       parsingContext: sandbox,
       filename: "generated-executor.js",
     });
@@ -955,7 +1004,7 @@ export function buildRevisionSystem(
       `The body may use only: obs, ctx, and the standard JavaScript built-ins, which are frozen, so`,
       `patching one fails (to serialize a bigint, pass JSON.stringify a replacer rather than`,
       `setting BigInt.prototype.toJSON). There is no require, no eval or new Function,`,
-      `no import (the word is refused anywhere in the body, even in a comment), no process, no network.`,
+      `no import() or import.meta (the word in a comment or as a property name is fine), no process, no network.`,
       `Privileged RPC calls (anvil_*, evm_*, hardhat_*) are`,
     ]),
     `rejected before installation.`,

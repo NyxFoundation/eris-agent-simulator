@@ -213,12 +213,13 @@ model: <モデル名>          # 任意（ロスターの ERIS_LLM_MODEL より�
 ### 3 段のゲート（`compileExecutor`）
 
 ```
-1. 静的検査              findCheatcodeUsage が 1 件でも当たれば拒否。`import` の語が本体のどこかに
-                        あれば拒否（コメント・文字列の中も）
+1. 静的検査              findCheatcodeUsage が 1 件でも当たれば拒否。本体を esbuild で整形し、
+                        出力にコードとしての import( / import. があれば拒否（コメント・プロパティ名は可）
 2. コンパイル            空のコンテキスト（createContext(Object.create(null))、文字列・wasm からのコード
                         生成なし）にブリッジを評価 → WebAssembly / Symbol.for / Symbol.keyFor を削除し
                         組み込みを凍結 → vm.compileFunction で関数本体として
-                        パース。本体はここでは 1 行も実行しない（親プロセスも検証のためにコンパイルする）
+                        パース（原文と、実行する整形済みの出力の両方）。本体はここでは 1 行も実行しない
+                        （親プロセスも検証のためにコンパイルする）
 3. 実行時間の上限        worker で 1 回の呼び出しを 5,000ms で打ち切る（DECIDE_TIMEOUT_MS、規約 §2.3）
 ```
 
