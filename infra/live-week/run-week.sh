@@ -152,7 +152,13 @@ export ERIS_GATEWAY_SEALED_SENDERS="$SEALED"
 docker rm -f "$GATEWAY_CT" "$PROXY_CT" >/dev/null 2>&1 || true
 mkdir -p "runs/rpc-gateway-$MODE" "runs/inference-$MODE"
 LOGOPTS=(--log-opt max-size=100m --log-opt max-file=5)
+# Memory is capped so that a gateway that does run out is the one killed, not anvil or the coordinator
+# on the same host (the gateway charges every caller's buffered bodies against RPC_MAX_BUFFERED_BYTES,
+# 256 MiB by default; the rest is upstream answers in flight). It holds no state worth keeping -- the
+# rate buckets refill -- so it comes back on its own. Agents are told apart by their container's
+# address, not by any header they send: RPC_TRUST_CLOUDFLARE stays unset here (gateway.mjs).
 docker run -d --name "$GATEWAY_CT" --network "$CHAIN_NET" "${LOGOPTS[@]}" \
+  --memory 2g --restart unless-stopped \
   -p "127.0.0.1:$GATEWAY_HOST_PORT:8546" \
   -v "$REPO/infra/rpc-gateway:/app:ro" -v "$REPO/runs/rpc-gateway-$MODE:/var/log/ascon" \
   -e PORT=8546 -e UPSTREAM="http://$DOCKER0:$ANVIL_PORT" -e ENV_NAME=live -e RPC_MAX_PRIORITY_FEE_WEI=0 \
@@ -160,7 +166,10 @@ docker run -d --name "$GATEWAY_CT" --network "$CHAIN_NET" "${LOGOPTS[@]}" \
   -e LOG_FILE=/var/log/ascon/rpc-gateway-live.log \
   node:24.22.1-bookworm-slim node /app/gateway.mjs >/dev/null
 ok "gateway $GATEWAY_CT -> http://$DOCKER0:$ANVIL_PORT (host 127.0.0.1:$GATEWAY_HOST_PORT)"
+# Memory is capped for the same reason as the gateway's. Not restarted automatically: the record's
+# per-agent numbering lives in the process, so a restart is the operator's call (docker logs first).
 docker run -d --name "$PROXY_CT" --network "$CHAIN_NET" "${LOGOPTS[@]}" -p "127.0.0.1:$PROXY_PORT:8790" \
+  --memory 4g \
   -v "$REPO:/app" -v "$SECRETS:/secrets:ro" -w /app -e ERIS_INFERENCE_SECRET "${STATS_ENV[@]}" \
   node:24.22.1-bookworm-slim npx tsx core/src/cli/inferenceProxy.ts \
   --models /secrets/models.yaml --keys /secrets/inference-keys.yaml \

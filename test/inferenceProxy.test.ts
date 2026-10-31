@@ -14,6 +14,7 @@ import {
   createInferenceProxy,
   loadParticipantKeys,
   loadProxyConfig,
+  MAX_OPEN_REQUESTS_PER_AGENT,
   type ProxyOptions,
 } from "../core/src/inference/proxy.js";
 
@@ -908,5 +909,40 @@ test("/v1/responses forwards to the upstream's /responses; stored references are
       assert.equal(refused.status, 403, key);
     }
     assert.equal(seen.length, 1);
+  });
+});
+
+// An agent with a valid token could open any number of requests whose bodies trickle in, each held in
+// memory until the host ran out. Its open requests are capped from before the body is read; another
+// agent is unaffected, and the slot comes back when a request goes away.
+test("one agent's open requests are capped before their bodies are read", { timeout: 10_000 }, async () => {
+  const secret = "s3cret";
+  const as = (agent: string) => ({ "x-eris-agent": agent, authorization: `Bearer ${agentToken(secret, agent)}` });
+  await withProxy({ secret, config: { ...config, maxCallsPerMinute: 0 } }, async (base, seen) => {
+    const { request } = await import("node:http");
+    const held = Array.from({ length: MAX_OPEN_REQUESTS_PER_AGENT }, () => {
+      const req = request(`${base}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "transfer-encoding": "chunked", ...as("alice") },
+      });
+      req.on("error", () => {});
+      req.write('{"model":"gpt-x",');
+      return req;
+    });
+    // Each held request has to have reached the proxy before the next is counted.
+    await new Promise((r) => setTimeout(r, 200));
+    const refused = await post(base, "/v1/chat/completions", { model: "gpt-x", messages: [] }, as("alice"));
+    assert.equal(refused.status, 429);
+    assert.equal(seen.length, 0);
+    assert.equal((await post(base, "/v1/chat/completions", { model: "gpt-x", messages: [] }, as("bob"))).status, 200);
+
+    held[0].destroy();
+    let status = 0;
+    for (let i = 0; i < 50 && status !== 200; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      status = (await post(base, "/v1/chat/completions", { model: "gpt-x", messages: [] }, as("alice"))).status;
+    }
+    assert.equal(status, 200, "a closed request frees its slot");
+    for (const req of held) req.destroy();
   });
 });

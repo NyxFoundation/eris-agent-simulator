@@ -2,7 +2,8 @@ import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { freePort, rpc, startGateway } from "./helpers/localRpc.js";
@@ -289,4 +290,103 @@ test("one client's requests in flight are capped; the slot frees when one finish
   assert.equal((await rpc(gateway, "eth_blockNumber")).body.result, "0x1");
   const metrics = await (await fetch(`${gateway}/metrics`)).text();
   assert.match(metrics, /rpc_in_flight_denied_total\{[^}]+\} 1\n/);
+});
+
+// A caller off Cloudflare writes the cf-* headers itself, so they must not choose its bucket: before,
+// naming a rival's address drained the rival's rate limit and in-flight cap, and rotating the name gave
+// the caller a fresh one per request. Here every request comes from 127.0.0.1 under a different
+// cf-access-client-id; without RPC_TRUST_CLOUDFLARE they are one caller.
+test("cf-* headers do not choose the caller's bucket unless Cloudflare is trusted", { timeout: 20_000 }, async (t) => {
+  const named = (gateway: string, name: string, method: string, params: unknown[] = []) =>
+    fetch(gateway, {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-access-client-id": name, "cf-connecting-ip": `10.0.0.${name.length}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    });
+  const hold = { RPC_MAX_IN_FLIGHT_PER_CLIENT: "2", RPC_UPSTREAM_TIMEOUT_MS: "1500" };
+  const waitHeld = async (upstream: { seen: Call[] }, n: number) => {
+    for (let i = 0; i < 100 && upstream.seen.filter((c) => c.method === "eth_call").length < n; i++)
+      await new Promise((r) => setTimeout(r, 20));
+  };
+
+  const upstream = await startFakeUpstream(t);
+  const gateway = await startGateway(t, upstream.url, { ...hold, RPC_TRUST_CLOUDFLARE: undefined });
+  const held = [named(gateway, "x1", "eth_call", [{ to: HANG }, "latest"]), named(gateway, "x22", "eth_call", [{ to: HANG }, "latest"])];
+  await waitHeld(upstream, 2);
+  assert.equal((await named(gateway, "x333", "eth_blockNumber")).status, 429, "a new name is the same caller");
+  await Promise.all(held);
+
+  const trusted = await startFakeUpstream(t);
+  const behindCf = await startGateway(t, trusted.url, { ...hold, RPC_TRUST_CLOUDFLARE: "1" });
+  const heldCf = [named(behindCf, "x1", "eth_call", [{ to: HANG }, "latest"]), named(behindCf, "x1", "eth_call", [{ to: HANG }, "latest"])];
+  await waitHeld(trusted, 2);
+  assert.equal((await named(behindCf, "x22", "eth_blockNumber")).status, 200, "behind Cloudflare the header names the caller");
+  assert.equal((await named(behindCf, "x1", "eth_blockNumber")).status, 429);
+  await Promise.all(heldCf);
+});
+
+// Bodies a caller has not finished sending are held in memory; they are charged to the caller and
+// capped, and the charge is released when the request goes away.
+test("a caller's unfinished bodies are capped and released when the request closes", { timeout: 20_000 }, async (t) => {
+  const upstream = await startFakeUpstream(t);
+  const gateway = await startGateway(t, upstream.url, { RPC_MAX_BUFFERED_BYTES_PER_CLIENT: "4096" });
+  const open = () => {
+    const req = http.request(gateway, { method: "POST", headers: { "content-type": "application/json", "transfer-encoding": "chunked" } });
+    const status = new Promise<number>((resolve) => {
+      req.on("response", (res) => { res.resume(); resolve(res.statusCode ?? 0); });
+      req.on("error", () => resolve(-1));
+    });
+    req.write("x".repeat(3000));
+    return { req, status };
+  };
+
+  const first = open();
+  await new Promise((r) => setTimeout(r, 100));
+  const second = open();
+  assert.equal(await second.status, 429, "past the per-client byte cap");
+  let metrics = await (await fetch(`${gateway}/metrics`)).text();
+  assert.match(metrics, /rpc_buffer_denied_total\{[^}]+\} 1\n/);
+  assert.match(metrics, /rpc_buffered_bytes\{[^}]+\} 3000\n/);
+
+  first.req.destroy();
+  await first.status;
+  for (let i = 0; i < 50; i++) {
+    metrics = await (await fetch(`${gateway}/metrics`)).text();
+    if (/rpc_buffered_bytes\{[^}]+\} 0\n/.test(metrics)) break;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.match(metrics, /rpc_buffered_bytes\{[^}]+\} 0\n/, "an abandoned body is released");
+  assert.equal((await rpc(gateway, "eth_blockNumber")).body.result, "0x1");
+});
+
+test("with keys configured, a request without one is refused before its body is read", { timeout: 20_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-gw-keys-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const keys = join(dir, "keys.json");
+  writeFileSync(keys, JSON.stringify({ keys: {} }));
+  const upstream = await startFakeUpstream(t);
+  // Not startGateway: its readiness probe is an unkeyed call, which this gateway refuses.
+  const port = await freePort();
+  const gateway = `http://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, ["infra/rpc-gateway/gateway.mjs"], {
+    env: { ...process.env, PORT: String(port), UPSTREAM: upstream.url, RPC_KEYS_FILE: keys, LOG_FILE: "", METRICS_FILE: "" },
+    stdio: "ignore",
+  });
+  t.after(() => { child.kill("SIGKILL"); });
+  for (let i = 0; i < 200; i++) {
+    const up = await fetch(`${gateway}/healthz`).then((r) => r.ok, () => false);
+    if (up) break;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+
+  // The body never ends; the refusal comes anyway.
+  const req = http.request(gateway, { method: "POST", headers: { "content-type": "application/json", "transfer-encoding": "chunked" } });
+  const status = new Promise<number>((resolve) => {
+    req.on("response", (res) => { res.resume(); resolve(res.statusCode ?? 0); });
+    req.on("error", () => resolve(-1));
+  });
+  req.write("{");
+  assert.equal(await status, 403);
+  req.destroy();
+  assert.equal(upstream.bytes(), 0);
 });

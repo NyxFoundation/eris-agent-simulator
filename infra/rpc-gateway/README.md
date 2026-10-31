@@ -31,6 +31,14 @@ Access does not forward `CF-Access-Client-Id`, so the gateway reads the **`commo
 `Cf-Access-Jwt-Assertion` JWT** (= the service token's client_id). Issue one service token per team and
 this column tells you who called what, when.
 
+**Those headers are read only with `RPC_TRUST_CLOUDFLARE=1`.** Off Cloudflare (the live week, where
+agent containers reach the gateway directly) the caller writes `cf-access-client-id`, the JWT and
+`cf-connecting-ip` itself, and they used to be the identity behind the rate limit and the in-flight
+cap: naming a rival's container address in one 300-call batch left the rival 429 on every read and
+send. Without the flag the identity is the socket's address (or the `X-ASCON-Key` id when
+`RPC_KEYS_FILE` is set, which wins either way). The practice gateway in
+`infra/monitoring/docker-compose.yml` sets the flag because the tunnel is its origin.
+
 ## Config (env)
 
 `PORT` (8546) · `UPSTREAM` (http://127.0.0.1:8545) · `ENV_NAME` (live|test) · `LOG_FILE` · `METRICS_FILE` ·
@@ -40,6 +48,10 @@ this column tells you who called what, when.
 `RPC_MAX_BODY_BYTES` (4194304) — the [body cap](#request-body-cap) ·
 `RPC_MAX_CALL_GAS` (10000000) · `RPC_UPSTREAM_TIMEOUT_MS` (5000) · `RPC_MAX_IN_FLIGHT_PER_CLIENT` (16) —
 the [read gas cap, upstream timeout and in-flight cap](#read-gas-cap-upstream-timeout-and-in-flight-cap).
+`RPC_TRUST_CLOUDFLARE` (0) — read identity and address from Cloudflare's headers (above) ·
+`RPC_MAX_BUFFERED_BYTES_PER_CLIENT` (16777216) · `RPC_MAX_BUFFERED_BYTES` (268435456) ·
+`RPC_REQUEST_TIMEOUT_MS` (30000) · `RPC_HEADERS_TIMEOUT_MS` (10000) · `RPC_MAX_CONNECTIONS` (4096) — the
+[buffered-bytes cap](#buffered-bytes-cap).
 Runs as the `rpc-gateway-live` service in `infra/monitoring/docker-compose.yml` (host-net,
 `restart: unless-stopped`); `rpc-gateway-test` (compose profile `test`) is ready for a second env.
 
@@ -321,3 +333,16 @@ not the maxFeePerGas half, which has no switch. `npm run check:ordering -- --liv
 a chain's builder sorts on (run it against the node: its overbid probe is exactly what this refuses).
 
 Reproduce with `node --import tsx --test test/rpcGateway.test.ts`.
+
+## Buffered-bytes cap
+
+The body cap bounds one request; nothing bounded how many a caller kept open. 300 chunked requests that
+never finished took the gateway from 59 MB to 1.43 GB RSS, and one agent container may hold 2,048
+sockets. Every body is now charged to its caller (the identity above) from its first byte until the
+response closes: over `RPC_MAX_BUFFERED_BYTES_PER_CLIENT` it is 429, over `RPC_MAX_BUFFERED_BYTES`
+across all callers 503, and the socket closes either way (`rpc_buffer_denied_total`,
+`rpc_buffered_bytes`). With `RPC_KEYS_FILE` a request without a valid key is refused before its body
+is read. A body that has not arrived within `RPC_REQUEST_TIMEOUT_MS` is cut off (Node's default is
+300 s), and the server holds at most `RPC_MAX_CONNECTIONS` sockets. The live week also runs the
+container with `--memory 2g` (`infra/live-week/run-week.sh`), so that if it does run out it is the
+gateway the host kills, not anvil.
