@@ -489,6 +489,55 @@ export function sanitizeUntrusted(
   return out;
 }
 
+// How deep renderRecordedAction follows a value before writing a marker. Every action the SDK
+// defines is a few levels deep; this only stops a pathological value from overflowing the stack.
+const RECORDED_ACTION_MAX_DEPTH = 32;
+
+/**
+ * Render an action the strategy returned, as it is shown in the revision context.
+ *
+ * The decision ring holds what decide returned *before* the sender validated it, so it can hold
+ * anything a structured clone carries: a bigint (`amountIn: 1000000n`, or a field the strategy
+ * added for its own notes), a cycle, a Map. A bare JSON.stringify threw on the first two, the throw
+ * failed the revision before the model was called, and it kept failing until the entry left the
+ * last RECENT_DECISIONS_SHOWN decisions -- forever, for a strategy that returns one every block. The
+ * mistake the model was there to fix was the one that stopped it being asked. So this never throws:
+ * a bigint is written `1000000n` (the model can see that is what the sender refused), and what JSON
+ * cannot hold is written as a marker.
+ */
+export function renderRecordedAction(action: unknown): string {
+  const ancestors = new Set<object>();
+  const safe = (value: unknown, depth: number): unknown => {
+    if (typeof value === "bigint") return `${value}n`;
+    if (typeof value === "function") return "[function]";
+    if (typeof value === "symbol") return "[symbol]";
+    if (value === null || typeof value !== "object") return value;
+    if (ancestors.has(value)) return "[circular]";
+    if (depth >= RECORDED_ACTION_MAX_DEPTH) return "[too deep]";
+    if (value instanceof Date)
+      return Number.isNaN(value.getTime()) ? "[invalid date]" : value.toISOString();
+    ancestors.add(value);
+    try {
+      if (Array.isArray(value)) return value.map((v) => safe(v, depth + 1));
+      if (value instanceof Map)
+        return {
+          "[map]": [...value.entries()].map(([k, v]) => [safe(k, depth + 1), safe(v, depth + 1)]),
+        };
+      if (value instanceof Set) return { "[set]": [...value].map((v) => safe(v, depth + 1)) };
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value)) out[k] = safe(v, depth + 1);
+      return out;
+    } finally {
+      ancestors.delete(value);
+    }
+  };
+  try {
+    return JSON.stringify(safe(action, 0)) ?? "no action";
+  } catch (error) {
+    return `[action could not be rendered: ${error instanceof Error ? error.message : String(error)}]`;
+  }
+}
+
 /** The same bound applied to every string inside a JSON-shaped value (the observation). */
 export function sanitizeUntrustedDeep<T>(value: T, max = UNTRUSTED_TEXT_MAX): T {
   if (typeof value === "string") return sanitizeUntrusted(value, max) as T;
@@ -682,7 +731,7 @@ export function buildRevisionContext(opts: {
     const outcome = opts.outcomes?.get(r.round);
     lines.push(
       `  block ${r.round}: ${
-        r.action ? sanitizeUntrusted(JSON.stringify(r.action), 2_000) : "no action"
+        r.action ? sanitizeUntrusted(renderRecordedAction(r.action), 2_000) : "no action"
       }` +
         (r.reason ? ` — ${sanitizeUntrusted(r.reason)}` : "") +
         (outcome && outcome.length > 0
