@@ -58,7 +58,7 @@ example/  ──►  sdk/  ◄──  core/  ──►  runs/<id>/  ◄──  d
 | env | 内容 |
 |---|---|
 | `ERIS_AGENT_ID` / `ERIS_AGENT_DIR` | 自分の id と戦略ディレクトリ |
-| `ERIS_RPC_URL` / `ERIS_AGENT_ADDRESS` / `ERIS_AGENT_PRIVATE_KEY` | 接続先と自分の鍵 |
+| `ERIS_RPC_URL` / `ERIS_AGENT_ADDRESS` / `ERIS_AGENT_PRIVATE_KEY` | 接続先と自分の鍵（鍵は env ではなく stdin で届く: `ERIS_AGENT_SECRETS=stdin`、`runtime/agentSecrets.ts`） |
 | `ERIS_PRICE_FEED_ADDRESS` | fair price の配信先 |
 | `ERIS_RUN_ID` / `ERIS_RUN_DIR` / `REPORT_DIR` | ログ出力先（docker の image モードでは `ERIS_RUN_DIR` は自分の view ディレクトリ） |
 | `ERIS_CONFIG` / `ERIS_AGENT_VIEW_DIR` | エージェント用 config（`runs/<id>/agent-view/<id>/config.yaml`。seed なし）と、それと `run-start.json` を置く view ディレクトリ（`core/src/realtime/agentView.ts`） |

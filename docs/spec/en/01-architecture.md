@@ -58,7 +58,7 @@ The contract is **env, on-chain state, and `runs/<id>/agents/<id>.jsonl` — not
 | env | Contents |
 |---|---|
 | `ERIS_AGENT_ID` / `ERIS_AGENT_DIR` | Its id and its strategy directory |
-| `ERIS_RPC_URL` / `ERIS_AGENT_ADDRESS` / `ERIS_AGENT_PRIVATE_KEY` | Where the chain is and who it is |
+| `ERIS_RPC_URL` / `ERIS_AGENT_ADDRESS` / `ERIS_AGENT_PRIVATE_KEY` | Where the chain is and who it is (the key arrives on stdin, not in the environment: `ERIS_AGENT_SECRETS=stdin`, `runtime/agentSecrets.ts`) |
 | `ERIS_PRICE_FEED_ADDRESS` | Where the fair price is published |
 | `ERIS_RUN_ID` / `ERIS_RUN_DIR` / `REPORT_DIR` | Where to log (in docker image mode, `ERIS_RUN_DIR` is the agent's own view directory) |
 | `ERIS_CONFIG` / `ERIS_AGENT_VIEW_DIR` | The agent config (`runs/<id>/agent-view/<id>/config.yaml`, no seed) and the view directory that holds it and `run-start.json` (`core/src/realtime/agentView.ts`) |

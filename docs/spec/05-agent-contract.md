@@ -220,14 +220,16 @@ model: <モデル名>          # 任意（ロスターの ERIS_LLM_MODEL より�
                         組み込みを凍結 → vm.compileFunction で関数本体として
                         パース（原文と、実行する整形済みの出力の両方）。本体はここでは 1 行も実行しない
                         （親プロセスも検証のためにコンパイルする）
-3. 実行時間の上限        worker で 1 回の呼び出しを 5,000ms で打ち切る（DECIDE_TIMEOUT_MS、規約 §2.3）
+3. 実行時間の上限        専用の子プロセスで 1 回の呼び出しを 5,000ms で打ち切る（DECIDE_TIMEOUT_MS、規約 §2.3）
 ```
 
 **vm はサンドボックスではない**（`improve.ts` の `compileExecutor` 冒頭のコメント、ADR 0024）。`ctx` が渡される以上、生成コードは手書き戦略とまったく同じ自由度でチェーンを触れる。vm が取り除くのは*環境能力*と、生成コードから辿れるホスト realm のオブジェクトで、意図に対処するのは cheatcode 検査の方である。
 
 ホスト realm のオブジェクトを渡さない仕組みは 3 つ。(1) obs / ctx はコピーして渡し、読取結果もコピーで戻す（`EXECUTOR_BRIDGE`）。ブリッジが使う組み込みは評価時に定数へ取り、呼び出し時に引かない。ホストのコードが走る読取は全部 try の中にあり、投げられたもの（スタック上限の RangeError を含む）もコピーで返す。(2) 生成コードのコンパイル前に組み込みを全部凍結し、グローバルの束縛を書換不可にする（`EXECUTOR_LOCKDOWN`）。グローバル自体は拡張可能のままで、呼び出しをまたぐ状態を置ける。(3) `eval` / `Function` は EvalError、`import` は静的に拒否（`import()` の reject 理由は Node の realm の Error で、そこからホストの `process` に届くため）。
 
-V8 ではなく Node が答えるものは凍結では足りないので外す。`WebAssembly` は名前空間ごと削除する（`compileStreaming(1)` の reject 理由が Node の realm の Error）。`Symbol.for` / `Symbol.keyFor` も削除する（`nodejs.util.inspect.custom` を作れないようにする。`util.inspect` はこの関数にホストの `inspect` を渡す）。同じ理由で、生成コードの値をホストは文字列化しない。投げられたものはブリッジが vm の中で文字列にして渡し（`invoke` は文字列でしか reject しない）、worker は生成コードの未処理 rejection と uncaught exception に自前のハンドラを置いて値に触れない。未処理 rejection は判断 1 回につき 1 行記録して worker を続け（戦略の状態を捨てず、毎ブロックの worker 起動を避ける）、uncaught exception（`FinalizationRegistry` のコールバックなど）は従来どおり worker を失敗させる（メッセージは固定文）。
+V8 ではなく Node が答えるものは凍結では足りないので外す。`WebAssembly` は名前空間ごと削除する（`compileStreaming(1)` の reject 理由が Node の realm の Error）。`Symbol.for` / `Symbol.keyFor` も削除する（`nodejs.util.inspect.custom` を作れないようにする。`util.inspect` はこの関数にホストの `inspect` を渡す）。同じ理由で、生成コードの値をホストは文字列化しない。投げられたものはブリッジが vm の中で文字列にして渡し（`invoke` は文字列でしか reject しない）、子プロセスは生成コードの未処理 rejection と uncaught exception に自前のハンドラを置いて値に触れない。未処理 rejection は判断 1 回につき 1 行記録してプロセスを続け（戦略の状態を捨てず、毎ブロックの起動を避ける）、uncaught exception（`FinalizationRegistry` のコールバックなど）は従来どおりプロセスを失敗させる（メッセージは固定文）。
+
+**生成コードは鍵を持ったことのないプロセスで動く**。手書きの戦略は agent プロセスの worker thread で動くが、生成コードは専用の子プロセス（`strategyRunner.ts`）で動く。worker は親とメモリを共有するので、vm を抜けたコードは親のヒープから鍵を読めた。子プロセスの env は `strategyEnv()` で、agent プロセス自身も鍵・推論トークン・API キーを env ではなく stdin で受け取る（`agentSecrets.ts`。Linux ではプロセスの起動時の env が `/proc/<pid>/environ` に残り、同じ uid のプロセスから読める）。残る経路は親のメモリで、Yama の `ptrace_scope` が 1 以上なら子孫からは読めない（0 のときは起動時に `isolation:` を記録する）。子にできるのは判断を返して `submit` することだけで、親が `rawTxGuard` を通して署名する。
 
 戻り値は `structuredClone` で自分の realm に持ち帰る（vm 内で作ったオブジェクトは `instanceof Object` に失敗し、検証やログの遠い場所で問題が出る）。
 

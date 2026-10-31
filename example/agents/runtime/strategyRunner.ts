@@ -1,3 +1,6 @@
+import { fork } from "node:child_process";
+import { once } from "node:events";
+import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { AgentContext } from "@eris/sdk/agent.js";
 import type { AgentObservation } from "@eris/sdk/types.js";
@@ -11,11 +14,15 @@ import {
 import { strategyEnv } from "./strategyEnv.js";
 import type {
   StrategyContext,
+  StrategyInit,
   StrategyMetadata,
+  StrategyRequest,
   StrategyResponse,
   StrategyResult,
   StrategySource,
+  StrategyWorkerData,
 } from "./strategyProtocol.js";
+import { UNCAUGHT_EXIT_CODE, UNCAUGHT_MESSAGE } from "./strategyProtocol.js";
 
 type Decision = {
   action: StrategyResult;
@@ -30,8 +37,17 @@ type Pending = {
   resolve(result: Decision): void;
   reject(error: Error): void;
 };
+type Transport = {
+  post(request: StrategyRequest): void;
+  terminate(): Promise<void>;
+};
+type TransportEvents = {
+  message(message: StrategyResponse): void;
+  error(error: Error): void;
+  exit(error: Error): void;
+};
 type Instance = {
-  worker: Worker;
+  transport: Transport;
   source: StrategySource;
   ready: Promise<StrategyMetadata>;
   pending?: Pending;
@@ -82,16 +98,17 @@ export class StrategyRunner {
   }
 
   private spawn(): Instance {
-    const worker = new Worker(
-      new URL("./strategyWorker.mjs", import.meta.url),
-      {
-        workerData: { source: this.source, context: this.context },
-        // The strategy's environment, not the parent's: no wallet key, no inference token, no API
-        // key (strategyEnv.ts, issue #215). The worker signs nothing and calls no model; what it
-        // needs -- the RPC URL, the agent id, its own parameters -- is in workerData or stays.
-        env: strategyEnv(),
-      },
-    );
+    const data: StrategyWorkerData = { source: this.source, context: this.context };
+    const events: TransportEvents = {
+      message: (message) => onMessage(message),
+      error: (error) => instance.fail(error),
+      exit: (error) => instance.fail(error),
+    };
+    // Generated code runs in a process of its own; hand-written code in a worker thread.
+    const transport =
+      this.source.kind === "executor"
+        ? childTransport(data, events)
+        : workerTransport(data, events);
     let resolveReady!: (metadata: StrategyMetadata) => void;
     let rejectReady!: (error: Error) => void;
     const ready = new Promise<StrategyMetadata>((resolve, reject) => {
@@ -111,7 +128,7 @@ export class StrategyRunner {
       this.startupTimeoutMs,
     );
     const instance: Instance = {
-      worker,
+      transport,
       source: this.source,
       ready,
       fail: (error) => {
@@ -128,8 +145,9 @@ export class StrategyRunner {
         }
       },
     };
-    worker.on("message", (message: StrategyResponse) => {
+    const onMessage = (message: StrategyResponse) => {
       if (this.instance !== instance) return;
+      if (message.type === "hello") return;
       if (message.type === "ready") {
         initialized = true;
         clearTimeout(startup);
@@ -170,11 +188,7 @@ export class StrategyRunner {
             submitted: pending.submitted,
           });
       }
-    });
-    worker.on("error", (error) => instance.fail(error));
-    worker.on("exit", (code) =>
-      instance.fail(new Error(`strategy worker exited with code ${code}`)),
-    );
+    };
     return instance;
   }
 
@@ -210,7 +224,7 @@ export class StrategyRunner {
           reject,
         };
         try {
-          instance.worker.postMessage({ id, observation });
+          instance.transport.post({ id, observation });
         } catch (error) {
           instance.fail(
             error instanceof Error ? error : new Error(String(error)),
@@ -249,11 +263,94 @@ export class StrategyRunner {
     if (!instance) return;
     this.instance = undefined;
     instance.fail(new Error("strategy worker disposed"));
-    await instance.worker.terminate();
+    await instance.transport.terminate();
   }
 
   async close(): Promise<void> {
     this.closed = true;
     await this.discard();
   }
+}
+
+function workerTransport(
+  data: StrategyWorkerData,
+  events: TransportEvents,
+): Transport {
+  const worker = new Worker(new URL("./strategyWorker.mjs", import.meta.url), {
+    workerData: data,
+    // The strategy's environment, not the parent's: no wallet key, no inference token, no API key
+    // (strategyEnv.ts, issue #215). The worker signs nothing and calls no model; what it needs --
+    // the RPC URL, the agent id, its own parameters -- is in workerData or stays.
+    env: strategyEnv(),
+  });
+  worker.on("message", events.message);
+  worker.on("error", events.error);
+  worker.on("exit", (code) =>
+    events.exit(new Error(`strategy worker exited with code ${code}`)),
+  );
+  return {
+    post: (request) => worker.postMessage(request),
+    terminate: async () => {
+      await worker.terminate();
+    },
+  };
+}
+
+// A generated executor runs in a child process, not in a thread of this one. This process holds the
+// wallet key and the inference token; a worker thread shares its memory, so code that got out of
+// the vm realm in a worker could read them from the heap (or, on Linux, from /proc/self/environ when
+// they arrived in the environment). The child was never handed either: its environment is
+// strategyEnv(), and the coordinator hands the agent process its secrets on stdin, not in the
+// environment the child could read at /proc/<ppid>/environ (agentSecrets.ts). Reading the parent's
+// memory takes ptrace access, which Yama's ptrace_scope >= 1 denies to a descendant
+// (isolationWarnings in agentSecrets.ts says when it is 0).
+//
+// What the child can still do is what the vm already let the strategy do: answer decisions and
+// submit actions, which the parent checks (rawTxGuard.ts) and signs.
+function childTransport(
+  data: StrategyWorkerData,
+  events: TransportEvents,
+): Transport {
+  const child = fork(
+    fileURLToPath(new URL("./strategyWorker.mjs", import.meta.url)),
+    [],
+    {
+      env: strategyEnv(),
+      // The entry registers its own loader; the parent's flags (an inspector port, a test
+      // runner's) are not the strategy's.
+      execArgv: [],
+      // Structured clone, as postMessage does: observations carry bigints.
+      serialization: "advanced",
+      stdio: ["ignore", "inherit", "inherit", "ipc"],
+    },
+  );
+  const send = (message: StrategyInit | StrategyRequest) =>
+    child.send(message, (error) => {
+      if (error) events.error(error);
+    });
+  child.on("message", (message: StrategyResponse) => {
+    if (message.type === "hello") send({ type: "init", data });
+    events.message(message);
+  });
+  child.on("error", events.error);
+  child.on("exit", (code, signal) =>
+    events.exit(
+      new Error(
+        code === UNCAUGHT_EXIT_CODE
+          ? UNCAUGHT_MESSAGE
+          : signal !== null
+            ? `strategy process exited with signal ${signal}`
+            : `strategy process exited with code ${code}`,
+      ),
+    ),
+  );
+  return {
+    post: (request) => send(request),
+    terminate: async () => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      const exited = once(child, "exit");
+      child.kill("SIGKILL");
+      await exited;
+    },
+  };
 }

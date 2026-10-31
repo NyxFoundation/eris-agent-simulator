@@ -140,10 +140,18 @@ not cheatcodes. The sandbox is its own realm: the observation and the context ar
 every read's result is copied back, so generated code holds no object of the runtime's (there is no
 `obs.constructor.constructor("return process")` route to `process.env`). The copying is done by
 built-ins taken before generated code exists, and those are frozen before it is compiled, so
-replacing one cannot hand the strategy what it was copying. And the worker the strategy
+replacing one cannot hand the strategy what it was copying. And the process the strategy
 runs in — generated or hand-written, TypeScript or Python — carries no secret in its environment:
 not the wallet key, not the inference token, not an API key (`runtime/strategyEnv.ts`). Signing and
 the revision call are the parent's; the strategy parameters from your roster's `env` still arrive.
+A generated revision runs in a **child process of its own**, not in a thread of the agent process
+(`runtime/strategyRunner.ts`), so code that got out of the vm finds a process that never held the
+wallet key. The agent process gets its credentials on stdin rather than in its environment
+(`runtime/agentSecrets.ts`), so the child cannot read them at `/proc/<parent>/environ` either; what
+it could still reach is the parent's memory, which Linux's Yama `ptrace_scope` ≥ 1 (Ubuntu's default)
+keeps from a descendant. A self-improving agent logs `isolation: …` at start when its host leaves
+either open. What the child can do is what the strategy could always do: return and submit actions,
+which the parent checks (`runtime/rawTxGuard.ts`) and signs.
 
 **Do the reading in the runtime, not inside `decide()`.** Every decision runs in a worker under
 `DECIDE_TIMEOUT_MS` (5,000 ms, `runtime/strategyRunner.ts`; rules §2.3), for both shipped and generated
@@ -200,7 +208,7 @@ What else differs from a hand-written strategy, because each was a way out of th
   both ran it through `util.inspect`.
 
 Nothing in the body runs when it is compiled: the parent process compiles every revision to validate
-it, and only the worker ever runs one. Code that fails a check or fails to compile is not installed —
+it, and only the strategy's own child process ever runs one. Code that fails a check or fails to compile is not installed —
 the previous strategy keeps running and the reason is logged. Once installed, every call is bounded
 at 5 seconds (rules §2.3, the same bound a hand-written `decide()` gets); past it the block is no
 action.

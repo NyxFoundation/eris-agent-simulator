@@ -37,6 +37,12 @@
 # there is no shell left after exec to trap it anyway) -- run reap.sh afterwards to sweep survivors.
 set -euo pipefail
 
+# The agent's credentials arrive on this script's stdin (ERIS_AGENT_SECRETS=stdin; the coordinator
+# writes them there rather than into the environment, example/agents/runtime/agentSecrets.ts). Keep
+# that stream for `docker run -i` alone: fd 3 holds it, and every other command here reads
+# /dev/null. A backgrounded command would get /dev/null anyway (`supervise` runs docker with `&`).
+exec 3<&0 </dev/null
+
 REPO="${ERIS_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 MEM="${ERIS_DOCKER_MEM:-4g}"
 CPUS="${ERIS_DOCKER_CPUS:-2}"
@@ -154,6 +160,7 @@ fi
 # `--label eris.role=agent` is what the sweepers match on. Matching on the `eris-` name prefix looked
 # equivalent and is not: `eris-explorer-*` is the local Blockscout stack, so a bench reset on a box
 # that had the explorer running tore it down as collateral.
+# `-i` keeps the container's stdin attached: the credentials come in on it (top of this file).
 # `--init` runs tini as PID 1. Without it the agent's node process *is* PID 1, and Linux does not
 # deliver a signal with its default disposition to PID 1 — node installs no SIGTERM handler, so the
 # agent ignored the coordinator's stop entirely, `docker run` waited for a container that was never
@@ -176,7 +183,7 @@ record_image() {
     >> "$dir/images.jsonl" 2>/dev/null || true
 }
 
-CAPS=( --rm --init --network "${ERIS_AGENT_NET:-host}" --name "$NAME" --label eris.role=agent
+CAPS=( --rm -i --init --network "${ERIS_AGENT_NET:-host}" --name "$NAME" --label eris.role=agent
   --memory="$MEM" --memory-swap="$MEM" --cpus="$CPUS"
   --pids-limit="${ERIS_DOCKER_PIDS:-256}" --ulimit nofile=2048:2048 --security-opt=no-new-privileges
   --cap-drop NET_RAW --read-only --tmpfs /tmp:rw,size=512m,mode=1777 )
@@ -223,6 +230,9 @@ while IFS= read -r name; do
 done < <(compgen -e | grep '^ERIS_' || true)
 # Inference credentials reach the agent only when no inference proxy is named: with a proxy
 # (ERIS_INFERENCE_BASE_URL) the keys live in the proxy and the agent holds a per-agent token instead.
+# The coordinator now hands credentials over on stdin and applies the same rule there
+# (core/src/realtime/agentProcess.ts); this forwards them for a caller that still sets them in the
+# environment (self-test.sh, a participant running this script by hand).
 if [ -z "${ERIS_INFERENCE_BASE_URL:-}" ]; then
   COMMON_ENV+=( -e OLLAMA_API_KEY -e ANTHROPIC_API_KEY -e OPENAI_API_KEY -e OPENAI_BASE_URL )
 fi
@@ -273,7 +283,7 @@ supervise() {
   # window in which a TERM terminates the wrapper normally and the container survives -- small, but
   # this whole function exists because of a window exactly that shape.
   trap stop TERM INT
-  "$@" &
+  "$@" <&3 3<&- &
   CHILD=$!
   wait "$CHILD"
 }

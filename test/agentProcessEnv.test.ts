@@ -290,3 +290,162 @@ test("the epoch ordinal reaches a containerised agent too", async (t) => {
     }
   }
 });
+
+// The runtime's credentials travel on stdin, not in its environment: on Linux the environment a
+// process started with stays readable at /proc/<pid>/environ by every process of its uid, the
+// child a generated strategy runs in among them (example/agents/runtime/agentSecrets.ts).
+async function spawnConvention(
+  t: test.TestContext,
+  bot: string,
+  spec: Partial<AgentSpec> = {},
+  parentEnv: Record<string, string> = {},
+  options: ConstructorParameters<typeof RealtimeAgentProcess>[8] = {},
+): Promise<RealtimeAgentProcess> {
+  const saved = new Map<string, string | undefined>();
+  for (const [k, v] of Object.entries(parentEnv)) {
+    saved.set(k, process.env[k]);
+    process.env[k] = v;
+  }
+  t.after(() => {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+  const dir = mkdtempSync(join(tmpdir(), "eris-secrets-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const agentsDir = join(dir, "agents");
+  mkdirSync(join(agentsDir, "runtime"), { recursive: true });
+  mkdirSync(join(agentsDir, "probe"));
+  writeFileSync(join(agentsDir, "runtime", "bot.ts"), bot);
+  const proc = new RealtimeAgentProcess(
+    { id: "probe", wallet: "AGENT0_PRIVATE_KEY", ...spec } as AgentSpec,
+    "http://127.0.0.1:8545",
+    "0x0000000000000000000000000000000000000001",
+    join(dir, "run"),
+    {
+      privateKey: "0xagentkey",
+      priceFeedAddress: "0x0000000000000000000000000000000000000002",
+      runId: "probe-run",
+    },
+    agentsDir,
+    0,
+    undefined,
+    options,
+  );
+  await new Promise<void>((done) => {
+    proc.onExit = () => done();
+    setTimeout(done, 10_000);
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  return proc;
+}
+
+test("the runtime gets its key and token on stdin, and neither in its environment", async (t) => {
+  const proc = await spawnConvention(
+    t,
+    `import { readFileSync } from "node:fs";
+     console.error(JSON.stringify({ env: process.env, stdin: readFileSync(0, "utf8") }));
+     process.exit(0);`,
+    { env: { ERIS_ARB_SAFETY_BPS: "150", OPENAI_API_KEY: "sk-participant" } },
+    { ERIS_INFERENCE_SECRET: "the operator's" },
+  );
+  const { env, stdin } = JSON.parse(proc.getStderr().trim()) as {
+    env: Record<string, string>;
+    stdin: string;
+  };
+  for (const name of ["ERIS_AGENT_PRIVATE_KEY", "ERIS_INFERENCE_TOKEN", "OPENAI_API_KEY"])
+    assert.equal(env[name], undefined, name);
+  assert.equal(env.ERIS_AGENT_SECRETS, "stdin");
+  // A strategy parameter is not a credential, and stays where strategies read it.
+  assert.equal(env.ERIS_ARB_SAFETY_BPS, "150");
+  const secrets = JSON.parse(stdin) as Record<string, string>;
+  assert.equal(secrets.ERIS_AGENT_PRIVATE_KEY, "0xagentkey");
+  assert.equal(typeof secrets.ERIS_INFERENCE_TOKEN, "string");
+  assert.equal(secrets.OPENAI_API_KEY, "sk-participant");
+});
+
+test("the real prelude puts what stdin carried back into process.env", async (t) => {
+  const proc = await spawnConvention(
+    t,
+    `import { loadAgentSecrets } from ${JSON.stringify(resolve("example/agents/runtime/agentSecrets.ts"))};
+     const source = loadAgentSecrets();
+     console.error(JSON.stringify({ source, key: process.env.ERIS_AGENT_PRIVATE_KEY }));
+     process.exit(0);`,
+  );
+  assert.deepEqual(JSON.parse(proc.getStderr().trim()), {
+    source: "stdin",
+    key: "0xagentkey",
+  });
+});
+
+test("a containerised agent gets its credentials through docker run -i, not -e", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-secrets-docker-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const capture = join(dir, "docker-run.json");
+  writeFileSync(
+    join(bin, "docker"),
+    `#!${process.execPath}\nconst fs = require("node:fs"); const a = process.argv.slice(2);\n` +
+      `if (a[0] === "run") fs.writeFileSync(process.env.ERIS_TEST_CAPTURE, JSON.stringify({ args: a, ` +
+      `stdin: fs.readFileSync(0, "utf8"), key: process.env.ERIS_AGENT_PRIVATE_KEY ?? null }));\n`,
+  );
+  chmodSync(join(bin, "docker"), 0o700);
+  const runDir = join(dir, "runs", "2026-10-31T00-00-00-000Z");
+  const viewDir = join(runDir, "agent-view", "noop");
+  mkdirSync(viewDir, { recursive: true });
+  writeFileSync(join(viewDir, "config.yaml"), "run:\n  blocks: 12\n");
+  const saved = {
+    PATH: process.env.PATH,
+    ERIS_TEST_CAPTURE: process.env.ERIS_TEST_CAPTURE,
+    ERIS_AGENT_IMAGE: process.env.ERIS_AGENT_IMAGE,
+    ERIS_INFERENCE_BASE_URL: process.env.ERIS_INFERENCE_BASE_URL,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  };
+  t.after(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+  process.env.PATH = bin + delimiter + (process.env.PATH ?? "");
+  process.env.ERIS_TEST_CAPTURE = capture;
+  process.env.ERIS_AGENT_IMAGE = "eris-agent:probe";
+  // With a proxy named, the operator's upstream key stays with the operator (as run-agent.sh did).
+  process.env.ERIS_INFERENCE_BASE_URL = "http://ascon-inference-proxy:8790";
+  process.env.ANTHROPIC_API_KEY = "operator-upstream";
+  const proc = new RealtimeAgentProcess(
+    { id: "noop", wallet: "AGENT0_PRIVATE_KEY" } as AgentSpec,
+    "http://127.0.0.1:8545",
+    "0x0000000000000000000000000000000000000001",
+    runDir,
+    {
+      privateKey: "0xagentkey",
+      priceFeedAddress: "0x0000000000000000000000000000000000000002",
+      runId: "probe-run",
+    },
+    resolve("example/agents"),
+    0,
+    undefined,
+    { sandbox: "docker", configPath: join(viewDir, "config.yaml"), viewDir },
+  );
+  await new Promise<void>((done) => {
+    proc.onExit = () => done();
+    setTimeout(done, 10_000);
+  });
+  assert.ok(existsSync(capture), `docker run was never reached: ${proc.getStderr()}`);
+  const { args, stdin, key } = JSON.parse(readFileSync(capture, "utf8")) as {
+    args: string[];
+    stdin: string;
+    key: string | null;
+  };
+  assert.ok(args.includes("-i"), JSON.stringify(args));
+  const forwarded = args.filter((_, i) => args[i - 1] === "-e");
+  assert.ok(!forwarded.includes("ERIS_AGENT_PRIVATE_KEY"), JSON.stringify(forwarded));
+  assert.ok(forwarded.includes("ERIS_AGENT_SECRETS"));
+  assert.equal(key, null);
+  const secrets = JSON.parse(stdin) as Record<string, string>;
+  assert.equal(secrets.ERIS_AGENT_PRIVATE_KEY, "0xagentkey");
+  assert.equal(secrets.ANTHROPIC_API_KEY, undefined);
+});

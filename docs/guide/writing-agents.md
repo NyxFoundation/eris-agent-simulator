@@ -62,7 +62,8 @@ All sends share the runtime's nonce allocator and `submitted` / `rejected` / `su
 read-only, including its `request()` transport. A separately constructed sender on the same key can
 collide with the runtime nonce and omit submission records.
 
-`decide()` runs in a worker with a 5,000 ms deadline enforced by the parent thread. Even a synchronous
+`decide()` runs in a worker with a 5,000 ms deadline enforced by the parent thread (a revision a
+self-improving agent generated runs in a child process of its own instead, under the same deadline). Even a synchronous
 infinite loop becomes `decide timeout:` with no actions from that call. `ctx.submit()` queues actions
 until the decision succeeds; returning `null` still commits queued submissions, while throwing or
 timing out discards them. Do not submit from callbacks after `decide()` has returned. `ctx.log()`
@@ -76,7 +77,9 @@ every credential (`runtime/strategyEnv.ts`): `ERIS_AGENT_PRIVATE_KEY`, `ERIS_INF
 `ERIS_LLM_*`, anything ending in `_API_KEY` / `_TOKEN` / `_SECRET` / `_PRIVATE_KEY` is absent there,
 while the parameters your roster's `env` sets (`ERIS_ARB_SAFETY_BPS`, ...) arrive as before. A
 strategy signs nothing and calls no model, so it has no use for them; the same filter applies to a
-Python strategy's process. `onObservation()` is for self-driven `run(ctx)`
+Python strategy's process. The agent process itself receives the credentials on stdin from the
+coordinator, not in its environment (`runtime/agentSecrets.ts`): on Linux a process's starting
+environment stays readable at `/proc/<pid>/environ` by every process of its user. `onObservation()` is for self-driven `run(ctx)`
 agents; a `decide()` strategy receives observations through its arguments. Self-driven agents keep
 their existing process lifecycle and immediate `ctx.submit()` behavior.
 

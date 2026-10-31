@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -530,5 +531,31 @@ test(
     );
     assert.ok(!existsSync(proof), "the custom inspect function reached the worker's process");
     assert.deepEqual((await runner.decide(obs(1000))).action, { type: "noop", reason: "after" });
+  },
+);
+
+// A generated revision runs in a child process of its own, not in a thread of the agent process
+// that holds the wallet key: code that escapes the vm finds a process that never held it.
+const strategyChildren = () =>
+  execFileSync("ps", ["-A", "-o", "ppid=,command="], { encoding: "utf8" })
+    .split("\n")
+    .filter((line) => {
+      const [ppid] = line.trim().split(/\s+/, 1);
+      return Number(ppid) === process.pid && line.includes("strategyWorker.mjs");
+    });
+
+test(
+  "a generated revision runs in a child process, and none is left once the runner closes",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    const { runner } = fixture(t, `export function decide() { return { type: 'noop' }; }`, 2000);
+    await runner.decide(obs(1));
+    // The hand-written module ran in a worker: no child.
+    assert.deepEqual(strategyChildren(), []);
+    runner.setSource({ kind: "executor", source: `return { type: 'noop', reason: 'generated' };` });
+    assert.deepEqual((await runner.decide(obs(2))).action, { type: "noop", reason: "generated" });
+    assert.equal(strategyChildren().length, 1);
+    await runner.close();
+    assert.deepEqual(strategyChildren(), []);
   },
 );
