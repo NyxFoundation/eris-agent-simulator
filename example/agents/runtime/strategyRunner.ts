@@ -1,6 +1,11 @@
 import { fork } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
+import { existsSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildSync } from "esbuild";
 import { Worker } from "node:worker_threads";
 import type { AgentContext } from "@eris/sdk/agent.js";
 import type { AgentObservation } from "@eris/sdk/types.js";
@@ -305,20 +310,31 @@ function workerTransport(
 // memory takes ptrace access, which Yama's ptrace_scope >= 1 denies to a descendant
 // (isolationWarnings in agentSecrets.ts says when it is 0).
 //
+// And the child runs under Node's permission model: it may read its own entry file and nothing else,
+// write nothing, start no process, no worker, no addon, no WASI, no inspector. Code that escapes
+// the vm (a dynamic import() rejects with an error of Node's realm, one `.constructor.constructor`
+// from `process`) gets a process that can read the chain and talk to its parent, which is what the
+// strategy could already do -- not the participant's files, and not a shell on their machine. Node
+// does not restrict the network in this version, and says the model is not a guarantee against
+// malicious code; it is one wall behind the vm, not the only one.
+//
 // What the child can still do is what the vm already let the strategy do: answer decisions and
 // submit actions, which the parent checks (rawTxGuard.ts) and signs.
 function childTransport(
   data: StrategyWorkerData,
   events: TransportEvents,
 ): Transport {
+  const entry = childEntry();
+  const env = strategyEnv();
+  // A loader named here would be read from outside the entry, and refused.
+  delete env.NODE_OPTIONS;
   const child = fork(
-    fileURLToPath(new URL("./strategyWorker.mjs", import.meta.url)),
+    entry,
     [],
     {
-      env: strategyEnv(),
-      // The entry registers its own loader; the parent's flags (an inspector port, a test
-      // runner's) are not the strategy's.
-      execArgv: [],
+      env,
+      // The parent's flags (a loader, an inspector port, a test runner's) are not the strategy's.
+      execArgv: ["--permission", `--allow-fs-read=${entry}`],
       // Structured clone, as postMessage does: observations carry bigints.
       serialization: "advanced",
       stdio: ["ignore", "inherit", "inherit", "ipc"],
@@ -353,4 +369,38 @@ function childTransport(
       await exited;
     },
   };
+}
+
+// The child's entry: strategyWorker.ts and everything it imports, bundled into one ES module. The
+// usual entry (strategyWorker.mjs) loads TypeScript through tsx, which reads the sources and the
+// packages and runs esbuild as a process of its own -- three things the child may not do. So this
+// process bundles it once, writes the file under the temp directory (named by its content, so
+// agents on one host share it and a changed runtime gets a new one) and the child reads only that.
+let entryPath: string | undefined;
+function childEntry(): string {
+  if (entryPath) return entryPath;
+  const result = buildSync({
+    entryPoints: [fileURLToPath(new URL("./strategyWorker.ts", import.meta.url))],
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node22",
+    write: false,
+    logLevel: "silent",
+    // Bundled CommonJS calls require(); an ES module has none of its own.
+    banner: {
+      js: 'import { createRequire as __erisCreateRequire } from "node:module"; const require = __erisCreateRequire(import.meta.url);',
+    },
+  });
+  const code = result.outputFiles[0].contents;
+  const hash = createHash("sha256").update(code).digest("hex").slice(0, 16);
+  // The permission model compares real paths, and macOS's temp directory is behind a symlink.
+  const path = join(realpathSync(tmpdir()), `eris-strategy-child-${hash}.mjs`);
+  if (!existsSync(path)) {
+    const partial = `${path}.${process.pid}.tmp`;
+    writeFileSync(partial, code);
+    renameSync(partial, path);
+  }
+  entryPath = path;
+  return path;
 }

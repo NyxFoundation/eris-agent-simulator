@@ -695,7 +695,7 @@ test("compileExecutor: the system prompt's 'no process, no network' is what the 
   const system = buildRevisionSystem(agent, "return null;");
   assert.match(system, /no eval or new Function/);
   assert.match(system, /built-ins, which are frozen/);
-  assert.match(system, /no import\(\) or import\.meta \(the word in a comment or as a property name is fine\)/);
+  assert.match(system, /no modules to import \(a dynamic import\(\) always fails\)/);
   for (const source of [`return eval("1");`, `return new Function("return 1")();`]) {
     const r = compileExecutor(source);
     assert.ok(r.ok);
@@ -726,12 +726,13 @@ test("compileExecutor: the system prompt's 'no process, no network' is what the 
     await polyfill.executor({ round: 1 } as never, hostContext({ logs: [], submitted: [] })),
     { type: "noop", patched: "TypeError", replaced: '{"a":"1"}' },
   );
-  // What the prompt says about import is what the check does: a comment naming it is code like any
-  // other, a call is refused and the reason quotes the line.
+  // What the prompt says about import is what happens: a dynamic import compiles and always fails.
   assert.ok(compileExecutor(`// import nothing\nreturn null;`).ok);
-  const imported = compileExecutor(`const m = await import("node:fs");\nreturn null;`);
-  assert.ok(!imported.ok);
-  assert.match(imported.reason, /calls import\(\) or uses import\.meta \(`const m = await import\("node:fs"\);`\)/);
+  const imported = compileExecutor(
+    `return import("node:fs").then(() => "loaded", () => "failed");`,
+  );
+  assert.ok(imported.ok);
+  assert.equal(await imported.executor({ round: 1 } as never, hostContext({ logs: [], submitted: [] })), "failed");
 });
 
 // ---- chain-derived text is data, not instructions (issue #214 item 3) ----

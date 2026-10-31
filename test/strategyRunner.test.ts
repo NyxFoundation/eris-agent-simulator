@@ -541,7 +541,7 @@ const strategyChildren = () =>
     .split("\n")
     .filter((line) => {
       const [ppid] = line.trim().split(/\s+/, 1);
-      return Number(ppid) === process.pid && line.includes("strategyWorker.mjs");
+      return Number(ppid) === process.pid && line.includes("eris-strategy-child-");
     });
 
 test(
@@ -557,5 +557,55 @@ test(
     assert.equal(strategyChildren().length, 1);
     await runner.close();
     assert.deepEqual(strategyChildren(), []);
+  },
+);
+
+// What code that escapes the vm gets: a dynamic import() rejects with an error of Node's realm, and
+// that error's constructor's constructor is the process's Function. In the child that process holds
+// no credential and runs under Node's permission model: no file outside its own entry to read,
+// nothing to write, no process or worker to start.
+test(
+  "a generated revision that escapes through import() finds a process that can read, write and spawn nothing",
+  { skip: process.platform === "win32", timeout: 15_000 },
+  async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), "eris-escape-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const secretFile = join(dir, "secret.txt");
+    writeFileSync(secretFile, "participant's file");
+    const proof = join(dir, "proof.txt");
+    const before = process.env.ERIS_AGENT_PRIVATE_KEY;
+    process.env.ERIS_AGENT_PRIVATE_KEY = "0xparentkey";
+    t.after(() => {
+      if (before === undefined) delete process.env.ERIS_AGENT_PRIVATE_KEY;
+      else process.env.ERIS_AGENT_PRIVATE_KEY = before;
+    });
+    const { runner } = fixture(t, `export function decide() { return { type: 'noop' }; }`, 5000);
+    runner.setSource({
+      kind: "executor",
+      source: `
+        let p;
+        try { await import("node:fs"); } catch (e) { p = e.constructor.constructor("return process")(); }
+        const tryIt = (f) => { try { f(); return "allowed"; } catch (e) { return String(e && e.code); } };
+        return {
+          type: "noop",
+          escaped: typeof p === "object",
+          key: p.env.ERIS_AGENT_PRIVATE_KEY ?? null,
+          read: tryIt(() => p.getBuiltinModule("fs").readFileSync(${JSON.stringify(secretFile)}, "utf8")),
+          write: tryIt(() => p.getBuiltinModule("fs").writeFileSync(${JSON.stringify(proof)}, "x")),
+          spawn: tryIt(() => p.getBuiltinModule("child_process").execFileSync("true")),
+          worker: tryIt(() => new (p.getBuiltinModule("worker_threads").Worker)("1", { eval: true })),
+        };
+      `,
+    });
+    assert.deepEqual((await runner.decide(obs(1))).action, {
+      type: "noop",
+      escaped: true,
+      key: null,
+      read: "ERR_ACCESS_DENIED",
+      write: "ERR_ACCESS_DENIED",
+      spawn: "ERR_ACCESS_DENIED",
+      worker: "ERR_ACCESS_DENIED",
+    });
+    assert.ok(!existsSync(proof));
   },
 );

@@ -184,14 +184,13 @@ run through the cheatcode static check before it is installed**, so `anvil_*` / 
 
 What else differs from a hand-written strategy, because each was a way out of the sandbox:
 
-- **An import call is refused**: `import(...)`, `import.source(...)` and the like, and `import.meta`.
-  A dynamic `import()` rejects with an error Node creates in its own realm, and from that error the
-  host's `process` is one `constructor.constructor` away. The body is printed by esbuild first (the
-  parser tsx uses), the printed code is checked, and the printed code is what runs, so the word
-  `import` in a comment or as a property name (`obs.import`) is fine. Two things are refused although
-  they are not calls: a string holding the text of one (`"import(x)"`) and a method named `import`.
+- **There are no modules to load.** A dynamic `import()` compiles and always fails; `import.meta`
+  does not compile. Its failure is an error Node creates in its own realm, and from that error a
+  process is one `constructor.constructor` away -- which is why generated code runs in a child process
+  that holds no credential and, under Node's permission model, can read nothing but its own bundle,
+  write nothing and start no process or worker (`runtime/strategyRunner.ts`).
 - **No code from strings.** `eval` and `new Function` throw an `EvalError`, so the source is all the
-  code there is (otherwise `["imp", "ort"].join("")` would get past the check above).
+  code there is.
 - **The built-ins are frozen.** `Array.prototype.sum = …` throws, and so does replacing a global such
   as `globalThis.Map`. Assigning over a built-in method on your own object (`arr.filter = f`) is
   ignored, or throws in strict code; use `Object.defineProperty` if you mean it. The usual cases
