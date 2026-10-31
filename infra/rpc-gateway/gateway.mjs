@@ -15,6 +15,9 @@
 //      RPC_MAX_BODY_BYTES (4194304) largest request body accepted; over it is 413 and the socket closes
 //      RPC_MAX_CALL_GAS (10000000; 0 disables) gas written into eth_call / eth_estimateGas / eth_createAccessList
 //      RPC_UPSTREAM_TIMEOUT_MS (5000; 0 disables) RPC_MAX_IN_FLIGHT_PER_CLIENT (16; 0 disables)
+//      RPC_TRUST_CLOUDFLARE (0) read the caller's identity and address from Cloudflare's headers
+//      RPC_MAX_BUFFERED_BYTES_PER_CLIENT (16777216) RPC_MAX_BUFFERED_BYTES (268435456)
+//      RPC_REQUEST_TIMEOUT_MS (30000) RPC_HEADERS_TIMEOUT_MS (10000) RPC_MAX_CONNECTIONS (4096)
 import http from "node:http";
 import { createWriteStream, writeFileSync, renameSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -344,6 +347,39 @@ let feeDenied = 0;
 const MAX_BODY_BYTES = Number(process.env.RPC_MAX_BODY_BYTES ?? "4194304");
 let bodyDenied = 0;
 
+// ---- who is calling: trust Cloudflare's headers only when Cloudflare is in front ----
+// Without RPC_KEYS_FILE the identity behind the rate limit and the in-flight cap used to be whatever
+// the request put in `cf-access-client-id` / an unsigned `cf-access-jwt-assertion`, and the address
+// whatever it put in `cf-connecting-ip`. Behind Cloudflare Access those headers are set by the edge;
+// anywhere else -- the live week, where agent containers reach this gateway directly -- the caller
+// writes them. A caller could then name a rival's bucket (its container address is predictable) and
+// drain it: one 300-call batch and the rival is 429 on every read and send, for as long as the
+// attacker keeps paying ~100 cheap calls a second. And rotating the name gave the caller a fresh
+// bucket per request. So the headers are read only where the deployment says the edge sets them
+// (RPC_TRUST_CLOUDFLARE=1); otherwise the identity is the socket's address, which a container
+// without NET_ADMIN cannot choose. With RPC_KEYS_FILE the issued key is the identity either way.
+const TRUST_CLOUDFLARE = process.env.RPC_TRUST_CLOUDFLARE === "1";
+
+// ---- memory a caller can hold before any check has looked at it ----
+// The body cap bounds one request; nothing bounded how many a caller kept open. 300 chunked requests
+// that never finished took the gateway from 59 MB to 1.43 GB RSS (measured), and an agent container
+// may hold 2,048 sockets -- ~9.5 GB, enough to have the host kill the gateway (every participant off
+// the chain) or anvil / the coordinator (the epoch). Bodies are now charged to the caller from their
+// first byte until the response is closed: past RPC_MAX_BUFFERED_BYTES_PER_CLIENT (16 MiB = 4 bodies
+// at the cap; the reference runtime has one ~100s-of-KB batch out per tick) the request is 429 and
+// the socket closes, and past RPC_MAX_BUFFERED_BYTES across all callers it is 503. A body that is
+// not finished within RPC_REQUEST_TIMEOUT_MS is cut off (Node's default is 300 s), and the gateway
+// holds at most RPC_MAX_CONNECTIONS sockets. The per-client charge is keyed on the identity above,
+// so it is only as good as that identity -- which is why the two fixes ship together.
+const MAX_BUFFERED_PER_CLIENT = Number(process.env.RPC_MAX_BUFFERED_BYTES_PER_CLIENT ?? String(16 * 1024 * 1024));
+const MAX_BUFFERED_TOTAL = Number(process.env.RPC_MAX_BUFFERED_BYTES ?? String(256 * 1024 * 1024));
+const REQUEST_TIMEOUT_MS = Number(process.env.RPC_REQUEST_TIMEOUT_MS ?? "30000");
+const HEADERS_TIMEOUT_MS = Number(process.env.RPC_HEADERS_TIMEOUT_MS ?? "10000");
+const MAX_CONNECTIONS = Number(process.env.RPC_MAX_CONNECTIONS ?? "4096");
+const clientBuffered = new Map();   // identity -> bytes held for its open requests
+let bufferedTotal = 0;
+let bufferDenied = 0;
+
 // ---- unmined transactions stay sealed when read by hash (issue #216 (3)) ----
 // eth_getTransactionByHash / eth_getRawTransactionByHash stay on ALLOWED_METHODS: the receipt poll,
 // explorers and replay tooling read mined transactions through them. But anvil answers them for pool
@@ -484,6 +520,8 @@ function metricsText() {
   o += `# TYPE rpc_method_denied_total counter\nrpc_method_denied_total{${L}} ${methodDenied}\n`;
   o += `# TYPE rpc_params_denied_total counter\nrpc_params_denied_total{${L}} ${paramsDenied}\n`;
   o += `# TYPE rpc_body_denied_total counter\nrpc_body_denied_total{${L}} ${bodyDenied}\n`;
+  o += `# TYPE rpc_buffer_denied_total counter\nrpc_buffer_denied_total{${L}} ${bufferDenied}\n`;
+  o += `# TYPE rpc_buffered_bytes gauge\nrpc_buffered_bytes{${L}} ${bufferedTotal}\n`;
   o += `# TYPE rpc_pending_sealed_total counter\nrpc_pending_sealed_total{${L}} ${pendingSealed}\n`;
   o += `# TYPE rpc_call_gas_capped_total counter\nrpc_call_gas_capped_total{${L}} ${callGasCapped}\n`;
   o += `# TYPE rpc_pending_sender_sealed_total counter\nrpc_pending_sender_sealed_total{${L}} ${pendingSenderSealed}\n`;
@@ -499,6 +537,11 @@ function clientFromReq(req) {
   // The issued key wins where it is configured; Access is then only the outer gate and no longer
   // the thing that says *who* this is.
   if (KEYS_FILE) return idForKey(req.headers["x-ascon-key"]);
+  // Not behind Cloudflare: the caller wrote these headers, so they name nobody (see TRUST_CLOUDFLARE).
+  if (!TRUST_CLOUDFLARE) return "";
+  // Access consumes CF-Access-Client-Id for auth and does not forward it; it passes the verified
+  // identity in the Cf-Access-Jwt-Assertion JWT, whose signature Access already checked, so a plain
+  // base64url decode of the payload is enough.
   const jwt = req.headers["cf-access-jwt-assertion"];
   if (jwt) {
     try {
@@ -508,6 +551,11 @@ function clientFromReq(req) {
     } catch { /* fall through */ }
   }
   return req.headers["cf-access-client-id"] || "";
+}
+
+/** The caller's address: the edge's header behind Cloudflare, the socket's otherwise. */
+function ipFromReq(req) {
+  return (TRUST_CLOUDFLARE && req.headers["cf-connecting-ip"]) || req.socket.remoteAddress || "";
 }
 
 function forward(bodyBuf, cb) {
@@ -540,12 +588,57 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && (req.url === "/healthz" || req.url === "/")) { res.writeHead(200); return res.end("ok\n"); }
   if (req.method !== "POST") { res.writeHead(405); return res.end("method not allowed\n"); }
 
+  // Identity from the headers and the socket alone, so it is known before a byte of the body is held.
+  const client = clientFromReq(req);
+  const ip = ipFromReq(req);
+  // No valid key, no chain -- and no body read. Checked before the allowlist so an unauthenticated
+  // caller cannot use the difference between "method not permitted" and "rate limited" to map the
+  // gateway, and before buffering so it cannot hold the gateway's memory either.
+  if (KEYS_FILE && !client) {
+    keyDenied++;
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, status: "key_denied", ip });
+    res.writeHead(403, { "content-type": "application/json", connection: "close" });
+    return res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "missing or unknown X-ASCON-Key" } }), () => req.destroy());
+  }
+  const who = client || ip || "anon";
+
+  // Bytes charged to `who` for this request, released once when the response closes.
+  let held = 0, released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    bufferedTotal -= held;
+    const left = (clientBuffered.get(who) || 0) - held;
+    if (left > 0) clientBuffered.set(who, left); else clientBuffered.delete(who);
+    held = 0;
+  };
+  res.on("close", release);
+  const refuseBuffer = (scope) => {
+    bufferDenied++;
+    const perClient = scope === "client";
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, status: "buffer_denied", scope, limit: perClient ? MAX_BUFFERED_PER_CLIENT : MAX_BUFFERED_TOTAL, client, ip });
+    res.writeHead(perClient ? 429 : 503, { "content-type": "application/json", connection: "close" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32005, message: perClient
+      ? `too many request bytes held open (limit ${MAX_BUFFERED_PER_CLIENT} per client)`
+      : "gateway is holding too many request bytes; retry" } }), () => req.destroy());
+  };
+  // Charge n more bytes; false (and the request refused) when that would pass a cap.
+  const charge = (n) => {
+    const mine = clientBuffered.get(who) || 0;
+    if (MAX_BUFFERED_PER_CLIENT > 0 && mine + n > MAX_BUFFERED_PER_CLIENT) { refuseBuffer("client"); return false; }
+    if (MAX_BUFFERED_TOTAL > 0 && bufferedTotal + n > MAX_BUFFERED_TOTAL) { refuseBuffer("total"); return false; }
+    clientBuffered.set(who, mine + n);
+    bufferedTotal += n;
+    held += n;
+    return true;
+  };
+
   // Body cap: refuse on the declared length before reading, and on the bytes received while reading
   // (a client need not declare, or declare truthfully). The reply is written before the socket is
   // closed so the client sees a 413 rather than a reset; the request is not read to its end.
   const refuseBody = (bytes) => {
     bodyDenied++;
-    logline({ ts: new Date().toISOString(), env: ENV_NAME, status: "body_denied", bytes, limit: MAX_BODY_BYTES, ip: req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "" });
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, status: "body_denied", bytes, limit: MAX_BODY_BYTES, client, ip });
     res.writeHead(413, { "content-type": "application/json", connection: "close" });
     res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32600, message: `request body exceeds ${MAX_BODY_BYTES} bytes` } }), () => req.destroy());
   };
@@ -556,7 +649,8 @@ const server = http.createServer((req, res) => {
   req.on("data", (c) => {
     if (tooLarge) return;
     received += c.length;
-    if (received > MAX_BODY_BYTES) { tooLarge = true; chunks.length = 0; return refuseBody(received); }
+    if (received > MAX_BODY_BYTES) { tooLarge = true; chunks.length = 0; release(); return refuseBody(received); }
+    if (!charge(c.length)) { tooLarge = true; chunks.length = 0; release(); return; }
     chunks.push(c);
   });
   // A client that resets mid-body emits "error" on the request; unhandled, that also ends the process.
@@ -565,7 +659,7 @@ const server = http.createServer((req, res) => {
     if (tooLarge) return;
     // Nothing a request carries may end the process: an exception here used to propagate out of the
     // event handler uncaught, taking every in-flight request down with it.
-    try { handle(req, res, chunks); }
+    try { handle(req, res, chunks, client, ip, who); }
     catch (e) {
       process.stderr.write("request handler error: " + (e && e.stack || e) + "\n");
       if (!res.headersSent) { res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32603, message: "gateway internal error" } })); }
@@ -574,28 +668,13 @@ const server = http.createServer((req, res) => {
   });
 });
 
-function handle(req, res, chunks) {
+function handle(req, res, chunks, client, ip, who) {
   let bodyBuf = Buffer.concat(chunks);
   let parsed, isBatch = false, methods = [];
   try { parsed = JSON.parse(bodyBuf.toString("utf8")); } catch { parsed = null; }
   if (Array.isArray(parsed)) { isBatch = true; methods = parsed.map((x) => x && x.method).filter(Boolean); observeBatch(parsed.length); }
   else if (parsed && parsed.method) { methods = [parsed.method]; }
   const label = isBatch ? "_batch" : methodLabel(methods[0]);
-  // Cloudflare Access consumes CF-Access-Client-Id for auth and does not forward it; it passes the
-  // verified identity in the Cf-Access-Jwt-Assertion JWT. We only read it for logging (Access already
-  // verified the signature), so a plain base64url decode of the payload is enough.
-  const client = clientFromReq(req);
-  const ip = req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "";
-
-  // No valid key, no chain. Checked before the allowlist so an unauthenticated caller cannot use
-  // the difference between "method not permitted" and "rate limited" to map the gateway.
-  if (KEYS_FILE && !client) {
-    keyDenied++;
-    logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, status: "key_denied", ip });
-    res.writeHead(403, { "content-type": "application/json" });
-    return res.end(JSON.stringify({ jsonrpc: "2.0", id: isBatch ? null : (parsed?.id ?? null),
-      error: { code: -32001, message: "missing or unknown X-ASCON-Key" } }));
-  }
 
   // Bound the shape before any check walks it (see someString). Applies with RPC_FILTER=0 as well:
   // the limits are far above anything a standard method sends.
@@ -664,7 +743,6 @@ function handle(req, res, chunks) {
   }
 
   // per-client in-flight cap -> 429 before touching anvil (and before spending the client's tokens)
-  const who = client || ip || "anon";
   const open = clientInFlight.get(who) || 0;
   if (MAX_IN_FLIGHT_PER_CLIENT > 0 && open >= MAX_IN_FLIGHT_PER_CLIENT) {
     inFlightDenied++;
@@ -702,6 +780,11 @@ function handle(req, res, chunks) {
     res.end(upBody);
   }));
 }
+
+// Node's defaults let a body trickle in for 300 s; every byte of it is held (and charged) meanwhile.
+server.requestTimeout = REQUEST_TIMEOUT_MS;
+server.headersTimeout = Math.min(HEADERS_TIMEOUT_MS, REQUEST_TIMEOUT_MS || HEADERS_TIMEOUT_MS);
+if (MAX_CONNECTIONS > 0) server.maxConnections = MAX_CONNECTIONS;
 
 server.listen(PORT, () => process.stdout.write(`rpc-gateway env=${ENV_NAME} :${PORT} -> ${UPSTREAM.href}${METRICS_FILE ? " textfile=" + METRICS_FILE : ""}\n`));
 

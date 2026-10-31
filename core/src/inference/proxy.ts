@@ -110,6 +110,16 @@ export const MAX_STREAM_BYTES = 32 * 1024 * 1024;
 // Both are ceilings on an accident, not budgets to fill.
 export const MAX_RECORD_BYTES_PER_AGENT = 256 * 1024 * 1024;
 export const MAX_RECORD_BYTES_TOTAL = 8 * 1024 * 1024 * 1024;
+// Requests one agent may have open at once, counted from before its body is read until the response
+// closes. A body (up to 4 MiB) is held for the whole call, which can be minutes, and the rate limit is
+// only checked once the body is in -- so before this an agent with a valid token could open thousands
+// of connections that each trickled in a body and hold the proxy's memory until the host killed it
+// (the same shape as the RPC gateway's, which was measured at 1.43 GB for 300 connections). The
+// reference runtime has one revision call out at a time; 8 leaves room for retries overlapping.
+export const MAX_OPEN_REQUESTS_PER_AGENT = 8;
+// How long a request may take to arrive, headers and body. Node's default is 300 s.
+export const REQUEST_TIMEOUT_MS = 60_000;
+export const HEADERS_TIMEOUT_MS = 10_000;
 
 export type ProxyOptions = {
   config: ProxyConfig;
@@ -422,6 +432,8 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
     ? "participant"
     : "operator";
   let credentialsRefused = 0;
+  const openRequests = new Map<string, number>();
+  let openRefused = 0;
   const refusedOnce = new Set<string>();
   const replay = opts.replayDir ? new Replay(opts.replayDir) : null;
   const seq = new Map<string, number>();
@@ -581,6 +593,7 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
         ok: true,
         recording: stats(),
         handlerErrors,
+        openRequestsRefused: openRefused,
         credentials: { mode: credentialsMode, refused: credentialsRefused },
       });
     }
@@ -612,6 +625,24 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
         });
     }
     const who = agentId || "anonymous";
+
+    // ---- how much this agent already holds open ----
+    const open = openRequests.get(who) ?? 0;
+    if (open >= MAX_OPEN_REQUESTS_PER_AGENT) {
+      openRefused++;
+      return send(res, 429, {
+        error: `too many requests open (limit ${MAX_OPEN_REQUESTS_PER_AGENT} per agent)`,
+      });
+    }
+    openRequests.set(who, open + 1);
+    let closed = false;
+    res.on("close", () => {
+      if (closed) return;
+      closed = true;
+      const left = (openRequests.get(who) ?? 1) - 1;
+      if (left > 0) openRequests.set(who, left);
+      else openRequests.delete(who);
+    });
 
     // ---- the body ----
     let raw: string;
@@ -866,7 +897,7 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
     return send(res, status, response, contentType);
   };
 
-  return http.createServer((req, res) => {
+  const server = http.createServer((req, res) => {
     handle(req, res).catch((error: unknown) => {
       // A bug on one call is that call's 500, not an unhandled rejection that takes the process --
       // and with it every agent's only path to a model -- down.
@@ -880,4 +911,9 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
       else res.destroy();
     });
   });
+  // Bounds how long a body may trickle in while it is held (and counted against the agent's open
+  // requests). It does not limit the response, which streams for as long as the epoch allows.
+  server.requestTimeout = REQUEST_TIMEOUT_MS;
+  server.headersTimeout = HEADERS_TIMEOUT_MS;
+  return server;
 }

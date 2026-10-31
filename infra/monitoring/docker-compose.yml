@@ -288,6 +288,10 @@ services:
       # credential a 100+ field is gated on cannot be one of them. The file holds sha256 digests
       # only -- no key material ever reaches this container.
       - RPC_KEYS_FILE=/keys/rpc-keys.json
+      # The tunnel is this gateway's public origin, so Cloudflare sets cf-connecting-ip and the log's
+      # `ip` is the participant's. The identity is the key above either way; without this the log
+      # would show the tunnel's address for everyone.
+      - RPC_TRUST_CLOUDFLARE=1
       # ADR 0011: the practice period runs economicGas (config/practice.yaml), so there is no
       # priority-fee cap to enforce. 0 retires the cap only; maxFeePerGas <= tip is still refused.
       # Change it together with the config: a gateway at 5 gwei on an uncapped chain refuses bids

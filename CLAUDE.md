@@ -673,6 +673,19 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   ハンドシェイクで `eth_chainId` が返った。internal な `ag-<id>` は `gateway_mode_ipv4=isolated`（ホストのアドレス
   無し）で作って読み戻し、守られない engine は exit 3。全コンテナ `--cap-drop NET_RAW`。coordinator は両方を
   `docker inspect` で読み、外れたコンテナを止める（`host-reachable` / `raw-socket`。`infra/docker-agent/ISOLATION.md`）
+- **ゲートウェイの識別子は caller が選べない**（2026-10-31）: 鍵ファイル（`RPC_KEYS_FILE`）の無いゲートウェイ（ライブ週の
+  `run-week.sh`）は、レート制限と同時接続上限の識別子を `cf-access-client-id` / 署名を検証しない JWT / `cf-connecting-ip`
+  から取っていた。agent コンテナはゲートウェイへ直接つなぐのでこれらは自分で書け、ライバルのコンテナのアドレスを名乗って
+  300 本のバッチを 1 回送るとライバルの読取・送信が全部 429 になった（再現済み。名乗りを毎回変えれば自分の上限も消える）。
+  今は `RPC_TRUST_CLOUDFLARE=1` のときだけ読み、既定はソケットのアドレス（NET_ADMIN の無いコンテナは選べない）。
+  練習 devnet の compose は Cloudflare が前にいるので 1（識別は鍵のまま、ログの ip が参加者のものになる）。
+  **本文のメモリも caller ごとに数える**: 以前は 4 MiB の本文上限があるだけで本数に上限が無く、終わらない chunked
+  リクエスト 300 本で RSS が 59 MB → 1.43 GB（実測）。今は最初のバイトから応答が閉じるまで caller ごとに
+  `RPC_MAX_BUFFERED_BYTES_PER_CLIENT`（16 MiB、超えたら 429）・全体 `RPC_MAX_BUFFERED_BYTES`（256 MiB、503）で数え、
+  鍵の無いリクエストは本文を読む前に 403、本文の受信は `RPC_REQUEST_TIMEOUT_MS`（30 秒。Node の既定は 300 秒）で打ち切る。
+  推論プロキシも agent ごとに開いているリクエストを `MAX_OPEN_REQUESTS_PER_AGENT`（8）までにし、受信を 60 秒で打ち切る。
+  `run-week.sh` はゲートウェイを `--memory 2g --restart unless-stopped`、プロキシを `--memory 4g`（記録の連番がプロセス内に
+  あるので自動再起動はしない）で起こす。足りなくなったとき殺されるのが anvil や coordinator でなくそれ自身になるように
 
 ## 実行コマンド
 
