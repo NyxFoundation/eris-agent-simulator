@@ -76,21 +76,20 @@ LLM の手掛かりは現在の戦略コードだけになり、**一度も swap
 知りようがない**（実測: USDC-only 配布で `lp-provider` が 18/18 シナリオ無取引 =
 `docs/scoring-metric-measurements.md` §5.8）。「持っていないことは何もしない理由にならない」も明記する。
 改訂は `{notes, executorTs}` か `{notes, revertTo: <version>}` を返し、`executorTs: null` は
-「今の戦略を維持」。生成コードは **cheatcode 静的検査 + import 呼び出しの拒否 → vm コンパイル**を通ってから
+「今の戦略を維持」。生成コードは **cheatcode 静的検査 → vm コンパイル**を通ってから
 設置される。**コンパイルは本体を 1 行も実行しない**（`vm.compileFunction` で関数本体としてパースするだけ）。
 以前は `(async function decide(obs, ctx) {…})` を `Script` で評価していて、本体が `});` で閉じて後ろに文を
 書けた = 改訂を検証する**親プロセス**（鍵を env に持つ）でコンパイル時に実行され、`import()` の reject 理由
-（Node が自分の realm で作る Error）から `process.env` の鍵まで読めた。**コードとしての `import(` / `import.` は拒否**
-（`import()`・`import.source()`・`import.meta`）。Node は文脈ごとの import フックを `--experimental-vm-modules` 無しでは
-呼ばない（24.22.1 で実測: フックは呼ばれずホストの TypeError）ので、ソースで止める。コメント・文字列と区別するために
-本体を **esbuild で整形し**（tsx が使うパーサ。コメントが消え、空白が正規化される）、整形した出力に正規表現を当て、
-**整形した出力そのものを実行する**（検査したものと実行するものが同じなので、HTML 形式のコメントや `//` 中の U+2028 の
-ようにパーサ間で読みが違う書き方でも、検査をすり抜けて V8 に届かない）。コメント・プロパティ名（`obs.import`）の `import`
-は通り、文字列の中の `"import("` と `import` という名前のメソッド定義は誤検出として拒否される（文字列を飛ばすと出力上の 2 つ目の
-字句解析になり、正規表現リテラルを文字列と読み違えると本物のコードを飛ばす）。以前は語ごと拒否していた（コメントの
-`// import price …` でも改訂が落ち、再開時の再検証で `agent.ts` に戻った）。esbuild は `"imp" + "ort(…)"` を 1 つの文字列に
-畳むので、そう書いた改訂は実行前に拒否される。原文も関数本体として V8 でパースし（包みを閉じる本体は従来どおり構文エラー）、
-実行するのは整形した `decide` の宣言。**vm のコンテキストは空で作る**
+（Node が自分の realm で作る Error）から `process.env` の鍵まで読めた。**`import()` はもう拒否しない**（#373 では
+esbuild で整形した出力に正規表現を当てて拒否していた）。コンパイルは通り、実行すると必ず reject する（Node は文脈ごとの
+import フックを `--experimental-vm-modules` 無しでは呼ばない。24.22.1 実測）。reject 理由から子プロセスの `process` には
+届くが、その子は鍵を持たず、Node の permission model で自分のバンドル以外を読めず、書けず、プロセスも worker も起こせない
+（`ERR_ACCESS_DENIED`。`test/strategyRunner.test.ts` が実際に抜けて確かめる）。`import.meta` は関数本体では構文エラー。
+esbuild は生成コードの経路から消え、親が子の入口（`strategyWorker.ts` と依存）を 1 本の ES module にバンドルするのに使う
+（子は tsx を使えない: tsx はソースと node_modules を読み、esbuild を別プロセスで起こす）。バンドルは内容のハッシュ名で
+`realpath(tmpdir())` に書き（permission は実パスで比べる）、子には `--permission --allow-fs-read=<そのファイル>` だけを渡す。
+Node 24 の permission はネットワークを制限しない（子はチェーンを読む）。実行時のコンパイルは `runtime/executor.ts`
+（improve.ts から分離。子のバンドルに改訂ループとモデルのクライアントを入れないため）。**vm のコンテキストは空で作る**
 （issue #215。`createContext(Object.create(null))`。以前はホストの `Object` / `JSON` / `Math` を渡していて
 `Object.constructor("return process")()` でホスト realm に出られ、worker の `process.env` から鍵が読めた。
 プロトタイプ無しなのは、`{}` だと `this.constructor` がホストの `Object` になるため）。さらに
@@ -126,6 +125,17 @@ exception（`FinalizationRegistry` のコールバック等）は従来どおり
 署名は親の send.ts、改訂呼び出しも親なので worker に鍵の用途は無い。残すのは読取 transport 自身の
 `CF_ACCESS_CLIENT_*` / `ERIS_RPC_HEADERS`（worker は自前の client で読むので、落とすとゲートウェイ越しの
 自己ホスト agent が読めなくなる）。
+**生成コードは鍵を持ったことのない子プロセスで動く**（手書きは worker thread のまま）。worker は親とメモリを
+共有するので、vm を抜けた生成コードは親のヒープ（Linux なら `/proc/self/environ` も）から鍵を読めた。今は
+`executor` だけ `child_process.fork`（env は `strategyEnv()`、`serialization: "advanced"`、子が `hello` を
+送ってから親が init を渡す）。**coordinator は鍵・推論トークン・API キーを env でなく stdin で渡す**
+（`ERIS_AGENT_SECRETS=stdin`、`runtime/agentSecrets.ts` が bot.ts の prelude で読んで process.env へ。
+起動時の env は `/proc/<pid>/environ` に残り同じ uid の子から読めるが、後から足した名前は載らない）。stdin へ移すのは
+`isCredentialEnvName`（`sdk/src/secretEnv.ts`。`ERIS_INFERENCE_BASE_URL` / `_HUB` のような endpoint は env に残す =
+run-agent.sh がネットワーク設定に読む）。docker は `run-agent.sh` が stdin を fd 3 に退避して `docker run -i` にだけ渡す。
+ロスターの `command` override は従来どおり env。自己ホストは `ERIS_AGENT_PRIVATE_KEY_FILE`（env の鍵も動くが、
+改訂型は起動時に `isolation:` を記録する）。残る経路は親のメモリで、Yama の `ptrace_scope` ≥ 1 なら子孫からは読めない
+（練習 box は 1 = 2026-10-31 実測。0 か Yama 無しなら改訂型が `isolation:` を記録する）。子を別 uid に落とす段は見送った。
 **手書き・生成済みの両戦略に同じ上限**がかかり、await が返らない場合も同期の無限ループも
 `decide timeout:` として記録し、その判断の送信予約と返り値を捨てる。次の判断は同じ選択中の戦略を
 新しい worker にロードする。worker 内の変数は初期化されるが、親の観測・改訂ループ、nonce、ログ、

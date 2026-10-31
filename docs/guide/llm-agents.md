@@ -140,10 +140,18 @@ not cheatcodes. The sandbox is its own realm: the observation and the context ar
 every read's result is copied back, so generated code holds no object of the runtime's (there is no
 `obs.constructor.constructor("return process")` route to `process.env`). The copying is done by
 built-ins taken before generated code exists, and those are frozen before it is compiled, so
-replacing one cannot hand the strategy what it was copying. And the worker the strategy
+replacing one cannot hand the strategy what it was copying. And the process the strategy
 runs in — generated or hand-written, TypeScript or Python — carries no secret in its environment:
 not the wallet key, not the inference token, not an API key (`runtime/strategyEnv.ts`). Signing and
 the revision call are the parent's; the strategy parameters from your roster's `env` still arrive.
+A generated revision runs in a **child process of its own**, not in a thread of the agent process
+(`runtime/strategyRunner.ts`), so code that got out of the vm finds a process that never held the
+wallet key. The agent process gets its credentials on stdin rather than in its environment
+(`runtime/agentSecrets.ts`), so the child cannot read them at `/proc/<parent>/environ` either; what
+it could still reach is the parent's memory, which Linux's Yama `ptrace_scope` ≥ 1 (Ubuntu's default)
+keeps from a descendant. A self-improving agent logs `isolation: …` at start when its host leaves
+either open. What the child can do is what the strategy could always do: return and submit actions,
+which the parent checks (`runtime/rawTxGuard.ts`) and signs.
 
 **Do the reading in the runtime, not inside `decide()`.** Every decision runs in a worker under
 `DECIDE_TIMEOUT_MS` (5,000 ms, `runtime/strategyRunner.ts`; rules §2.3), for both shipped and generated
@@ -176,14 +184,13 @@ run through the cheatcode static check before it is installed**, so `anvil_*` / 
 
 What else differs from a hand-written strategy, because each was a way out of the sandbox:
 
-- **An import call is refused**: `import(...)`, `import.source(...)` and the like, and `import.meta`.
-  A dynamic `import()` rejects with an error Node creates in its own realm, and from that error the
-  host's `process` is one `constructor.constructor` away. The body is printed by esbuild first (the
-  parser tsx uses), the printed code is checked, and the printed code is what runs, so the word
-  `import` in a comment or as a property name (`obs.import`) is fine. Two things are refused although
-  they are not calls: a string holding the text of one (`"import(x)"`) and a method named `import`.
+- **There are no modules to load.** A dynamic `import()` compiles and always fails; `import.meta`
+  does not compile. Its failure is an error Node creates in its own realm, and from that error a
+  process is one `constructor.constructor` away -- which is why generated code runs in a child process
+  that holds no credential and, under Node's permission model, can read nothing but its own bundle,
+  write nothing and start no process or worker (`runtime/strategyRunner.ts`).
 - **No code from strings.** `eval` and `new Function` throw an `EvalError`, so the source is all the
-  code there is (otherwise `["imp", "ort"].join("")` would get past the check above).
+  code there is.
 - **The built-ins are frozen.** `Array.prototype.sum = …` throws, and so does replacing a global such
   as `globalThis.Map`. Assigning over a built-in method on your own object (`arr.filter = f`) is
   ignored, or throws in strict code; use `Object.defineProperty` if you mean it. The usual cases
@@ -200,7 +207,7 @@ What else differs from a hand-written strategy, because each was a way out of th
   both ran it through `util.inspect`.
 
 Nothing in the body runs when it is compiled: the parent process compiles every revision to validate
-it, and only the worker ever runs one. Code that fails a check or fails to compile is not installed —
+it, and only the strategy's own child process ever runs one. Code that fails a check or fails to compile is not installed —
 the previous strategy keeps running and the reason is logged. Once installed, every call is bounded
 at 5 seconds (rules §2.3, the same bound a hand-written `decide()` gets); past it the block is no
 action.

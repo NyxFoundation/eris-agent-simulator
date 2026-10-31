@@ -64,6 +64,7 @@ import type {
   ProtocolId,
 } from "@eris/sdk/types.js";
 import { createAgentLog, createJsonlAppender } from "./agentLog.js";
+import { isolationWarnings } from "./agentSecrets.js";
 import { DecideTimeoutError } from "./decideTimeout.js";
 import {
   MarketHistory,
@@ -565,6 +566,13 @@ async function main(): Promise<void> {
   // stops before the event it is being asked about. The cadence is the participant's to declare and
   // to pay for (rules §2.5), so this follows whatever they declared.
   if (improveAgent) marketHistory.ensureCapacity(improveAgent.reviseEveryBlocks);
+  // A self-improving agent runs generated code in a child process; say what of this process that
+  // child could still read on this host.
+  if (improveAgent)
+    for (const warning of isolationWarnings()) {
+      agentLog({ reason: `isolation: ${warning}` });
+      process.stderr.write(`[bot] isolation: ${warning}\n`);
+    }
   if (hasImprove && mode === "run") {
     // run(ctx) owns its own loop, so there is no decide to swap out.
     process.stderr.write(

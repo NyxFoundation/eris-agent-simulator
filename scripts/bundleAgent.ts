@@ -178,6 +178,8 @@ function main(): void {
           dependencies: {
             "@anthropic-ai/sdk": "^0.98.0",
             "@eris/sdk": "file:./sdk",
+            // The runtime bundles a generated strategy's child process with it (strategyRunner.ts).
+            esbuild: "~0.28.0",
             viem: "^2.39.3",
             yaml: "^2.9.0",
             zod: "^4.4.3",

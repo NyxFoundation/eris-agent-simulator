@@ -16,9 +16,19 @@
  *
  * Env wins over the manifest for both, as it does for the RPC URL and the PriceFeed: a
  * coordinator-spawned run is unchanged, byte for byte.
+ *
+ * The credentials are read here too, for the same reason: the coordinator hands them over on stdin
+ * rather than in the environment (agentSecrets.ts), and the runtime reads them from process.env.
  */
+import { loadAgentSecrets } from "./agentSecrets.js";
 import { applyManifestEnv } from "./manifestEnv.js";
 
+try {
+  loadAgentSecrets();
+} catch (error) {
+  process.stderr.write(`[bot] ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(1);
+}
 applyManifestEnv(process.env.ERIS_MANIFEST);
 
 // Evaluated only after the env is set (dynamically, since static imports are hoisted).

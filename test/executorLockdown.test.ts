@@ -379,21 +379,18 @@ test("compileExecutor: the body cannot close the wrapper around it", async (t) =
   assert.ok(!outcome.includes(MARKER), outcome);
 });
 
-test("compileExecutor: import() is refused, and code cannot be built from strings to spell it", async (t) => {
+// A dynamic import() compiles and rejects, with an error of Node's realm: in this process that error
+// reaches `process`, which is why generated code never runs here but in a child process under Node's
+// permission model (strategyRunner.ts; test/strategyRunner.test.ts tries the escape there). What the
+// context still refuses is building code from strings.
+test("compileExecutor: import() compiles and fails, import.meta does not compile, and no code is built from strings", async (t) => {
   withMarker(t);
-  // The rejection of a dynamic import is an error Node creates in its own realm, so
-  // `e.constructor.constructor("return process")()` on it is the host's process -- whatever the
-  // context holds. An import call is refused in the printed source; with code generation from
-  // strings off, eval and the Function constructors cannot assemble one at run time. (Built with
-  // join: esbuild folds `"imp" + "ort(...)"` into one string, which the check then refuses.)
-  for (const source of [
-    `try { await import("node:fs"); } catch (e) { return { type: "noop", r: e.constructor.constructor("return process")().env.${MARKER_NAME} }; }`,
-    `const m = await import /* comment */ ("node:fs"); return null;`,
-  ]) {
-    const r = compileExecutor(source);
-    assert.ok(!r.ok, source);
-    assert.match(r.reason, /import/);
-  }
+  const dynamic = compileExecutor(`return import("node:fs").then(() => "loaded", () => "failed");`);
+  assert.ok(dynamic.ok, dynamic.ok ? "" : dynamic.reason);
+  assert.equal(await dynamic.executor({ round: 1 } as never, hostContext()), "failed");
+  const meta = compileExecutor(`return import.meta;`);
+  assert.ok(!meta.ok);
+  assert.match(meta.reason, /compile failed/);
   const spelled = `["imp", "ort('node:fs')"].join("")`;
   for (const source of [
     `try { await eval(${spelled}); } catch (e) { return { type: "noop", r: String(e.constructor.constructor("return process")().env.${MARKER_NAME}) }; }`,
@@ -413,42 +410,7 @@ test("compileExecutor: import() is refused, and code cannot be built from string
   }
 });
 
-test("compileExecutor: every way of writing an import call is refused, wherever the parsers differ", async (t) => {
-  withMarker(t);
-  // The check reads esbuild's printed code and that printed code is what runs, so a construct the
-  // two parsers might read differently cannot hide a call from the check and still reach V8.
-  const leak = `.catch((e) => ({ type: "noop", r: String(e.constructor.constructor("return process")().env.${MARKER_NAME}) }))`;
-  const cases: Record<string, string> = {
-    newline: `return import\n("node:fs")${leak};`,
-    "comment between": `return import /* c */ ("node:fs")${leak};`,
-    "line comment between": `return import // c\n("node:fs")${leak};`,
-    spread: `return Promise.all([...[import("node:fs")]])${leak};`,
-    "spread directly": `const xs = [...import("node:fs")]; return null;`,
-    "template expression": "return `${await import(\"node:fs\")}`;",
-    "import.meta": `return import.meta;`,
-    "import.source": `return import.source("node:fs");`,
-    "U+2028 ends a line comment": `// x\u2028return import("node:fs")${leak};`,
-    "closing the wrapper": `return 1;\n}\nimport("node:fs")${leak};\nfunction z() {`,
-    "after a number": `return 1. import("node:fs");`,
-    "after a regex and a newline": `let r = /a./\nreturn import("node:fs")${leak};`,
-    "a method named import": `const o = { import() { return 1; } }; return null;`,
-  };
-  for (const [name, source] of Object.entries(cases)) {
-    const r = compileExecutor(source);
-    if (!r.ok) continue;
-    // Whatever compiles must not reach the host when it runs.
-    let outcome: string;
-    try {
-      outcome = JSON.stringify(await r.executor({ round: 1 } as never, hostContext()));
-    } catch (error) {
-      outcome = String((error as Error).message);
-    }
-    assert.ok(!outcome.includes(MARKER), `${name}: ${outcome}`);
-    assert.fail(`${name} compiled: ${outcome}`);
-  }
-});
-
-test("compileExecutor: the word import outside an import call is code like any other", async () => {
+test("compileExecutor: the word import is code like any other", async () => {
   for (const [source, expected] of [
     [`// import the price from the feed\nreturn 1;`, 1],
     [`/* import */ return 2;`, 2],
@@ -456,17 +418,14 @@ test("compileExecutor: the word import outside an import call is code like any o
     [`return obs.import;`, 7],
     [`return obs?.import;`, 7],
     [`const o = { import: 3 }; return o.import + obs["import"];`, 10],
-    [`let a = 1 <!-- import("node:fs")\nreturn a;`, 1],
+    [`const o = { import() { return 4; } }; return o.import();`, 4],
+    [`return "import(x)".length;`, 9],
   ] as const) {
     const r = compileExecutor(source);
     assert.ok(r.ok, `${source}: ${r.ok ? "" : r.reason}`);
     const v = await r.executor({ round: 1, import: 7 } as never, hostContext());
     assert.equal(v, expected, source);
   }
-  // The one string the check cannot tell from code: the text of a call. It is read in the printed
-  // code, where telling a string from code again would be a second tokenizer that can get it wrong
-  // in the direction that costs the realm.
-  assert.ok(!compileExecutor(`return "import(x)".length;`).ok);
 });
 
 test("lockdown: WebAssembly's streaming functions cannot hand over an error of the host's realm", async (t) => {

@@ -8,6 +8,7 @@ import {
   type EpochOrdinal,
   epochOrdinalEnv,
 } from "@eris/sdk/epoch.js";
+import { isCredentialEnvName } from "@eris/sdk/secretEnv.js";
 import type { AgentSpec } from "@eris/sdk/types.js";
 import { AGENT_STATE_DIR_ENV } from "./agentState.js";
 import { AGENT_VIEW_DIR_ENV } from "./agentView.js";
@@ -73,6 +74,9 @@ const OS_PASSTHROUGH = new Set([
 //                          knowing the regime, which rules §3.2 does not announce.
 //   ERIS_GATEWAY_SEALED_SENDERS  every address the environment signs with (environmentWallets.ts),
 //                          the whale's and the launch slots' among them: a map of who to watch.
+//   ERIS_AGENT_SECRETS / ERIS_AGENT_PRIVATE_KEY_FILE  how an agent receives its credentials
+//                          (agentSecrets.ts). The coordinator sets the first itself; one left in the
+//                          operator's shell would point an agent at the operator's stdin or file.
 // Any other ERIS_*_SEED is held back the same way: a seed is never something an agent needs, and
 // neither is anything under ERIS_SCENARIO_KEY or ERIS_WALLET_SECRET.
 const ENVIRONMENT_ONLY_ERIS = new Set([
@@ -84,6 +88,8 @@ const ENVIRONMENT_ONLY_ERIS = new Set([
   "ERIS_FLOW_SEED",
   "ERIS_SCENARIO_REGIME",
   "ERIS_GATEWAY_SEALED_SENDERS",
+  "ERIS_AGENT_SECRETS",
+  "ERIS_AGENT_PRIVATE_KEY_FILE",
 ]);
 export function isEnvironmentOnlyEnv(name: string): boolean {
   return (
@@ -248,10 +254,31 @@ export class RealtimeAgentProcess {
       }
     }
 
+    // The runtime's credentials go on stdin, not in its environment (agentSecrets.ts): on Linux the
+    // environment a process was started with stays readable at /proc/<pid>/environ by every
+    // process of its uid, the generated strategy's child process among them. A roster `command`
+    // is the participant's own launcher and keeps reading its environment as before.
+    let secrets: Record<string, string> | undefined;
+    if (spec.command === undefined) {
+      secrets = takeSecretEnv(childEnv);
+      // run-agent.sh used to forward the operator's API keys only when no inference proxy was
+      // named (with a proxy the keys live there). It forwards environment names, which these no
+      // longer are, so the same rule is applied here.
+      if (options.sandbox === "docker" && childEnv.ERIS_INFERENCE_BASE_URL)
+        for (const k of INFERENCE_ENV) delete secrets[k];
+      childEnv[AGENT_SECRETS_ENV] = "stdin";
+    }
+
     this.child = spawn(command, args, {
-      stdio: ["ignore", "ignore", "pipe"],
+      stdio: [secrets ? "pipe" : "ignore", "ignore", "pipe"],
       env: childEnv,
     });
+    if (secrets) {
+      // A child that exits before reading (a missing directory, a refused docker network) closes
+      // the pipe; that is reported by the exit handler below, not as an EPIPE here.
+      this.child.stdin?.on("error", () => {});
+      this.child.stdin?.end(JSON.stringify(secrets));
+    }
 
     this.child.stderr?.on("data", (data) => {
       this.stderr += data.toString();
@@ -325,4 +352,19 @@ export class RealtimeAgentProcess {
   getStderr(): string {
     return this.stderr;
   }
+}
+
+// The stdin hand-off (example/agents/runtime/agentSecrets.ts reads it). Its own name, rather than
+// an import: core does not import from example (npm run check:boundaries).
+export const AGENT_SECRETS_ENV = "ERIS_AGENT_SECRETS";
+
+// Move every credential (sdk/src/secretEnv.ts) out of an agent's environment.
+export function takeSecretEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const secrets: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (value === undefined || !isCredentialEnvName(name)) continue;
+    secrets[name] = value;
+    delete env[name];
+  }
+  return secrets;
 }

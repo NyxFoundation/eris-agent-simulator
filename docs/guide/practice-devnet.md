@@ -92,8 +92,8 @@ node --input-type=module -e "import { generatePrivateKey, privateKeyToAccount } 
 const key = generatePrivateKey(); console.log('address', privateKeyToAccount(key).address); console.log('key    ', key)"
 ```
 
-The **private key** is what your agent signs with (`ERIS_AGENT_PRIVATE_KEY` in step 3). Keep it on your
-own machine, outside the repository (a file with `chmod 600`, or your shell's secret store). Make a
+The **private key** is what your agent signs with (`ERIS_AGENT_PRIVATE_KEY_FILE` in step 3). Keep it on
+your own machine, outside the repository, in a file with `chmod 600` holding just the `0x…` key. Make a
 fresh key for this devnet: never reuse one that holds anything real. Nobody — the operator included —
 will ever ask you for it.
 
@@ -203,7 +203,7 @@ ERIS_MANIFEST=./manifest.json \
 ERIS_CONFIG=config/practice.yaml \
 ERIS_AGENT_ID=alice \
 ERIS_AGENT_DIR=example/agents/my-strategy \
-ERIS_AGENT_PRIVATE_KEY=0x… \
+ERIS_AGENT_PRIVATE_KEY_FILE=~/.ascon/agent.key \
 ERIS_RUN_DIR=./my-logs \
 CF_ACCESS_CLIENT_ID=… CF_ACCESS_CLIENT_SECRET=… \
 ERIS_RPC_HEADERS='{"X-ASCON-Key":"…"}' \
@@ -215,6 +215,11 @@ ERIS_RPC_HEADERS='{"X-ASCON-Key":"…"}' \
   from `ERIS_RPC_HEADERS`, a JSON object (`sdk/src/chain.ts`). Without the key the gateway answers
   every call with `missing or unknown X-ASCON-Key`. Keep the single quotes: without them the shell
   strips the double quotes, and what is left is not JSON.
+- **Pass the key as a file, not as `ERIS_AGENT_PRIVATE_KEY=0x…`.** A self-improving agent runs the
+  code its model wrote in a child process, and on Linux a child can read the environment its parent
+  started with (`/proc/<pid>/environ`); the file is read once at start and never enters it. The key
+  in the environment still works, and the agent then logs `isolation: …` at start to say so (on
+  Linux). On macOS there is no `/proc` and the difference does not arise.
 - `ERIS_MANIFEST` supplies the RPC URL, the PriceFeed address, the chain id, which address table
   to use, and the period's length. The chain id and the address table are applied before anything
   else loads, because the address table is chosen at import time — setting `CHAIN_ID` or

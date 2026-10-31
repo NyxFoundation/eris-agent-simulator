@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -530,5 +531,81 @@ test(
     );
     assert.ok(!existsSync(proof), "the custom inspect function reached the worker's process");
     assert.deepEqual((await runner.decide(obs(1000))).action, { type: "noop", reason: "after" });
+  },
+);
+
+// A generated revision runs in a child process of its own, not in a thread of the agent process
+// that holds the wallet key: code that escapes the vm finds a process that never held it.
+const strategyChildren = () =>
+  execFileSync("ps", ["-A", "-o", "ppid=,command="], { encoding: "utf8" })
+    .split("\n")
+    .filter((line) => {
+      const [ppid] = line.trim().split(/\s+/, 1);
+      return Number(ppid) === process.pid && line.includes("eris-strategy-child-");
+    });
+
+test(
+  "a generated revision runs in a child process, and none is left once the runner closes",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    const { runner } = fixture(t, `export function decide() { return { type: 'noop' }; }`, 2000);
+    await runner.decide(obs(1));
+    // The hand-written module ran in a worker: no child.
+    assert.deepEqual(strategyChildren(), []);
+    runner.setSource({ kind: "executor", source: `return { type: 'noop', reason: 'generated' };` });
+    assert.deepEqual((await runner.decide(obs(2))).action, { type: "noop", reason: "generated" });
+    assert.equal(strategyChildren().length, 1);
+    await runner.close();
+    assert.deepEqual(strategyChildren(), []);
+  },
+);
+
+// What code that escapes the vm gets: a dynamic import() rejects with an error of Node's realm, and
+// that error's constructor's constructor is the process's Function. In the child that process holds
+// no credential and runs under Node's permission model: no file outside its own entry to read,
+// nothing to write, no process or worker to start.
+test(
+  "a generated revision that escapes through import() finds a process that can read, write and spawn nothing",
+  { skip: process.platform === "win32", timeout: 15_000 },
+  async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), "eris-escape-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const secretFile = join(dir, "secret.txt");
+    writeFileSync(secretFile, "participant's file");
+    const proof = join(dir, "proof.txt");
+    const before = process.env.ERIS_AGENT_PRIVATE_KEY;
+    process.env.ERIS_AGENT_PRIVATE_KEY = "0xparentkey";
+    t.after(() => {
+      if (before === undefined) delete process.env.ERIS_AGENT_PRIVATE_KEY;
+      else process.env.ERIS_AGENT_PRIVATE_KEY = before;
+    });
+    const { runner } = fixture(t, `export function decide() { return { type: 'noop' }; }`, 5000);
+    runner.setSource({
+      kind: "executor",
+      source: `
+        let p;
+        try { await import("node:fs"); } catch (e) { p = e.constructor.constructor("return process")(); }
+        const tryIt = (f) => { try { f(); return "allowed"; } catch (e) { return String(e && e.code); } };
+        return {
+          type: "noop",
+          escaped: typeof p === "object",
+          key: p.env.ERIS_AGENT_PRIVATE_KEY ?? null,
+          read: tryIt(() => p.getBuiltinModule("fs").readFileSync(${JSON.stringify(secretFile)}, "utf8")),
+          write: tryIt(() => p.getBuiltinModule("fs").writeFileSync(${JSON.stringify(proof)}, "x")),
+          spawn: tryIt(() => p.getBuiltinModule("child_process").execFileSync("true")),
+          worker: tryIt(() => new (p.getBuiltinModule("worker_threads").Worker)("1", { eval: true })),
+        };
+      `,
+    });
+    assert.deepEqual((await runner.decide(obs(1))).action, {
+      type: "noop",
+      escaped: true,
+      key: null,
+      read: "ERR_ACCESS_DENIED",
+      write: "ERR_ACCESS_DENIED",
+      spawn: "ERR_ACCESS_DENIED",
+      worker: "ERR_ACCESS_DENIED",
+    });
+    assert.ok(!existsSync(proof));
   },
 );
