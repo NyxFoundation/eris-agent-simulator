@@ -176,12 +176,14 @@ run through the cheatcode static check before it is installed**, so `anvil_*` / 
 
 What else differs from a hand-written strategy, because each was a way out of the sandbox:
 
-- **The word `import` is refused anywhere in the body**, comments and strings included. A dynamic
-  `import()` rejects with an error Node creates in its own realm, and from that error the host's
-  `process` is one `constructor.constructor` away. Telling a comment from code would take a
-  tokenizer; a false positive costs one revision.
+- **An import call is refused**: `import(...)`, `import.source(...)` and the like, and `import.meta`.
+  A dynamic `import()` rejects with an error Node creates in its own realm, and from that error the
+  host's `process` is one `constructor.constructor` away. The body is printed by esbuild first (the
+  parser tsx uses), the printed code is checked, and the printed code is what runs, so the word
+  `import` in a comment or as a property name (`obs.import`) is fine. Two things are refused although
+  they are not calls: a string holding the text of one (`"import(x)"`) and a method named `import`.
 - **No code from strings.** `eval` and `new Function` throw an `EvalError`, so the source is all the
-  code there is (otherwise `"imp" + "ort"` would get past the check above).
+  code there is (otherwise `["imp", "ort"].join("")` would get past the check above).
 - **The built-ins are frozen.** `Array.prototype.sum = …` throws, and so does replacing a global such
   as `globalThis.Map`. Assigning over a built-in method on your own object (`arr.filter = f`) is
   ignored, or throws in strict code; use `Object.defineProperty` if you mean it. The usual cases
@@ -243,7 +245,7 @@ An agent can now be given a **persistent directory that only it can see**, at
 The reference runtime (`runtime/state.ts`) writes that file atomically on every accept and revert,
 and on start it:
 
-1. loads it, and **re-runs the static checks (cheatcodes, the word `import`) and the vm compile on
+1. loads it, and **re-runs the static checks (cheatcodes, import calls) and the vm compile on
    every carried version**. A strategy that compiled last epoch is untrusted input this epoch;
 2. starts from the newest version that survived re-validation, or from `agent.ts` if the newest did
    not — logging `revision_resume_failed` with the reason, because an agent that silently forgot

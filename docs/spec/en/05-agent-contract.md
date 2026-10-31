@@ -213,12 +213,14 @@ The body: the improvement policy (when, on what evidence, and how to change it)
 ### Three gates (`compileExecutor`)
 
 ```
-1. Static checks            any hit from findCheatcodeUsage rejects it; so does the word `import`
-                            anywhere in the body (comments and strings included)
+1. Static checks            any hit from findCheatcodeUsage rejects it; the body is printed by
+                            esbuild and an import( / import. in code rejects it (a comment or a
+                            property name is fine)
 2. Compilation              into an empty context (createContext(Object.create(null)), no code
                             generation from strings or wasm): the bridge is evaluated, WebAssembly /
                             Symbol.for / Symbol.keyFor are deleted and the built-ins frozen, then
-                            vm.compileFunction parses the source as a function body.
+                            vm.compileFunction parses the source as a function body, and compiles
+                            the printed code, which is what runs.
                             None of the body runs here (the parent process compiles to validate too)
 3. Wall-clock bound         one call is cut off at 5,000ms in the worker (DECIDE_TIMEOUT_MS, rules §2.3)
 ```
