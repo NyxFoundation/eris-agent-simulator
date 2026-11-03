@@ -1992,15 +1992,20 @@ export async function runRealtimeSimulation(
       if (!resume && informedQuoteUnits > config.flowUsdcUnits) {
         for (const [key, wallet] of flowWalletMap) {
           if (!isInformedFlowKey(key)) continue;
+          // Quote side only. `fundWallet` assigns the quote balance but *wraps* the WETH, so
+          // passing `config.flowWethWei` again here hands the wallet a second 150 WETH -- measured
+          // on a spike epoch, where the informed wallets ended on 396 WETH against the 246 every
+          // other run has. The base legs were already funded by the setup loop above; this call
+          // exists to raise one number.
           await fundWallet(
             publicClient,
             walletClient,
             chain,
             wallet.privateKey,
             config.flowEthWei,
-            config.flowWethWei,
+            0n,
             informedQuoteUnits,
-            config.flowBaseAmounts,
+            {},
           );
         }
         logger.event({
