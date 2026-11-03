@@ -965,7 +965,9 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   （NixOS は system pip が使えないので uv 経由。pip 版と手順は docs/guide/python-agents.md）。
   **`out/` が古いと 2 本落ちる**（`regimeStartInvariance` / `vulnPools.integration` が ABI を読む。
   成果物が「無い」ときは skip するが「古い」ときはしない）→ `npm run build:contracts`。
-  並列負荷で毎回 1 本だけ別のテストが落ちるのは既知（#122。単体では通る）
+  **`agentLogSegment.test.ts` は 3 回に 1 回ほど落ちる**（origin/main でも同じ）。appender はセグメント
+  ポインタの **mtime が変わったときだけ**読み直すのに、テストが同一ミリ秒内に 2 回書くため。本番は
+  セグメントを数時間おきに切るので影響は無く、テスト側の競合。他に #122 の「並列負荷で毎回別の 1 本が落ちる」もある
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
 - `npm run check:boundaries` — workspace 依存方向（example → sdk ← core）の検査
 - `npm run bundle:agent <id>` — 提出用 zip（runtime + sdk + lib + 対象 agent。ADR 0015 §7）。**`kind: improve` の prompt.md が無いディレクトリは拒否**（規約 §2.5 が全提出 agent に戦略改訂を要求する。起動時ではなく提出物の段で止めるのは、example の 17 agent が prompt.md 無しの教材だから）
