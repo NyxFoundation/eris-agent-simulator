@@ -618,7 +618,17 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   上限は `setTimeout` の 32bit を超えて 1ms に化けていた（イベント無しの run が 0 ブロックで終了）→ `setLongTimeout`。
   ②**背景フローの財布は補充する**（`flow.topUpEveryBlocks`、練習は 300。公式は 0 = 1 回配り）。実測で
   1 財布の在庫が 1 日に元の数倍揺れ、合計価値は 1 日 1 割強減る。`flow_balances` / `flow_guard` /
-  `flow_wallet_topped_up` が記録。**GMX の flow は自分の建玉を cap の一定割合までに抑える**（`flow.gmxOiTargetFrac`、
+  `flow_wallet_topped_up` が記録。**補充の間隔は config の値ではなく informed の cap から導出する**
+  （`flowTopUpIntervalBlocks`）。informed のサイズは `cap × min(1, 乖離×20)` なので乖離 5% 超では毎ブロック
+  満額を要求し、練習較正では需要 $3.3M/300 ブロックに対し供給 $0.9M = **約 3.7 倍の赤字**だった。
+  財布はサイクルの 1/5 で空になり、以降の注文は Uniswap の `STF` で revert、**価格を fair へ引き戻す唯一の側が
+  乖離の大きいときに限って止まる**（練習チェーン実測: informed の revert 率が補充直後 ~0% → 直前 85%、
+  venue mid が同日中に fair の 0.14 倍と 9.6 倍）。導出後は練習の 300 → **17 ブロック**（律速は USDC）。
+  **同じ財布の WETH 脚と WBTC 脚は 1 ラウンドの残高を共有する**（`FlowWalletBook`）— 以前は各脚が全残高を
+  独立に見ていたので、5,269 USDC の財布が 11,165 USDC 分の注文を出して 2 本目が revert していた。
+  **公式レジームは補充が無く**、同じ算術だと 1 回配りで 360 ブロック中 **37 ブロック**しか持たない
+  （`flow_budget_warning` が出る。funding を上げるか cap を下げるかは較正の判断で、未決）。
+  不変条件は `test/flowBudgetModel.test.ts` が有界モデル検査で押さえる（全 4^5 の乖離系列 × config 格子）。**GMX の flow は自分の建玉を cap の一定割合までに抑える**（`flow.gmxOiTargetFrac`、
   既定 0.4、0 = 閉じない旧 flow。期間中も変更可）。以前は開くだけで、2026-10-08 開始の練習期間では WETH 市場の
   両側が reserve 上限（プール価値 × 0.5）まで flow の建玉で埋まり、参加者はどちら向きにも開けなかった。目標を超えた側に
   引いた注文は同じ乱数のまま close になる（担保は比例分）ので、**目標未満なら flow は乱数単位で以前と同一**。

@@ -129,6 +129,7 @@ import type {
   AgentSpec,
   BalanceSnapshot,
   ProtocolId,
+  TokenSymbol,
   WalletRole,
 } from "@eris/sdk/types.js";
 import { initProtocols } from "@eris/sdk/protocols/registry.js";
@@ -362,7 +363,11 @@ import { setLongTimeout } from "./longTimeout.js";
 import {
   FLOW_TELEMETRY_BLOCKS,
   FlowGuardLog,
+  flowBudgetShortfall,
+  flowSolventRounds,
+  flowTopUpIntervalBlocks,
   planFlowTopUp,
+  type FlowDrainPerRound,
   type FlowWalletHoldings,
 } from "./flowWallets.js";
 import type { FlowContextWire } from "../flow/logic.js";
@@ -3321,7 +3326,9 @@ export async function runRealtimeSimulation(
     const tradingFlowWallets = [...flowWalletMap.entries()].filter(([key]) =>
       /^[a-z]+:(informed|uninformed)$/.test(key),
     );
-    const flowTelemetryEvery =
+    // Narrowed once the price anchors are known (see `flowTopUpIntervalBlocks` below): the configured
+    // interval is an upper bound, not the interval the wallets are actually visited on.
+    let flowTelemetryEvery =
       config.flowTopUpEveryBlocks > 0
         ? config.flowTopUpEveryBlocks
         : FLOW_TELEMETRY_BLOCKS;
@@ -3864,6 +3871,122 @@ export async function runRealtimeSimulation(
         extraPriceRng[b].restore(position);
         extraBaseFair[b] = level;
         extraAnchor[b] = anchor;
+      }
+    }
+
+    // ---- the gap-closing flow has to stay solvent ----
+    //
+    // The informed leg's size is `cap x min(1, deviation x 20)`, so it reaches `cap` every block the
+    // venue is far enough from fair. Supply (the funded amount, refilled every N blocks) and demand
+    // (the caps) were set independently, and on the practice calibration demand was ~4x supply: the
+    // wallet emptied a fifth of the way into each refill cycle and every later order reverted with
+    // Uniswap's `STF`. The side that pulls the price back to fair therefore switched off exactly
+    // when the deviation was large, and the venues walked away from the reference price.
+    //
+    // The interval is now derived from the caps instead of chosen next to them, so the two numbers
+    // cannot drift apart again whatever a config sets them to.
+    {
+      const toQuote = (amount: bigint, symbol: string, price: number): bigint =>
+        (amount * BigInt(Math.round(price * 100))) /
+        (100n * 10n ** BigInt(tokenInfo(symbol as TokenSymbol).decimals - 6));
+      const ammInformedCap: Partial<Record<ProtocolId, bigint>> = {
+        uniswap: config.informedFlowMaxWethWei,
+        balancer: config.balancerFlowMaxWethWei,
+        curve: config.curveFlowMaxWethWei,
+      };
+      const extraSymbols = Object.keys(config.baseFlowMax).filter(
+        (s) => s !== "WETH",
+      );
+      // The worst wallet decides: one telemetry pass visits them all.
+      let worst: FlowDrainPerRound = {
+        wethWei: 0n,
+        usdcUnits: 0n,
+        bases: {},
+      };
+      for (const id of enabledIds) {
+        const wethCap = ammInformedCap[id];
+        if (wethCap === undefined) continue;
+        const bases: Record<string, bigint> = {};
+        let usdc = toQuote(wethCap, "WETH", fairAnchor);
+        for (const symbol of extraSymbols) {
+          const cap =
+            id === "uniswap"
+              ? (config.baseInformedFlowMax[symbol] ??
+                config.baseFlowMax[symbol] ??
+                0n)
+              : (config.baseFlowMax[symbol] ?? 0n);
+          if (cap <= 0n) continue;
+          bases[symbol] = cap;
+          // Every leg on this wallet can be a buy in the same round, so the quote side adds up.
+          usdc += toQuote(cap, symbol, extraAnchor[symbol] ?? fairAnchor);
+        }
+        if (usdc > worst.usdcUnits) worst = { ...worst, usdcUnits: usdc };
+        if (wethCap > worst.wethWei) worst = { ...worst, wethWei: wethCap };
+        for (const [symbol, cap] of Object.entries(bases))
+          if (cap > (worst.bases[symbol] ?? 0n)) worst.bases[symbol] = cap;
+      }
+      const targets = {
+        ethWei: config.flowEthWei,
+        wethWei: config.flowWethWei,
+        usdcUnits: config.flowUsdcUnits,
+        bases: config.flowBaseAmounts,
+      };
+      const derived = flowTopUpIntervalBlocks(
+        config.flowTopUpEveryBlocks,
+        targets,
+        worst,
+      );
+      if (config.flowTopUpEveryBlocks > 0 && derived < flowTelemetryEvery) {
+        logger.event({
+          type: "flow_topup_interval_narrowed",
+          configuredBlocks: config.flowTopUpEveryBlocks,
+          blocks: derived,
+          drainPerRound: {
+            wethWei: worst.wethWei.toString(),
+            usdcUnits: worst.usdcUnits.toString(),
+            bases: Object.fromEntries(
+              Object.entries(worst.bases).map(([s, v]) => [s, v.toString()]),
+            ),
+          },
+          note:
+            "the informed caps can empty a flow wallet before the configured top-up interval " +
+            "comes round; the wallets are visited this often instead so the gap-closing side " +
+            "stays funded",
+        });
+        flowTelemetryEvery = derived;
+      }
+      // Deriving the interval only helps while one round is affordable at all. Below that the caps
+      // or the funded amounts have to move, so say it rather than visiting the wallets every block
+      // and still coming up short. Reported, not fatal: a running period must not be stopped by a
+      // calibration opinion, and the event is what a reader of the run needs to see it.
+      const short = flowBudgetShortfall(targets, worst, 1);
+      if (short.length > 0)
+        logger.event({
+          type: "flow_budget_warning",
+          reason: "one round costs more than the wallet is ever funded with",
+          tokens: short.map((s) => ({
+            symbol: s.symbol,
+            funded: s.funded.toString(),
+            neededPerRound: s.needed.toString(),
+          })),
+          note:
+            "no top-up interval can keep the gap-closing flow solvent at this calibration; raise " +
+            "funding.flow* or lower the informed caps",
+        });
+      // No top-up at all (every official regime): the funded amount is all there is, so say how far
+      // into the run it reaches at full size.
+      if (config.flowTopUpEveryBlocks <= 0 && config.runBlocks > 0) {
+        const solventFor = flowSolventRounds(targets, worst);
+        if (solventFor !== null && solventFor < config.runBlocks)
+          logger.event({
+            type: "flow_budget_warning",
+            reason: "funded once, for less than the run",
+            runBlocks: config.runBlocks,
+            solventBlocks: solventFor,
+            note:
+              "with no top-up the gap-closing flow can exhaust its wallet this far into the run; " +
+              "past that it stops closing the gap and the venues can drift from the reference price",
+          });
       }
     }
     // Passes of the block handler. Not the run's length: one pass covers every block mined since the
