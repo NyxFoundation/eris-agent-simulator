@@ -154,6 +154,59 @@ export function flowTopUpIntervalBlocks(
 }
 
 /**
+ * The quote balance an informed wallet needs to buy for as many rounds as it can sell.
+ *
+ * The informed leg spends either a base or that base's worth of the quote token, whichever closes
+ * the gap. Each base has a funded balance of its own; all of them buy out of one quote balance. So a
+ * run with two bases sells for as many rounds as ever and buys for half as many, and the side that
+ * runs out first is the one that pulls a venue back *up* to the reference price.
+ *
+ * `funding.flowUsdcUnits` was written when WETH was the only base -- 450,000 USDC is 150 WETH at
+ * $3,000, exactly its mirror -- and issue #124's second base, funded at the same notional three days
+ * later, doubled the demand on it without touching the number. Summing the legs here rather than
+ * restating the sum in every config means a third base cannot reopen the gap quietly.
+ *
+ * `configured` is a floor, never a cap: a run that funds its wallets more deeply than the legs need
+ * keeps what it asked for.
+ */
+export function informedQuoteTarget(
+  configured: bigint,
+  quoteNotionalPerBase: Record<string, bigint>,
+): bigint {
+  let sum = 0n;
+  for (const v of Object.values(quoteNotionalPerBase)) sum += v;
+  return sum > configured ? sum : configured;
+}
+
+/**
+ * Each base leg's inventory as quote units, which is what `informedQuoteTarget` sums.
+ *
+ * WETH comes from `funding.flowWethWei` and never from `flowBaseAmounts`: the resolved config
+ * carries a `WETH: 0` entry there (the WETH inventory has its own field, and the funding path
+ * ignores a WETH key in the base map), so reading the map for it would make the whole derivation a
+ * no-op -- 0 is skipped, the sum comes to the WBTC leg alone, and that is exactly the number the
+ * configured floor already was.
+ */
+export function informedQuoteNotionals(
+  flowWethWei: bigint,
+  flowBaseAmounts: Record<string, bigint>,
+  quote: (amount: bigint, symbol: string) => bigint | null,
+): Record<string, bigint> {
+  const out: Record<string, bigint> = {};
+  const add = (symbol: string, amount: bigint): void => {
+    if (amount <= 0n) return;
+    const q = quote(amount, symbol);
+    if (q !== null && q > 0n) out[symbol] = q;
+  };
+  add("WETH", flowWethWei);
+  for (const [symbol, amount] of Object.entries(flowBaseAmounts)) {
+    if (symbol === "WETH") continue;
+    add(symbol, amount);
+  }
+  return out;
+}
+
+/**
  * The tokens whose funded amount cannot carry `rounds` rounds of full-size flow.
  *
  * Shortening the interval only helps while one round is affordable at all: a wallet funded with less

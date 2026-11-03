@@ -19,6 +19,8 @@ import { parse } from "yaml";
 import {
   flowBudgetShortfall,
   flowTopUpIntervalBlocks,
+  informedQuoteNotionals,
+  informedQuoteTarget,
   type FlowDrainPerRound,
   type FlowWalletTargets,
 } from "../core/src/realtime/flowWallets.js";
@@ -75,15 +77,33 @@ function extraBases(doc: Doc): string[] {
   return Object.keys(doc.flow.baseMax ?? {}).filter((s) => s !== "WETH");
 }
 
+/**
+ * What an informed wallet actually holds, which is not quite what the config states: the coordinator
+ * derives the quote side from the base legs at the opening fair prices (`informedQuoteTarget`) and
+ * keeps `funding.flowUsdcUnits` as the floor. Checking the config's number instead would check
+ * something no wallet ever holds.
+ */
 function targets(doc: Doc): FlowWalletTargets {
-  const bases: Record<string, bigint> = {};
+  const bases: Record<string, bigint> = { WETH: BigInt(doc.funding.flowWethWei) };
   for (const [symbol, v] of Object.entries(doc.funding.flowBase ?? {}))
     bases[symbol] = BigInt(v);
+  // Through the same builder the coordinator uses, not a second reading of the YAML: the resolved
+  // config carries a `WETH: 0` entry in `flowBaseAmounts` that a YAML-only view does not have, and
+  // a test that quietly disagreed with the runtime about which amounts count would pass while the
+  // derivation did nothing.
+  const perBase = informedQuoteNotionals(
+    BigInt(doc.funding.flowWethWei),
+    Object.fromEntries(
+      Object.entries(doc.funding.flowBase ?? {}).map(([k, v]) => [k, BigInt(v)]),
+    ),
+    (amount, symbol) =>
+      ANCHOR[symbol] === undefined ? null : toQuote(amount, symbol),
+  );
   return {
     ethWei: 0n,
     wethWei: BigInt(doc.funding.flowWethWei),
-    usdcUnits: BigInt(doc.funding.flowUsdcUnits),
-    bases: { WETH: BigInt(doc.funding.flowWethWei), ...bases },
+    usdcUnits: informedQuoteTarget(BigInt(doc.funding.flowUsdcUnits), perBase),
+    bases,
   };
 }
 
@@ -170,32 +190,32 @@ for (const path of FILES) {
   });
 }
 
-test("the quote side is not funded for fewer rounds than it is today", () => {
-  // Measured, not chosen. Each base has its own funded amount, but all of their buy sides come out
-  // of one USDC balance, so the quote runway is already the shortest: 38 rounds against 75 on each
-  // base. That is the half of the wallet that ran out first on the practice chain -- the reverted
-  // informed orders were 120 USDC-in against 93 WBTC-in in the window measured.
+test("the gap-closing side buys for as many rounds as it sells", () => {
+  // Each base has a funded amount of its own; all of their buy sides come out of one quote balance.
+  // `funding.flowUsdcUnits` mirrors the WETH leg alone -- it was written when WETH was the only base
+  // -- so with two bases the wallet sold for 75 rounds and bought for 37, and the side that ran out
+  // first is the one that pulls a venue back *up* to the reference price. On the practice chain the
+  // reverted informed orders were 120 USDC-in against 93 WBTC-in.
   //
-  // This pins the ratio where it stands rather than asserting the symmetry it ought to have
-  // (quote >= base, i.e. funding.flowUsdcUnits of 900,000 against today's 450,000), because raising
-  // the flow's USDC changes the environment's buy-side depth and that is a calibration decision.
-  // What it does catch: a third base, or a larger cap, silently making it worse.
+  // The coordinator now derives the informed wallets' quote level as the sum of the legs
+  // (`informedQuoteTarget`), with the configured number as a floor, so this asserts the symmetry
+  // itself rather than pinning how far short it falls. The uninformed wallets still hold the
+  // configured amount: their USDC is a calibration knob (#79, #112), not this.
   for (const path of FILES) {
     const doc = load(path);
     const t = targets(doc);
     const d = drain(doc);
-    // Cross-multiplied so the comparison is the real ratio (exactly 1/2 today) rather than two
-    // truncated round counts, which would read 37 against 75 and fail on the rounding alone.
+    // Cross-multiplied, so the comparison is the ratio itself rather than two truncated round
+    // counts -- 75 against 75 reads as 75 against 74 after integer division.
     for (const [symbol, cap] of [
       ["WETH", d.wethWei] as const,
       ...Object.entries(d.bases),
     ]) {
       const funded = symbol === "WETH" ? t.wethWei : (t.bases[symbol] ?? 0n);
       assert.ok(
-        2n * t.usdcUnits * cap >= funded * d.usdcUnits,
-        `${path}: the quote side pays for fewer than half the rounds ${symbol} does ` +
-          `(${t.usdcUnits} USDC / ${d.usdcUnits} per round against ${funded} ${symbol} / ${cap}) -- ` +
-          `a base or a cap was added without raising funding.flowUsdcUnits`,
+        t.usdcUnits * cap >= funded * d.usdcUnits,
+        `${path}: the quote side pays for fewer rounds than ${symbol} does ` +
+          `(${t.usdcUnits} USDC / ${d.usdcUnits} per round against ${funded} ${symbol} / ${cap})`,
       );
     }
   }
@@ -220,8 +240,10 @@ test("the official regimes and the practice period fund the flow wallets identic
 });
 
 test("the practice period's refill interval is derived, not the 300 it configures", () => {
-  // The collision itself. 300 blocks against a 12,000 USDC round and a 225,000 floor is 18 rounds of
-  // demand per visit; the interval has to come from the caps, and does.
+  // The collision itself: 300 blocks against a 12,000 USDC round. The interval has to come from the
+  // caps, and does. 36 rather than the 17 it was before the quote side was derived -- doubling what
+  // the gap-closing wallets hold doubles how long a refill lasts, so the wallets are visited half as
+  // often for the same guarantee.
   const doc = load("config/practice.yaml");
   assert.equal(doc.flow.topUpEveryBlocks, 300, "the config still asks for 300");
   const derived = flowTopUpIntervalBlocks(
@@ -229,22 +251,8 @@ test("the practice period's refill interval is derived, not the 300 it configure
     targets(doc),
     drain(doc),
   );
-  assert.equal(derived, 17, "the derived interval moved: the caps or the funding changed");
+  assert.equal(derived, 36, "the derived interval moved: the caps or the funding changed");
 });
-
-// Regimes whose declared gaps already outrun the wallet, with the margin as measured. This is not a
-// waiver: the numbers are asserted exactly, so closing the gap and widening it both trip this test.
-//
-// `crash` draws up to two windows of up to 20 blocks and flips each one upward with probability 0.5,
-// so the worst draw is 40 blocks of the informed leg buying -- against 37 rounds of quote. And its
-// `recoverFrac: [0, 0]` means none of the gap comes back on its own, so the real demand is not the
-// window but however long it takes the leg to walk a 15-22 % gap shut, which is longer still. One
-// change fixes this and the quote asymmetry above: funding.flowUsdcUnits 450,000 -> 900,000, which
-// is the sum of the two base legs rather than the WETH leg alone. It is left to a calibration
-// decision because it deepens the environment's buy side in every official epoch.
-const KNOWN_SHORT: Record<string, { side: "buy" | "sell"; blocks: number; rounds: number }> = {
-  crash: { side: "buy", blocks: 40, rounds: 37 },
-};
 
 for (const name of OFFICIAL) {
   test(`config/regimes/${name}.yaml: the flow is funded for its declared price gaps`, () => {
@@ -278,20 +286,11 @@ for (const name of OFFICIAL) {
       if (e.type === "spike" || canFlip) buy += blocks * windows;
     }
     const shortestBase = Math.min(...Object.values(r.bases));
-    const known = KNOWN_SHORT[name];
     const check = (
       side: "buy" | "sell",
       blocks: number,
       rounds: number,
     ): void => {
-      if (known?.side === side) {
-        assert.deepEqual(
-          { side, blocks, rounds },
-          known,
-          `${name}'s known ${side}-side shortfall moved; see KNOWN_SHORT`,
-        );
-        return;
-      }
       assert.ok(
         blocks <= rounds,
         `${blocks} blocks of declared ${side === "buy" ? "upward" : "downward"} gap ` +

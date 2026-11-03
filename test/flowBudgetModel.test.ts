@@ -34,6 +34,8 @@ const { Rng } = await import("@eris/sdk/rng.js");
 const { buildFlowOrders } = await import("../core/src/flow/logic.js");
 const {
   flowBudgetShortfall,
+  informedQuoteNotionals,
+  informedQuoteTarget,
   flowSolventRounds,
   flowTopUpIntervalBlocks,
   planFlowTopUp,
@@ -510,4 +512,72 @@ test("a wallet nothing can drain keeps the configured interval", () => {
     300,
   );
   assert.equal(flowSolventRounds(targetsOf(idle), drainOf(idle)), null);
+});
+
+test("the gap-closing quote target is the sum of the legs, with the config as a floor", () => {
+  // One quote balance serves every base leg, so the target is their sum -- the number that was
+  // missing is the second leg, not a multiplier. A config that funds more deeply than the legs need
+  // keeps what it asked for: deriving must not be able to take inventory away from a run.
+  const weth = 450_000n * USDC;
+  const wbtc = 450_000n * USDC;
+  assert.equal(informedQuoteTarget(450_000n * USDC, { WETH: weth }), 450_000n * USDC);
+  assert.equal(
+    informedQuoteTarget(450_000n * USDC, { WETH: weth, WBTC: wbtc }),
+    900_000n * USDC,
+    "two legs at the same notional need twice the quote",
+  );
+  assert.equal(
+    informedQuoteTarget(450_000n * USDC, { WETH: weth, WBTC: wbtc, EXTRA: wbtc }),
+    1_350_000n * USDC,
+    "a third base raises it again, without an edit anywhere",
+  );
+  assert.equal(
+    informedQuoteTarget(5_000_000n * USDC, { WETH: weth, WBTC: wbtc }),
+    5_000_000n * USDC,
+    "a config that asks for more keeps it",
+  );
+  assert.equal(informedQuoteTarget(450_000n * USDC, {}), 450_000n * USDC);
+});
+
+test("the quote target counts the WETH leg from its own field, not from the base map", () => {
+  // Two different hazards live here, and only one of them is a live guard.
+  //
+  // The one that bit: the first version of this built the map as
+  // `{ WETH: flowWethWei, ...flowBaseAmounts }`, and the *resolved* config carries `WETH: 0` in
+  // `flowBaseAmounts` (the WETH inventory has its own field; the funding path ignores a WETH key in
+  // the base map). The spread overwrote the WETH leg with zero, the sum came to the WBTC leg alone,
+  // and the derivation returned exactly the floor it was supposed to raise -- a silent no-op. Taking
+  // the leg from its own field removes the hazard rather than guarding it, so the first case below
+  // asserts the outcome and would not fail if the `continue` were dropped.
+  //
+  // The one the `continue` does guard: a base map that carries a *non-zero* WETH would otherwise be
+  // counted instead of `flowWethWei`.
+  const q = (amount: bigint, symbol: string): bigint =>
+    symbol === "WETH"
+      ? (amount * BigInt(FAIR_WETH)) / 10n ** 12n
+      : (amount * BigInt(FAIR_WBTC)) / 100n;
+
+  const resolved = informedQuoteNotionals(
+    150n * WEI,
+    { WETH: 0n, WBTC: (75n * SAT) / 10n },
+    q,
+  );
+  assert.deepEqual(Object.keys(resolved).sort(), ["WBTC", "WETH"]);
+  assert.equal(resolved.WETH, 450_000n * USDC, "the WETH leg is its own field");
+  assert.equal(
+    informedQuoteTarget(450_000n * USDC, resolved),
+    900_000n * USDC,
+    "the spread version returned the floor here, i.e. changed nothing",
+  );
+
+  const stale = informedQuoteNotionals(
+    150n * WEI,
+    { WETH: 10n * WEI, WBTC: (75n * SAT) / 10n },
+    q,
+  );
+  assert.equal(
+    stale.WETH,
+    450_000n * USDC,
+    "a non-zero WETH in the base map must not displace funding.flowWethWei",
+  );
 });

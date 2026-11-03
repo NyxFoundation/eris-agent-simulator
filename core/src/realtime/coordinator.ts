@@ -365,6 +365,8 @@ import {
   FlowGuardLog,
   flowBudgetShortfall,
   flowSolventRounds,
+  informedQuoteNotionals,
+  informedQuoteTarget,
   flowTopUpIntervalBlocks,
   planFlowTopUp,
   type FlowDrainPerRound,
@@ -409,6 +411,21 @@ const EMPTY_TRIE_ROOT =
 // Look up the WalletRole from a flowWalletMap key (`${protocol}:${kind}`).
 function flowRole(key: string): WalletRole {
   return key.endsWith(":informed") ? "informed-flow" : "uninformed-flow";
+}
+
+// A base amount in that base's decimals, as quote units at `price`. The same conversion the flow
+// bot applies when it sizes a buy (flow/logic.ts, baseToQuoteUnits), kept here so the funding and
+// the solvency check below agree with what the orders will actually ask for.
+function toQuoteUnits(amount: bigint, symbol: string, price: number): bigint {
+  return (
+    (amount * BigInt(Math.round(price * 100))) /
+    (100n * 10n ** BigInt(tokenInfo(symbol as TokenSymbol).decimals - 6))
+  );
+}
+
+// `<venue>:informed` -- the gap-closing wallets, the ones whose quote side is derived.
+function isInformedFlowKey(key: string): boolean {
+  return /^[a-z]+:informed$/.test(key);
 }
 
 // The chain's actual block cadence, from the last two blocks' timestamps. On anvil the environment
@@ -1456,6 +1473,10 @@ export async function runRealtimeSimulation(
     enabledIds,
     aaveFlowActorCount: config.aaveFlowActorCount,
   });
+  // The `<venue>:informed` wallets' quote balance. `funding.flowUsdcUnits` until the opening fair
+  // prices are read, then the sum of what the base legs can buy in a round (informedQuoteTarget);
+  // the top-up below restores the same number, so the derived level is the one that persists.
+  let informedQuoteUnits = config.flowUsdcUnits;
 
   // Resolved before wallet funding, not at the start of the block loop: the whale wallet has to be
   // endowed with enough inventory to place the largest order the seed drew, and that is only knowable
@@ -1941,6 +1962,50 @@ export async function runRealtimeSimulation(
         usdcUnits: funding.usdcUnits.toString(),
         events: whaleEvents.length,
       });
+    }
+
+    // ---- the gap-closing wallets' quote side ----
+    // Funded here for the same reason the whale is: the number is denominated against the fair
+    // price, which is only known once the pools have been read. `informedQuoteTarget` sums what the
+    // informed legs can be asked to buy in a round; `funding.flowUsdcUnits` stays the floor, and the
+    // uninformed wallets keep it untouched -- their USDC is a calibration knob (#79, #112), and a
+    // deeper uninformed buy side is a different market rather than a fix to this one.
+    {
+      const perBase = informedQuoteNotionals(
+        config.flowWethWei,
+        config.flowBaseAmounts,
+        (amount, symbol) => {
+          const price = openingFair[symbol];
+          return price ? toQuoteUnits(amount, symbol, price) : null;
+        },
+      );
+      informedQuoteUnits = informedQuoteTarget(config.flowUsdcUnits, perBase);
+      if (!resume && informedQuoteUnits > config.flowUsdcUnits) {
+        for (const [key, wallet] of flowWalletMap) {
+          if (!isInformedFlowKey(key)) continue;
+          await fundWallet(
+            publicClient,
+            walletClient,
+            chain,
+            wallet.privateKey,
+            config.flowEthWei,
+            config.flowWethWei,
+            informedQuoteUnits,
+            config.flowBaseAmounts,
+          );
+        }
+        logger.event({
+          type: "flow_informed_quote_funded",
+          configuredUsdcUnits: config.flowUsdcUnits.toString(),
+          usdcUnits: informedQuoteUnits.toString(),
+          perBase: Object.fromEntries(
+            Object.entries(perBase).map(([s, v]) => [s, v.toString()]),
+          ),
+          note:
+            "every base leg buys out of one quote balance, so the gap-closing side is funded for " +
+            "the sum of them rather than for the WETH leg alone",
+        });
+      }
     }
 
     // ---- token-launch endowment (issue #29) ----
@@ -3370,15 +3435,19 @@ export async function runRealtimeSimulation(
         topUpEveryBlocks: config.flowTopUpEveryBlocks,
       });
       if (config.flowTopUpEveryBlocks <= 0) return;
-      const target = {
+      // Per wallet: the gap-closing ones are restored to their derived quote level, so a refill does
+      // not quietly put them back on the WETH leg's number.
+      const targetFor = (key: string) => ({
         // fundAddress restores native ETH to flowEthWei + its gas buffer whenever it runs.
         ethWei: config.flowEthWei + GAS_BUFFER_WEI,
         wethWei: config.flowWethWei,
-        usdcUnits: config.flowUsdcUnits,
+        usdcUnits: isInformedFlowKey(key)
+          ? informedQuoteUnits
+          : config.flowUsdcUnits,
         bases: config.flowBaseAmounts,
-      };
+      });
       for (const [key, w] of tradingFlowWallets) {
-        const plan = planFlowTopUp(holdings.get(key)!, target);
+        const plan = planFlowTopUp(holdings.get(key)!, targetFor(key));
         if (!plan) continue;
         try {
           // Through the same path the setup funded them: a cheatcode grant on anvil, a treasury
@@ -3886,9 +3955,6 @@ export async function runRealtimeSimulation(
     // The interval is now derived from the caps instead of chosen next to them, so the two numbers
     // cannot drift apart again whatever a config sets them to.
     {
-      const toQuote = (amount: bigint, symbol: string, price: number): bigint =>
-        (amount * BigInt(Math.round(price * 100))) /
-        (100n * 10n ** BigInt(tokenInfo(symbol as TokenSymbol).decimals - 6));
       const ammInformedCap: Partial<Record<ProtocolId, bigint>> = {
         uniswap: config.informedFlowMaxWethWei,
         balancer: config.balancerFlowMaxWethWei,
@@ -3907,7 +3973,7 @@ export async function runRealtimeSimulation(
         const wethCap = ammInformedCap[id];
         if (wethCap === undefined) continue;
         const bases: Record<string, bigint> = {};
-        let usdc = toQuote(wethCap, "WETH", fairAnchor);
+        let usdc = toQuoteUnits(wethCap, "WETH", fairAnchor);
         for (const symbol of extraSymbols) {
           const cap =
             id === "uniswap"
@@ -3918,7 +3984,7 @@ export async function runRealtimeSimulation(
           if (cap <= 0n) continue;
           bases[symbol] = cap;
           // Every leg on this wallet can be a buy in the same round, so the quote side adds up.
-          usdc += toQuote(cap, symbol, extraAnchor[symbol] ?? fairAnchor);
+          usdc += toQuoteUnits(cap, symbol, extraAnchor[symbol] ?? fairAnchor);
         }
         if (usdc > worst.usdcUnits) worst = { ...worst, usdcUnits: usdc };
         if (wethCap > worst.wethWei) worst = { ...worst, wethWei: wethCap };
@@ -3928,7 +3994,8 @@ export async function runRealtimeSimulation(
       const targets = {
         ethWei: config.flowEthWei,
         wethWei: config.flowWethWei,
-        usdcUnits: config.flowUsdcUnits,
+        // The gap-closing wallets' derived level, not the config's floor: that is what they hold.
+        usdcUnits: informedQuoteUnits,
         bases: config.flowBaseAmounts,
       };
       const derived = flowTopUpIntervalBlocks(
