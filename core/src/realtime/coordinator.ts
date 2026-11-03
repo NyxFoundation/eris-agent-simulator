@@ -423,9 +423,18 @@ function toQuoteUnits(amount: bigint, symbol: string, price: number): bigint {
   );
 }
 
-// `<venue>:informed` -- the gap-closing wallets, the ones whose quote side is derived.
+// The AMM gap-closing wallets, the ones whose quote side is derived. `gmx:informed` and
+// `aave:informed` match the same `<venue>:informed` shape and are deliberately not here: the
+// derivation is the arithmetic of base legs buying out of one quote balance, which is the AMM
+// flow's shape and nobody else's. The Aave borrower actor spends its USDC on a different thing
+// entirely, and deepening it would be an unasked-for change to that calibration.
+const AMM_INFORMED_KEYS = new Set([
+  "uniswap:informed",
+  "balancer:informed",
+  "curve:informed",
+]);
 function isInformedFlowKey(key: string): boolean {
-  return /^[a-z]+:informed$/.test(key);
+  return AMM_INFORMED_KEYS.has(key);
 }
 
 // The chain's actual block cadence, from the last two blocks' timestamps. On anvil the environment
