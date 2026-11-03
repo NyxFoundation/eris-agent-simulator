@@ -628,7 +628,16 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   独立に見ていたので、5,269 USDC の財布が 11,165 USDC 分の注文を出して 2 本目が revert していた。
   **公式レジームは補充が無く**、同じ算術だと 1 回配りで 360 ブロック中 **37 ブロック**しか持たない
   （`flow_budget_warning` が出る。funding を上げるか cap を下げるかは較正の判断で、未決）。
-  不変条件は `test/flowBudgetModel.test.ts` が有界モデル検査で押さえる（全 4^5 の乖離系列 × config 格子）。**GMX の flow は自分の建玉を cap の一定割合までに抑える**（`flow.gmxOiTargetFrac`、
+  不変条件は 3 本で押さえる: `test/flowBudgetModel.test.ts`（機構。全 4^5 の乖離系列 × config 格子の有界モデル検査）/
+  `test/flowInformedBudget.test.ts`（**コミット済み config の informed 側予算**。`flowTrendInventory.test.ts` =
+  #112 の uninformed 側の対で、base ごとの runway 一致 = #124 の性質もここ）/ `test/configBudgets.test.ts`
+  （**レートと有限の予算の組の一覧**。LST の利回り 対 reward reserve、Liquity の victim 債務 対 Stability Pool、
+  各組がどのファイルで検査されるかの表を持つ。新しい組を足すのは意識的な行為にする）。
+  **既知の不足 2 件**（修正せず実測値を固定して記録）: ①**quote 側の runway は base 側の 1/2**
+  （`flowUsdcUnits` 450k は WETH 脚の分しか無く、WBTC 脚の買いも同じ USDC から出る。実測の revert も
+  USDC-in が多数派）。②`crash` は最大 40 ブロックの上方向ギャップ（`flipProb: 0.5`）に対し quote が 37 ラウンド分。
+  **どちらも `funding.flowUsdcUnits` 450,000 → 900,000 の 1 箇所で解ける**が、全公式エポックの買い側の厚みが
+  変わるので較正の判断として未着手。**GMX の flow は自分の建玉を cap の一定割合までに抑える**（`flow.gmxOiTargetFrac`、
   既定 0.4、0 = 閉じない旧 flow。期間中も変更可）。以前は開くだけで、2026-10-08 開始の練習期間では WETH 市場の
   両側が reserve 上限（プール価値 × 0.5）まで flow の建玉で埋まり、参加者はどちら向きにも開けなかった。目標を超えた側に
   引いた注文は同じ乱数のまま close になる（担保は比例分）ので、**目標未満なら flow は乱数単位で以前と同一**。
