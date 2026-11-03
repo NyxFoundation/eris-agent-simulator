@@ -618,7 +618,29 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   上限は `setTimeout` の 32bit を超えて 1ms に化けていた（イベント無しの run が 0 ブロックで終了）→ `setLongTimeout`。
   ②**背景フローの財布は補充する**（`flow.topUpEveryBlocks`、練習は 300。公式は 0 = 1 回配り）。実測で
   1 財布の在庫が 1 日に元の数倍揺れ、合計価値は 1 日 1 割強減る。`flow_balances` / `flow_guard` /
-  `flow_wallet_topped_up` が記録。**GMX の flow は自分の建玉を cap の一定割合までに抑える**（`flow.gmxOiTargetFrac`、
+  `flow_wallet_topped_up` が記録。**補充の間隔は config の値ではなく informed の cap から導出する**
+  （`flowTopUpIntervalBlocks`）。informed のサイズは `cap × min(1, 乖離×20)` なので乖離 5% 超では毎ブロック
+  満額を要求し、練習較正では需要 $3.3M/300 ブロックに対し供給 $0.9M = **約 3.7 倍の赤字**だった。
+  財布はサイクルの 1/5 で空になり、以降の注文は Uniswap の `STF` で revert、**価格を fair へ引き戻す唯一の側が
+  乖離の大きいときに限って止まる**（練習チェーン実測: informed の revert 率が補充直後 ~0% → 直前 85%、
+  venue mid が同日中に fair の 0.14 倍と 9.6 倍）。導出後は練習の 300 → **17 ブロック**（律速は USDC）。
+  **同じ財布の WETH 脚と WBTC 脚は 1 ラウンドの残高を共有する**（`FlowWalletBook`）— 以前は各脚が全残高を
+  独立に見ていたので、5,269 USDC の財布が 11,165 USDC 分の注文を出して 2 本目が revert していた。
+  **公式レジームは補充が無く**、同じ算術だと 1 回配りで 360 ブロック中 **37 ブロック**しか持たない
+  （`flow_budget_warning` が出る。funding を上げるか cap を下げるかは較正の判断で、未決）。
+  不変条件は 3 本で押さえる: `test/flowBudgetModel.test.ts`（機構。全 4^5 の乖離系列 × config 格子の有界モデル検査）/
+  `test/flowInformedBudget.test.ts`（**コミット済み config の informed 側予算**。`flowTrendInventory.test.ts` =
+  #112 の uninformed 側の対で、base ごとの runway 一致 = #124 の性質もここ）/ `test/configBudgets.test.ts`
+  （**レートと有限の予算の組の一覧**。LST の利回り 対 reward reserve、Liquity の victim 債務 対 Stability Pool、
+  各組がどのファイルで検査されるかの表を持つ。新しい組を足すのは意識的な行為にする）。
+  **quote 側は config の値ではなく base 脚の合計から導出する**（`informedQuoteTarget`。`funding.flowUsdcUnits` は
+  下限として残る）。450,000 は WETH が唯一の base だった頃に書かれた「150 WETH @ $3,000 の鏡」で、3 日後に
+  #124 が WBTC を同じ notional で足したとき**base 側だけ倍になって quote 側が据え置かれた**。結果、売りは 75
+  ラウンド・買いは 37 ラウンドで、**fair へ引き戻す側のうち「上へ戻す」方だけが半分の寿命**だった（実測の revert も
+  USDC-in 120 対 WBTC-in 93 で買い側が先に枯れている）。導出後は 900,000 で 75 = 75、補充間隔も 17 → 36 に伸びる。
+  **適用は `<venue>:informed` の財布だけ** — uninformed の USDC は #79/#112 の較正ノブで、買い側を厚くするのは
+  別の市場を作ることであって修正ではない。fair が要るので whale endowment と同じ場所（`openingFair` 確定後）で
+  差分を配り、`flow_informed_quote_funded` に記録する。**GMX の flow は自分の建玉を cap の一定割合までに抑える**（`flow.gmxOiTargetFrac`、
   既定 0.4、0 = 閉じない旧 flow。期間中も変更可）。以前は開くだけで、2026-10-08 開始の練習期間では WETH 市場の
   両側が reserve 上限（プール価値 × 0.5）まで flow の建玉で埋まり、参加者はどちら向きにも開けなかった。目標を超えた側に
   引いた注文は同じ乱数のまま close になる（担保は比例分）ので、**目標未満なら flow は乱数単位で以前と同一**。
@@ -936,7 +958,16 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   - **公開ビューも run 中に読むものがある**: `blocks.csv` / `intervals.jsonl`（issue #140 以前の coordinator は `epochs.jsonl`。どちらも読み・配信する）/ `market.jsonl`（どれも coordinator が逐次追記し、サーバーも配信済み）。これを読まなかったせいで `/explorer` と盤面が期間中ずっと `blocks 0–0`・venue 全部 `—` だった（issue #84 A）。**ブロック行は coordinator の記録が先、チェーンはその先だけ**で、**カバーしている範囲を一緒に運ぶ** — 範囲より前に始まる評価区間は tx 数が「0」ではなく**「数えていない」**
   - **schedule の非公開はサーバーと同じ規則で表示する**（issue #84 D）。scenario の 1 エポックは「§3.3 により非公開」、continuous な run は「既に閉じた窓」。`0 件` と描くのはサーバーがしていない主張。公開ビューは `events.jsonl` の head を定期的に読み直す（閉じた窓は後から配信されるので、tail が通り過ぎていると二度と見えない）
 - `npm run gen:method-selectors` — venue ABI から selector→関数名テーブルを再生成（ADR 0021 §4）。生成物にしてあるのはブラウザに ABI パーサと keccak を積まないため（実測 +15kB gzip）。ABI とのズレは `test/methodNames.test.ts` が落とす
-- `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
+- `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト。**`npm install` が済んでいないと両方落ちる**
+  （`ts-json-schema-generator` は devDependency で、欠けると typecheck が `scripts/pythonSdkSchema.ts` で止まり
+  `pythonSdk.test.ts` も失敗する）。**Python のテスト 2 本は venv が要る** — `uv venv .venv --python 3.11` →
+  `VIRTUAL_ENV=.venv uv pip install ./sdk-py` → `ERIS_PYTHON="$PWD/.venv/bin/python" npm test`
+  （NixOS は system pip が使えないので uv 経由。pip 版と手順は docs/guide/python-agents.md）。
+  **`out/` が古いと 2 本落ちる**（`regimeStartInvariance` / `vulnPools.integration` が ABI を読む。
+  成果物が「無い」ときは skip するが「古い」ときはしない）→ `npm run build:contracts`。
+  **`agentLogSegment.test.ts` は 3 回に 1 回ほど落ちる**（origin/main でも同じ）。appender はセグメント
+  ポインタの **mtime が変わったときだけ**読み直すのに、テストが同一ミリ秒内に 2 回書くため。本番は
+  セグメントを数時間おきに切るので影響は無く、テスト側の競合。他に #122 の「並列負荷で毎回別の 1 本が落ちる」もある
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
 - `npm run check:boundaries` — workspace 依存方向（example → sdk ← core）の検査
 - `npm run bundle:agent <id>` — 提出用 zip（runtime + sdk + lib + 対象 agent。ADR 0015 §7）。**`kind: improve` の prompt.md が無いディレクトリは拒否**（規約 §2.5 が全提出 agent に戦略改訂を要求する。起動時ではなく提出物の段で止めるのは、example の 17 agent が prompt.md 無しの教材だから）

@@ -17,6 +17,19 @@ export ERIS_PYTHON="$PWD/.venv/bin/python"
 cp -r example/agents/my-arb-py example/agents/my-python
 ```
 
+With [uv](https://docs.astral.sh/uv/) instead, which is what a distribution without a usable system
+`pip` needs (NixOS has no writable site-packages, so `python3 -m pip` outside a venv fails):
+
+```sh
+uv venv .venv --python 3.11
+VIRTUAL_ENV=.venv uv pip install ./sdk-py
+export ERIS_PYTHON="$PWD/.venv/bin/python"
+```
+
+`uv venv` writes the same `.venv/bin/python`, so everything below -- `ERIS_PYTHON`, the dev
+requirements, the test commands -- is unchanged. `VIRTUAL_ENV=.venv` is what tells `uv pip` which
+environment to install into without activating it.
+
 Declare additional dependencies in `example/agents/my-python/requirements.txt`, each pinned with
 its hash (`numpy==2.1.3 --hash=sha256:…`; `pip-compile --generate-hashes` writes this form). The
 submission build installs **wheels only** and offline, so a package without a wheel for the
@@ -144,7 +157,7 @@ JSON Schema; pinned `datamodel-code-generator` produces committed Pydantic model
 leaves become schema references so typed action constructors compose. Do not hand-edit generated files.
 
 ```sh
-.venv/bin/python -m pip install -r sdk-py/requirements-dev.txt
+.venv/bin/python -m pip install -r sdk-py/requirements-dev.txt   # or: VIRTUAL_ENV=.venv uv pip install -r sdk-py/requirements-dev.txt
 ERIS_DATAMODEL_CODEGEN="$PWD/.venv/bin/datamodel-codegen" npm run gen:python-sdk
 npm run typecheck
 ERIS_PYTHON="$PWD/.venv/bin/python" npm test

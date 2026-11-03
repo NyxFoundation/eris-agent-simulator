@@ -94,6 +94,181 @@ function below(held: bigint, target: bigint): boolean {
   return target > 0n && held * 10_000n < target * FLOW_TOPUP_FLOOR_BPS;
 }
 
+/** The level a token is refilled at: the floor `below` compares against. */
+export function flowTopUpFloor(target: bigint): bigint {
+  return (target * FLOW_TOPUP_FLOOR_BPS) / 10_000n;
+}
+
+/**
+ * The most of each token one wallet's gap-closing legs can commit in a single round. Deterministic:
+ * the informed size is `cap x min(1, deviation x 20)`, so `cap` is reached whenever the venue is far
+ * enough from fair -- which is exactly when the environment needs the leg to act.
+ */
+export type FlowDrainPerRound = {
+  wethWei: bigint;
+  usdcUnits: bigint;
+  bases: Record<string, bigint>;
+};
+
+/**
+ * How often the wallets must be checked for the funded amount to survive until the next check.
+ *
+ * The refill interval and the flow's per-round caps used to be chosen independently -- 150 WETH every
+ * 300 blocks against an informed cap of 2 WETH a block, which is 600 WETH of demand against 150 of
+ * supply. The shortfall only bites when the deviation is large enough to put the informed leg at full
+ * size, i.e. the gap-closing side runs out of money exactly when the gap is widest, and the venue
+ * price then walks away from fair with nothing pulling it back (measured on the practice devnet: the
+ * informed revert rate rose from ~0 % just after a top-up to 85 % just before the next one).
+ *
+ * Deriving the interval from the caps removes the second number: whatever a config sets the caps and
+ * the funded amount to, the wallets are visited often enough that a full-size round every block
+ * cannot empty one. Returns `configured` when top-ups are off (0) or nothing can drain (0 caps) --
+ * this never turns a top-up on, it only shortens an interval that is already running.
+ */
+export function flowTopUpIntervalBlocks(
+  configuredBlocks: number,
+  target: FlowWalletTargets,
+  drain: FlowDrainPerRound,
+): number {
+  if (configuredBlocks <= 0) return configuredBlocks;
+  // The refill only triggers below the floor, so the balance a wallet is guaranteed to still have
+  // when a check finds it solvent is the floor -- that, not the full target, is what has to last
+  // until the next check.
+  const rounds = flowSolventRounds(
+    {
+      ethWei: flowTopUpFloor(target.ethWei),
+      wethWei: flowTopUpFloor(target.wethWei),
+      usdcUnits: flowTopUpFloor(target.usdcUnits),
+      bases: Object.fromEntries(
+        Object.entries(target.bases).map(([s, v]) => [s, flowTopUpFloor(v)]),
+      ),
+    },
+    drain,
+  );
+  // One round of slack: the check reads the balances the round's orders were already sized against,
+  // and the grant it decides on lands a block later.
+  if (rounds === null) return configuredBlocks;
+  const safe = rounds - 1;
+  if (safe >= configuredBlocks) return configuredBlocks;
+  return safe < 1 ? 1 : safe;
+}
+
+/**
+ * The quote balance an informed wallet needs to buy for as many rounds as it can sell.
+ *
+ * The informed leg spends either a base or that base's worth of the quote token, whichever closes
+ * the gap. Each base has a funded balance of its own; all of them buy out of one quote balance. So a
+ * run with two bases sells for as many rounds as ever and buys for half as many, and the side that
+ * runs out first is the one that pulls a venue back *up* to the reference price.
+ *
+ * `funding.flowUsdcUnits` was written when WETH was the only base -- 450,000 USDC is 150 WETH at
+ * $3,000, exactly its mirror -- and issue #124's second base, funded at the same notional three days
+ * later, doubled the demand on it without touching the number. Summing the legs here rather than
+ * restating the sum in every config means a third base cannot reopen the gap quietly.
+ *
+ * `configured` is a floor, never a cap: a run that funds its wallets more deeply than the legs need
+ * keeps what it asked for.
+ */
+export function informedQuoteTarget(
+  configured: bigint,
+  quoteNotionalPerBase: Record<string, bigint>,
+): bigint {
+  let sum = 0n;
+  for (const v of Object.values(quoteNotionalPerBase)) sum += v;
+  return sum > configured ? sum : configured;
+}
+
+/**
+ * Each base leg's inventory as quote units, which is what `informedQuoteTarget` sums.
+ *
+ * WETH comes from `funding.flowWethWei` and never from `flowBaseAmounts`: the resolved config
+ * carries a `WETH: 0` entry there (the WETH inventory has its own field, and the funding path
+ * ignores a WETH key in the base map), so reading the map for it would make the whole derivation a
+ * no-op -- 0 is skipped, the sum comes to the WBTC leg alone, and that is exactly the number the
+ * configured floor already was.
+ */
+export function informedQuoteNotionals(
+  flowWethWei: bigint,
+  flowBaseAmounts: Record<string, bigint>,
+  quote: (amount: bigint, symbol: string) => bigint | null,
+): Record<string, bigint> {
+  const out: Record<string, bigint> = {};
+  const add = (symbol: string, amount: bigint): void => {
+    if (amount <= 0n) return;
+    const q = quote(amount, symbol);
+    if (q !== null && q > 0n) out[symbol] = q;
+  };
+  add("WETH", flowWethWei);
+  for (const [symbol, amount] of Object.entries(flowBaseAmounts)) {
+    if (symbol === "WETH") continue;
+    add(symbol, amount);
+  }
+  return out;
+}
+
+/**
+ * The tokens whose funded amount cannot carry `rounds` rounds of full-size flow.
+ *
+ * Shortening the interval only helps while one round is affordable at all: a wallet funded with less
+ * than a single round's demand is short however often it is visited, and the caps or the funding have
+ * to move. `rounds = 1` is therefore the satisfiability check on a config, and the coordinator says so
+ * at startup rather than letting the gap-closing side go quiet mid-run.
+ */
+export function flowBudgetShortfall(
+  funded: FlowWalletTargets,
+  drain: FlowDrainPerRound,
+  rounds: number,
+): Array<{ symbol: string; funded: bigint; needed: bigint }> {
+  const need = BigInt(Math.max(0, Math.floor(rounds)));
+  const pairs: Array<[string, bigint, bigint]> = [
+    ["WETH", funded.wethWei, drain.wethWei],
+    ["USDC", funded.usdcUnits, drain.usdcUnits],
+    ...Object.entries(drain.bases).map(
+      ([symbol, d]): [string, bigint, bigint] => [
+        symbol,
+        funded.bases[symbol] ?? 0n,
+        d,
+      ],
+    ),
+  ];
+  const out: Array<{ symbol: string; funded: bigint; needed: bigint }> = [];
+  for (const [symbol, t, d] of pairs) {
+    // A token the flow cannot spend is not short of it; one it can spend but was never funded with
+    // is the balance guard's business from block one, not a budget to repair.
+    if (d <= 0n || t <= 0n) continue;
+    const needed = d * need;
+    if (t < needed) out.push({ symbol, funded: t, needed });
+  }
+  return out;
+}
+
+/**
+ * How many rounds of full-size flow a funded wallet survives, or null when nothing can drain it.
+ * With a top-up this is how long a refill lasts; without one (every official regime) it is how far
+ * into the run the gap-closing side can still act.
+ */
+export function flowSolventRounds(
+  funded: FlowWalletTargets,
+  drain: FlowDrainPerRound,
+): number | null {
+  const pairs: Array<[bigint, bigint]> = [
+    [funded.wethWei, drain.wethWei],
+    [funded.usdcUnits, drain.usdcUnits],
+    ...Object.entries(drain.bases).map(
+      ([symbol, d]): [bigint, bigint] => [funded.bases[symbol] ?? 0n, d],
+    ),
+  ];
+  let limit: bigint | null = null;
+  for (const [t, d] of pairs) {
+    // A token the run never funded is one the flow can never spend either -- the balance guard
+    // suppresses that leg from the first block - so it places no constraint on the interval.
+    if (d <= 0n || t <= 0n) continue;
+    const rounds = t / d;
+    if (limit === null || rounds < limit) limit = rounds;
+  }
+  return limit === null ? null : Number(limit);
+}
+
 /**
  * null when nothing is below its floor. A token funded with 0 (a config that never gave the flow any)
  * is never refilled -- the top-up restores what the run chose, it does not invent inventory.

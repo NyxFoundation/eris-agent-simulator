@@ -2,7 +2,14 @@
 // The log has to follow, or every segment after the first shows a local agent with no lines --
 // which the dashboard states as "it never logged a decision".
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  utimesSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -30,6 +37,12 @@ test("the decision log follows a segment roll", () => {
 
     // The coordinator rolls: same process, new directory.
     writeFileSync(pointer, `${s1}\n`);
+    // The appender re-reads the pointer when its mtime changes, and both writes above can land in
+    // the same millisecond here -- the test failed about one run in three on that alone. A real roll
+    // is hours after the last one, so stamping a distinct mtime is what makes this a roll rather
+    // than a weaker version of one.
+    const rolledAt = new Date(Date.now() + 1_000);
+    utimesSync(pointer, rolledAt, rolledAt);
     append({ round: 2 });
 
     const first = lines(join(s0, "agents", "house-arb.jsonl"));

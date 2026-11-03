@@ -277,24 +277,64 @@ function wethToUsdcUnits(wethWei: bigint, fairPrice: number): bigint {
   return baseToQuoteUnits(wethWei, "WETH", fairPrice);
 }
 
-function flowBalance(
-  ctx: FlowContextWire,
-  protocol: ProtocolId,
-  kind: FlowKind,
-): FlowBalance | null {
-  const raw = ctx.flowBalances?.[`${protocol}:${kind}`];
-  if (!raw) return null;
-  return {
-    wethWei: BigInt(raw.wethWei),
-    usdcUnits: BigInt(raw.usdcUnits),
-    ...(raw.bases
+// One round's view of a wallet, shared by every leg that spends from it.
+//
+// Each leg used to decode its own copy of the wire balance, so the WETH leg and the WBTC leg of the
+// same `<venue>:informed` wallet both checked their order against the *whole* balance and both
+// passed -- and a wallet holding 5,269 USDC sent two orders worth 11,165. The chain settled the
+// first and reverted the second with Uniswap's `STF`.
+// A `FlowWalletBook` hands out one mutable FlowBalance per wallet per round and `debit` subtracts
+// what each order commits, so the next leg sees what is actually left and the existing guards cap
+// or suppress it -- with a note, instead of a revert on chain.
+class FlowWalletBook {
+  private readonly open = new Map<string, FlowBalance | null>();
+
+  constructor(private readonly ctx: FlowContextWire) {}
+
+  get(protocol: ProtocolId, kind: FlowKind): FlowBalance | null {
+    const key = `${protocol}:${kind}`;
+    const cached = this.open.get(key);
+    if (cached !== undefined) return cached;
+    const raw = this.ctx.flowBalances?.[key];
+    const decoded: FlowBalance | null = raw
       ? {
-          bases: Object.fromEntries(
-            Object.entries(raw.bases).map(([sym, v]) => [sym, BigInt(v)]),
-          ),
+          wethWei: BigInt(raw.wethWei),
+          usdcUnits: BigInt(raw.usdcUnits),
+          ...(raw.bases
+            ? {
+                bases: Object.fromEntries(
+                  Object.entries(raw.bases).map(([sym, v]) => [sym, BigInt(v)]),
+                ),
+              }
+            : {}),
         }
-      : {}),
-  };
+      : null;
+    this.open.set(key, decoded);
+    return decoded;
+  }
+}
+
+// Subtract what an order commits. `tokenIn` is the symbol the order spends: the quote token
+// (USDC units) or a base (that base's decimals). Clamped at zero -- a balance never goes negative,
+// and a leg that was already capped to the balance leaves exactly nothing for the next one.
+function debit(
+  balance: FlowBalance | null,
+  tokenIn: TokenSymbol,
+  amount: bigint,
+): void {
+  if (!balance || amount <= 0n) return;
+  if (tokenIn === "USDC") {
+    balance.usdcUnits =
+      balance.usdcUnits > amount ? balance.usdcUnits - amount : 0n;
+    return;
+  }
+  if (tokenIn === "WETH") {
+    balance.wethWei = balance.wethWei > amount ? balance.wethWei - amount : 0n;
+    return;
+  }
+  if (!balance.bases) return;
+  const held = balance.bases[tokenIn] ?? 0n;
+  balance.bases[tokenIn] = held > amount ? held - amount : 0n;
 }
 
 function capUsdc(amount: bigint, balance: FlowBalance | null): bigint {
@@ -488,6 +528,9 @@ export function buildAmmFlow(
         } as LeafAction,
         priorityFeeWei: uninformedFee,
       });
+      // Committed: the next arrival in this round, and every other base's leg on this wallet, see
+      // what is left rather than the balance this round opened with.
+      debit(balances?.uninformed ?? null, uninformedTokenIn, uninformedAmount);
     }
   }
 
@@ -545,6 +588,10 @@ export function buildAmmFlow(
       } as LeafAction,
       priorityFeeWei: informedFee,
     });
+    // As above: the gap-closing leg of the next base on this wallet must not be sized against USDC
+    // this one has already spent. That double count is what sent 11,165 USDC of orders from a
+    // wallet holding 5,269 and had the second one revert with `STF`.
+    debit(balances?.informed ?? null, informedTokenIn, informedAmount);
   }
 
   return orders;
@@ -964,6 +1011,9 @@ export function buildFlowOrders(
   const tag = (protocol: ProtocolId, orders: FlowOrder[]): void => {
     for (const o of orders) out.push({ protocol, ...o });
   };
+  // One view of each wallet for the whole round, debited as orders are committed, so the WETH leg
+  // and every extra base's leg spend from the same balance instead of each from a private copy.
+  const book = new FlowWalletBook(ctx);
 
   // [uninformedMax, informedMax] per AMM (uniswap/balancer/curve).
   // balancer/curve configure a single cap for both legs; the uninformed leg reads its own copy so
@@ -995,8 +1045,8 @@ export function buildFlowOrders(
           informedMax,
           limits.defaultPriorityFeeWei,
           {
-            uninformed: flowBalance(ctx, protocol, "uninformed"),
-            informed: flowBalance(ctx, protocol, "informed"),
+            uninformed: book.get(protocol, "uninformed"),
+            informed: book.get(protocol, "informed"),
           },
           ctx.usdcOnlyFlow === true,
           "WETH",
@@ -1046,7 +1096,7 @@ export function buildFlowOrders(
               usdcBorrowed: BigInt(ctx.aaveReserves?.usdcBorrowed ?? "0"),
             },
             ctx.fairPriceUsdcPerWeth,
-            flowBalance(ctx, "aave", "informed"),
+            book.get("aave", "informed"),
             ctx.protocols.includes("uniswap"),
             limits.aaveFlowActivityProb,
           ),
@@ -1059,7 +1109,7 @@ export function buildFlowOrders(
           limits.gmxFlowMaxSizeUsd,
           limits.defaultPriorityFeeWei,
           ctx.fairPriceUsdcPerWeth,
-          flowBalance(ctx, "gmx", "uninformed"),
+          book.get("gmx", "uninformed"),
           ctx.protocols.includes("uniswap"),
           limits.gmxFlowActivityProb,
           limits.gmxFlowMaxBurst,
@@ -1108,8 +1158,8 @@ export function buildFlowOrders(
           venueInformedMax,
           limits.defaultPriorityFeeWei,
           {
-            uninformed: flowBalance(ctx, protocol, "uninformed"),
-            informed: flowBalance(ctx, protocol, "informed"),
+            uninformed: book.get(protocol, "uninformed"),
+            informed: book.get(protocol, "informed"),
           },
           ctx.usdcOnlyFlow === true,
           extra.base,
