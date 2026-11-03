@@ -56,10 +56,11 @@ rl.on("line", (line) => {
     const ctx = JSON.parse(line) as FlowContextWire;
     const guards: FlowGuardNote[] = [];
     const orders = buildFlowOrders(rng, ctx, guards);
-    // Issue #130: when a balance guard changed an order, say so alongside the orders. A block with
-    // none keeps the bare array, so the common line is byte-identical to before.
+    // The block this answer was sized against, on every line: the coordinator does not send an order
+    // whose block has fallen too far behind the head (realtime/flowRelay.ts). Issue #130: and the
+    // balance guards that changed an order, when there were any.
     process.stdout.write(
-      `${safeStringify(guards.length > 0 ? { orders, guards, round: ctx.round } : orders)}\n`,
+      `${safeStringify(guards.length > 0 ? { orders, guards, round: ctx.round } : { orders, round: ctx.round })}\n`,
     );
   } catch (error) {
     process.stderr.write(

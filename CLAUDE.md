@@ -230,6 +230,16 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   multi-arb は net +23。crash#101 は 15.6% の gap + 59% の liquidityPull が発火・復元し、`stress_calibration_warning` /
   `_capped` は 0。crash 後 ~100 ブロック、WBTC の curve が fair 比 +100〜250bps に居座り `no_arb_persistent_warning`
   （balancer 買い / curve 売り 120bps × 10 ブロック）が 11 回出た。旧較正の crash#101 とは未比較なので、#79 由来かは未確定
+- **flow の注文は古くなったら送らない**（`core/src/realtime/flowRelay.ts`）。bot は毎ブロックその時点の pool と fair で
+  注文を作るが、送信は 1 本に RPC 往復が数回かかり、同じ財布は直列（#148 の nonce 競合）。以前は 1 回分の注文も財布を
+  またいで 1 本ずつ送り、財布ごとの待ち行列に上限が無かったので、練習 devnet の informed 財布は bot の ~2 本/ブロックに
+  対して ~1.24 本しか送れず、**1 日前（実測 44,100 ブロック以上）に作った注文を送っていた**。送信時に今の pool で
+  quote し直すので約定はするが、向きと額は存在しない市場のもので、差を詰める側が fair から**遠ざける**側になり、
+  WETH のプールが fair の 7.3 倍・WBTC が 0.107 倍まで行った（2026-11-03）。今は財布ごとに独立して送り、待っている間に
+  来た新しいブロックが未送信の古いブロックを丸ごと置き換え（同じブロックの WETH と WBTC の脚は一緒に残る）、
+  `FLOW_ORDER_MAX_AGE_BLOCKS`（2）より古い注文は送らない。送れなかった分は `flow_balances.relay`
+  （sent / superseded / stale / failed / maxAgeBlocks / maxSendMs）に数え、`tx_submitted` は bot が見たブロック `round` を持つ。
+  bot は全行に `round` を付ける。whale の注文はこの経路を通らない（1 回きりの事象なので捨てない）
 
 ### 手数料と採掘（ADR 0011。公式 12 レジームと練習期間は `economicGas: true`）
 
