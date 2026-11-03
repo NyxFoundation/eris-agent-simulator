@@ -93,6 +93,15 @@ skip = [
   "contracts/Proxy/**",
   "contracts/Integrations/**",
 ]
+
+[lint]
+# forge 1.4 lints as part of `forge build`, and its parser cannot read two files of this pinned 2021
+# Solidity 0.6 tree: a unicode string literal in SortedTroves.sol, and `byte` (a reserved word since
+# 0.8) in the vendored console.sol. Both compile fine under 0.6.11 -- "Compiler run successful!"
+# followed by "Error: Lint failed" is what this step did on a current foundry, which stops the whole
+# vendor bootstrap. The compile is what this build is for; linting someone else's pinned release is
+# not this project's business.
+lint_on_build = false
 TOML
 echo "  forge build (solc 0.6.11)"
 (cd "$LIQUITY_DIR/packages/contracts" && forge build)
