@@ -130,6 +130,7 @@ import type {
   BalanceSnapshot,
   ProtocolId,
   TokenSymbol,
+  TxIntent,
   WalletRole,
 } from "@eris/sdk/types.js";
 import { initProtocols } from "@eris/sdk/protocols/registry.js";
@@ -249,6 +250,7 @@ import {
 import { setLendingSingleton } from "@eris/sdk/protocols/lending.js";
 import { LiveScorer } from "./liveScoring.js";
 import { KeyedSerial } from "./keyedSerial.js";
+import { FLOW_ORDER_MAX_AGE_BLOCKS, FlowRelay } from "./flowRelay.js";
 import { checkRoleKeys, refusalMessage } from "./roleKeyGuard.js";
 import {
   LIVE_WEEK_OVERRIDE,
@@ -3446,6 +3448,9 @@ export async function runRealtimeSimulation(
         wallets,
         // How often each balance guard changed an order since the last row, per wallet and base.
         guardCounts: flowGuardLog.drain(),
+        // What the relay did with the bot's orders since the last row: sent, replaced by a newer
+        // block, dropped as too old, and the worst lag and send time it saw.
+        relay: flowRelay.drainStats(),
         topUpEveryBlocks: config.flowTopUpEveryBlocks,
       });
       if (config.flowTopUpEveryBlocks <= 0) return;
@@ -3507,45 +3512,72 @@ export async function runRealtimeSimulation(
     // only once the chain is past that (issue #210) -- written at send time, the line otherwise
     // named a pending tx a block before it was mined.
     let sendHeadBlock: number | null = null;
+    // One order, from its wallet, recorded. Throws when the send did (after recording it), so the
+    // relay below can count it.
+    const sendFlowIntent = async (
+      intent: TxIntent,
+      round?: number,
+    ): Promise<Hex[]> => {
+      try {
+        const hashes = await flowSendSerial.run(intent.ownerId, () =>
+          submitIntent(ctx, intent, latestStateById),
+        );
+        for (const hash of hashes) {
+          submittedByHash.record(hash.toLowerCase(), {
+            ownerId: intent.ownerId,
+            role: intent.role,
+            priorityFeeWei: intent.priorityFeeWei,
+            actionType: intent.action.type,
+          });
+          logger.event({
+            type: "tx_submitted",
+            hash,
+            ...(sendHeadBlock !== null ? { headBlock: sendHeadBlock } : {}),
+            // The block whose state the bot sized this order against; headBlock - round is how far
+            // behind the market it went out.
+            ...(round !== undefined ? { round } : {}),
+            ownerId: intent.ownerId,
+            role: intent.role,
+            priorityFeeWei: intent.priorityFeeWei,
+            actionType: intent.action.type,
+            protocol: intent.protocol,
+          });
+        }
+        return hashes;
+      } catch (error) {
+        logger.event({
+          type: "tx_submit_failed",
+          ...(sendHeadBlock !== null ? { headBlock: sendHeadBlock } : {}),
+          ownerId: intent.ownerId,
+          actionType: intent.action.type,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    };
+    // Orders the environment places itself (the whale): every one is sent, in order.
     const handleFlowOrders = async (orders: FlowOrderWire[]): Promise<Hex[]> => {
       const submitted: Hex[] = [];
-      const intents = flowOrdersToIntents(ctx, orders);
-      for (const intent of intents) {
+      for (const intent of flowOrdersToIntents(ctx, orders)) {
         try {
-          const hashes = await flowSendSerial.run(intent.ownerId, () =>
-            submitIntent(ctx, intent, latestStateById),
-          );
-          submitted.push(...hashes);
-          for (const hash of hashes) {
-            submittedByHash.record(hash.toLowerCase(), {
-              ownerId: intent.ownerId,
-              role: intent.role,
-              priorityFeeWei: intent.priorityFeeWei,
-              actionType: intent.action.type,
-            });
-            logger.event({
-              type: "tx_submitted",
-              hash,
-              ...(sendHeadBlock !== null ? { headBlock: sendHeadBlock } : {}),
-              ownerId: intent.ownerId,
-              role: intent.role,
-              priorityFeeWei: intent.priorityFeeWei,
-              actionType: intent.action.type,
-              protocol: intent.protocol,
-            });
-          }
-        } catch (error) {
-          logger.event({
-            type: "tx_submit_failed",
-            ...(sendHeadBlock !== null ? { headBlock: sendHeadBlock } : {}),
-            ownerId: intent.ownerId,
-            actionType: intent.action.type,
-            error: error instanceof Error ? error.message : String(error),
-          });
+          submitted.push(...(await sendFlowIntent(intent)));
+        } catch {
+          // recorded by sendFlowIntent
         }
       }
       return submitted;
     };
+    // The bot's orders: each wallet sends on its own, only its newest block, and nothing older than
+    // FLOW_ORDER_MAX_AGE_BLOCKS (flowRelay.ts says why -- an unbounded queue had the practice devnet
+    // sending orders made a day earlier).
+    const flowRelay = new FlowRelay<TxIntent>({
+      walletOf: (intent) => intent.ownerId,
+      send: async (intent, round) => {
+        await sendFlowIntent(intent, round);
+      },
+      head: () => sendHeadBlock,
+      maxAgeBlocks: FLOW_ORDER_MAX_AGE_BLOCKS,
+    });
     flowProcess.onOrders((orders, guards, round) => {
       // Issue #130: the first time in a telemetry interval that a balance guard changes a wallet's
       // order, say so; flow_balances carries the counts for the whole interval.
@@ -3557,7 +3589,7 @@ export async function runRealtimeSimulation(
           base: n.base,
           guard: n.guard,
         });
-      void handleFlowOrders(orders);
+      flowRelay.push(round, flowOrdersToIntents(ctx, orders));
     });
 
     // ---- write mined-block txs to blocks.csv (attribution by from-address lookup; ADR 0006 §4) ----
