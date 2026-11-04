@@ -278,6 +278,14 @@ export type SimConfig = {
   // Default 0 = as before (flow also has no base).
   flowWethWei: bigint;
   flowBaseAmounts: Record<string, bigint>;
+  // The gap-closing (`<venue>:informed`) wallets' base inventory, as a floor over flowWethWei /
+  // flowBaseAmounts. A price gap that does not recover leaves the pools on the old side of fair, and
+  // the informed leg is what walks them over: it sells base into a pool above fair until the pool
+  // reaches it. Funded like the uninformed wallets, it ran out after the second down gap of a crash
+  // epoch and the WETH pools ended 300-1,037bps above fair (2026-11-03). The uninformed wallets keep
+  // flowWethWei -- their inventory is a calibration knob (#112), not this. Default = the flow amounts.
+  informedFlowWethWei: bigint;
+  informedFlowBaseAmounts: Record<string, bigint>;
   // The flow wallets' USDC. Used to be the agents' `initialUsdcUnits` with no knob of its own,
   // which capped the buy side of a flowTrend hold the same way a missing WETH balance capped the
   // sell side (issue #112: 25k USDC is ~8 WETH at $3,000, and a x3 hold buys ~50 WETH per venue).
@@ -566,6 +574,15 @@ export function loadConfig(env = process.env): SimConfig {
     ),
     flowWethWei: bigintEnv(env.FLOW_WETH_WEI, 0n),
     flowBaseAmounts: readBaseAmounts(env, "FLOW_BASE", {}),
+    informedFlowWethWei: bigintEnv(
+      env.FLOW_INFORMED_WETH_WEI,
+      bigintEnv(env.FLOW_WETH_WEI, 0n),
+    ),
+    // A base the informed map does not name inherits its flow amount.
+    informedFlowBaseAmounts: {
+      ...readBaseAmounts(env, "FLOW_BASE", {}),
+      ...readBaseAmounts(env, "FLOW_INFORMED_BASE", {}, undefined, "omit"),
+    },
     initialWethWei,
     initialBaseAmounts: readBaseAmounts(env, "INITIAL", {
       WETH: initialWethWei,

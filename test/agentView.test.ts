@@ -98,6 +98,8 @@ const ENVIRONMENT_ONLY = new Set([
   "flowEthWei",
   "flowWethWei",
   "flowBaseAmounts",
+  "informedFlowWethWei",
+  "informedFlowBaseAmounts",
   "initialWethWei",
   "initialBaseAmounts",
   "initialUsdcUnits",

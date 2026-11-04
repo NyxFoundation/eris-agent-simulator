@@ -344,7 +344,10 @@ export async function chooseCheckpoint(
 /**
  * Config keys that may differ when a period resumes: the fee rule (the change that motivated this),
  * the flow wallets' refill cadence and the GMX flow's open-interest ceiling (both tune the background
- * market of a period that runs for weeks), and operational knobs that do not describe the world.
+ * market of a period that runs for weeks), the gap-closing wallets' base level (a resume does not
+ * fund anyone, so it reaches them only through the refill), and operational knobs that do not
+ * describe the world. A key not listed here is part of the world, and a period saved before the key
+ * existed refuses to resume -- which halts the chain.
  */
 export const MUTABLE_CONFIG_KEYS = [
   "defaultPriorityFeeWei",
@@ -352,6 +355,8 @@ export const MUTABLE_CONFIG_KEYS = [
   "economicGas",
   "flowTopUpEveryBlocks",
   "gmxFlowOiTargetFrac",
+  "informedFlowWethWei",
+  "informedFlowBaseAmounts",
   "registrationsFile",
   "agentsReadyTimeoutSec",
   "agentStateQuotaBytes",
