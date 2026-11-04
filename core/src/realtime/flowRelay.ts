@@ -18,6 +18,16 @@
 //     of that block (WETH and every other base) stay together;
 //   - an order from a block more than `maxAgeBlocks` behind the head is not sent at all.
 // Every replaced and dropped order is counted, so a relay that cannot keep up says so.
+//
+// A block that has started sending is finished (subject to the age rule), even when a newer one
+// arrives meanwhile. The first version gave up the rest of the block instead, and since the bot
+// lists a wallet's WETH leg before its other bases, every send longer than half a block cost the
+// WBTC leg and never the WETH one: at the practice devnet's ~1.6 s sends on 2 s blocks the WETH leg
+// went out for 150 blocks of 150 and the WBTC leg for 36 -- the gap-closing flow reached the WBTC
+// pools at a quarter of the rate, and the uninformed flow there thinned the same way. Finishing the
+// block sends the same number of orders (the relay is bounded by the send time either way) split
+// evenly between the legs. The age rule can still cut a block's later legs, but only once one send
+// takes about two blocks or more, where little flow goes out at all.
 
 export type FlowRelayBatch<T> = {
   /** The block whose state the bot sized these orders against. Undefined = unknown, never stale. */
@@ -113,12 +123,6 @@ export class FlowRelay<T> {
           batch.round !== undefined && head !== null ? head - batch.round : 0;
         if (age > this.opts.maxAgeBlocks) {
           this.stats.stale += 1;
-          continue;
-        }
-        // A newer block for this wallet arrived while the previous order was in flight: the rest of
-        // this one is superseded by it.
-        if (lane.waiting) {
-          this.stats.superseded += 1;
           continue;
         }
         if (age > this.stats.maxAgeBlocks) this.stats.maxAgeBlocks = age;

@@ -237,7 +237,11 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   quote し直すので約定はするが、向きと額は存在しない市場のもので、差を詰める側が fair から**遠ざける**側になり、
   WETH のプールが fair の 7.3 倍・WBTC が 0.107 倍まで行った（2026-11-03）。今は財布ごとに独立して送り、待っている間に
   来た新しいブロックが未送信の古いブロックを丸ごと置き換え（同じブロックの WETH と WBTC の脚は一緒に残る）、
-  `FLOW_ORDER_MAX_AGE_BLOCKS`（2）より古い注文は送らない。送れなかった分は `flow_balances.relay`
+  `FLOW_ORDER_MAX_AGE_BLOCKS`（2）より古い注文は送らない。**送り始めたブロックは新しいブロックが来ても最後まで送る**
+  （古さの規則だけは掛かる）。最初の版は送信中に次のブロックが来るとそのブロックの残りを捨てていて、bot は財布ごとに
+  WETH の脚を先に並べるので、1 回の送信が半ブロックを超えると**捨てられるのは常に WBTC の脚**だった（練習 devnet の
+  1.6 秒 / 2 秒では WETH 150/150・WBTC 36/150。差を詰める flow も uninformed も WBTC のプールにだけ 1/4 しか届かない）。
+  送る本数は同じで、脚の間で均等になる。1 回の送信が ~2 ブロックを超えると古さの規則で後ろの脚が落ちうる。送れなかった分は `flow_balances.relay`
   （sent / superseded / stale / failed / maxAgeBlocks / maxSendMs）に数え、`tx_submitted` は bot が見たブロック `round` を持つ。
   bot は全行に `round` を付ける。whale の注文はこの経路を通らない（1 回きりの事象なので捨てない）
 

@@ -117,14 +117,55 @@ test("a busy wallet sends the newest block it was given, both legs together", as
   relay.push(3, block(3)); // replaces round 2 before the wallet got to it
   release();
   await relay.idle();
+  // Round 1 is finished (still within the age limit) before round 3 goes out: a block that has
+  // started sending is not cut short by a newer one arriving.
   assert.deepEqual(
     sent.map((o) => `${o.round}:${o.leg}`),
-    ["1:WETH", "3:WETH", "3:WBTC"],
+    ["1:WETH", "1:WBTC", "3:WETH", "3:WBTC"],
   );
   const stats = relay.drainStats();
-  // Round 1's WBTC leg (overtaken while WETH was in flight) and both legs of round 2.
-  assert.equal(stats.superseded, 3);
+  // Both legs of round 2.
+  assert.equal(stats.superseded, 2);
   assert.equal(stats.stale, 0);
+});
+
+test("sends slower than the bot cost every leg alike, not the later ones", async () => {
+  // The first version gave up the rest of a block when a newer one arrived mid-send, and the bot
+  // lists WETH first: at this ratio (the practice devnet's 1.6 s sends on 2 s blocks) WETH went out
+  // for every block and WBTC for about a quarter of them.
+  let head = 0;
+  const sentByLeg: Record<string, number> = { WETH: 0, WBTC: 0 };
+  const sentAges: number[] = [];
+  const relay = new FlowRelay<Order>({
+    walletOf: (o) => o.wallet,
+    send: async (o) => {
+      sentByLeg[o.leg] += 1;
+      sentAges.push(head - o.round);
+      await sleep(SEND_MS);
+    },
+    head: () => head,
+    maxAgeBlocks: 2,
+  });
+  const blocks = 60;
+  await drive(
+    blocks,
+    ["uniswap:informed"],
+    (round, orders) => relay.push(round, orders),
+    (b) => (head = b),
+  );
+  await relay.idle();
+  const stats = relay.drainStats();
+  // It cannot send everything, and does not pretend to.
+  assert.ok(stats.superseded > 0);
+  assert.equal(stats.sent + stats.superseded + stats.stale, blocks * 2);
+  // A block is sent whole: a WBTC leg is missing only where the age rule dropped it (which takes a
+  // send of about two blocks -- here only a stalled timer). The first version: WETH 60, WBTC 16.
+  assert.ok(
+    sentByLeg.WETH - sentByLeg.WBTC <= stats.stale &&
+      sentByLeg.WBTC >= sentByLeg.WETH * 0.9,
+    `${JSON.stringify(sentByLeg)}, stale ${stats.stale}`,
+  );
+  assert.ok(Math.max(...sentAges) <= 2, `max age ${Math.max(...sentAges)}`);
 });
 
 test("an order whose block fell behind while its wallet was busy is dropped, not sent", async () => {
