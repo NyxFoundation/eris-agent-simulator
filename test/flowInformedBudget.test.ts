@@ -263,9 +263,9 @@ test("the official regimes and the practice period fund the flow wallets identic
 
 test("the practice period's refill interval is derived, not the 300 it configures", () => {
   // The collision itself: 300 blocks against a 12,000 USDC round. The interval has to come from the
-  // caps, and does. 74: it was 17 before the quote side was derived and 36 before the gap-closing
-  // wallets held the worst gap's base (300 WETH) -- doubling what they hold doubles how long a
-  // refill lasts, so the wallets are visited half as often for the same guarantee.
+  // caps, and does. 99: it was 17 before the quote side was derived and 36 before the gap-closing
+  // wallets held the worst gap's base (400 WETH, 150 before) -- the more they hold, the longer a
+  // refill lasts, so the wallets are visited less often for the same guarantee.
   const doc = load("config/practice.yaml");
   assert.equal(doc.flow.topUpEveryBlocks, 300, "the config still asks for 300");
   const derived = flowTopUpIntervalBlocks(
@@ -273,7 +273,7 @@ test("the practice period's refill interval is derived, not the 300 it configure
     targets(doc),
     drain(doc),
   );
-  assert.equal(derived, 74, "the derived interval moved: the caps or the funding changed");
+  assert.equal(derived, 99, "the derived interval moved: the caps or the funding changed");
 });
 
 // ------------------------------------------------- the gaps the regimes declare
@@ -327,11 +327,23 @@ const WORST = OFFICIAL.map((name) => ({ name, ...worstMoves(name) }));
 const WORST_DOWN = Math.max(...WORST.map((w) => w.down));
 const WORST_UP = Math.max(...WORST.map((w) => w.up));
 
+// The reference price also walks (kappa 0 in every official regime), and that move lands on top of
+// the gaps. ADR 0029: the epoch-end spread of fair is ~4.4% (0.23% a block x sqrt(360)). The wallets
+// are funded for the worst declared gap compounded with 3 sd of it, each way, so running dry takes
+// both every window at its extreme and a walk far out in its tail.
+const WALK_SD = 0.044;
+const WALK_SIGMAS = 3;
+const FUNDED_DOWN = 1 - (1 - WORST_DOWN) * (1 - WALK_SIGMAS * WALK_SD);
+const FUNDED_UP = (1 + WORST_UP) * (1 + WALK_SIGMAS * WALK_SD) - 1;
+
 test("the worst declared moves are the ones the funding was sized against", () => {
   // Pinned so a regime that widens its gaps fails here, by name, instead of silently outgrowing the
   // wallets: crash.yaml's two 22% windows on the same side, each way.
   assert.equal(WORST_DOWN.toFixed(4), "0.3916");
   assert.equal(WORST_UP.toFixed(4), "0.4884");
+  // With the walk: what the wallets are actually checked against below.
+  assert.equal(FUNDED_DOWN.toFixed(4), "0.4719");
+  assert.equal(FUNDED_UP.toFixed(4), "0.6849");
   assert.deepEqual(
     WORST.filter((w) => w.down === WORST_DOWN).map((w) => w.name),
     ["crash"],
@@ -345,16 +357,17 @@ for (const path of FILES) {
     // leg has sold them down to it, and nothing else in the environment does. Funded like the other
     // flow wallets (150 WETH), it ran dry after the second down gap of crash#125 and the WETH pools
     // ended 300-1,037bps above fair. The amount is the same in every run (rules §3.3), so it is the
-    // worst gap of any official regime -- the practice period included, whose gaps are far smaller.
+    // worst gap of any official regime with the walk on top (FUNDED_DOWN) -- the practice period
+    // included, whose gaps are far smaller.
     const t = targets(load(path));
     for (const [symbol, reserve] of Object.entries(POOL_BASE)) {
       const held = symbol === "WETH" ? t.wethWei : (t.bases[symbol] ?? 0n);
-      const cp = constantProductBaseToMoveDown(reserve, WORST_DOWN);
+      const cp = constantProductBaseToMoveDown(reserve, FUNDED_DOWN);
       const curve = (cp * BigInt(Math.round(CURVE_DEPTH_MULT * 1000))) / 1000n;
       const need = cp > curve ? cp : curve;
       assert.ok(
         held >= need,
-        `${symbol}: informed wallets hold ${held}, a ${(WORST_DOWN * 100).toFixed(1)}% down gap ` +
+        `${symbol}: informed wallets hold ${held}, a ${(FUNDED_DOWN * 100).toFixed(1)}% fall ` +
           `takes ${cp} on Uniswap/Balancer and ${curve} on Curve`,
       );
     }
@@ -365,12 +378,12 @@ for (const path of FILES) {
     // balance. The quote side is derived from the base side (informedQuoteTarget), so this holds as
     // long as the up gap is no wider than the down gap in pool terms -- checked rather than assumed.
     const t = targets(load(path));
-    const perBase = (BigInt(Math.ceil((Math.sqrt(1 + WORST_UP) - 1) * 1e6)) * POOL_QUOTE_UNITS) / 1_000_000n;
+    const perBase = (BigInt(Math.ceil((Math.sqrt(1 + FUNDED_UP) - 1) * 1e6)) * POOL_QUOTE_UNITS) / 1_000_000n;
     const curve = (perBase * BigInt(Math.round(CURVE_DEPTH_MULT * 1000))) / 1000n;
     const need = (perBase > curve ? perBase : curve) * BigInt(Object.keys(POOL_BASE).length);
     assert.ok(
       t.usdcUnits >= need,
-      `informed wallets hold ${t.usdcUnits} USDC units, a ${(WORST_UP * 100).toFixed(1)}% up gap ` +
+      `informed wallets hold ${t.usdcUnits} USDC units, a ${(FUNDED_UP * 100).toFixed(1)}% rise ` +
         `on every base takes ${need}`,
     );
   });
@@ -386,8 +399,8 @@ test("a running practice period resumes with the informed base level added", () 
   const before = { seed: 1, flowWethWei: 150n };
   const after = {
     ...before,
-    informedFlowWethWei: 300n,
-    informedFlowBaseAmounts: { WBTC: 1_500_000_000n },
+    informedFlowWethWei: 400n,
+    informedFlowBaseAmounts: { WBTC: 2_000_000_000n },
   };
   assert.deepEqual(configDiff(configWorld(before, {}), configWorld(after, {})), []);
 });

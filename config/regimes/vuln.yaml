@@ -76,10 +76,11 @@ funding:
   flowUsdcUnits: "450000000000" # 450,000 USDC per flow wallet (= 150 WETH at $3,000)
   flowBase: { WBTC: "750000000" } # 7.5 WBTC: same opening notional as 150 WETH (#124)
   # The gap-closing (informed) wallets: the base side of the worst down gap any official regime
-  # declares (crash: two 22% windows, -39.2%), which takes ~296 WETH of a 1,000-WETH venue.
-  # Same in every run (rules §3.3). Their USDC follows from it (1.8M). test/flowInformedBudget.test.ts
-  informedFlowWethWei: "300000000000000000000" # 300 WETH
-  informedFlowBase: { WBTC: "1500000000" } # 15 WBTC: same notional as 300 WETH
+  # declares (crash: two 22% windows, -39.2%) plus 3 sd of the epoch's walk (ADR 0029: 4.4%), which
+  # takes ~395 WETH of a 1,000-WETH venue. Same in every run (rules §3.3). Their USDC follows from it
+  # (2.4M). test/flowInformedBudget.test.ts
+  informedFlowWethWei: "400000000000000000000" # 400 WETH
+  informedFlowBase: { WBTC: "2000000000" } # 20 WBTC: same notional as 400 WETH
   usdcUnits: "25000000000"
 
 flow:

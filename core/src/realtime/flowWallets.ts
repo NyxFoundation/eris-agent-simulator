@@ -187,8 +187,8 @@ export function informedQuoteTarget(
  * part of the environment that does. It used to hold what every flow wallet holds (150 WETH, sized
  * for the noise around fair), sold out after the second down gap of a crash epoch, and the WETH pools
  * ended 300-1,037bps above fair. The amount is the same in every run (rules §3.3), so it is set for
- * the largest gap any official regime declares; `test/flowInformedBudget.test.ts` derives that from
- * the regime files and the pool depth.
+ * the largest gap any official regime declares, compounded with 3 sd of the epoch's walk;
+ * `test/flowInformedBudget.test.ts` derives that from the regime files and the pool depth.
  *
  * Only the AMM informed wallets: the uninformed wallets' inventory is a calibration knob (#112).
  */
