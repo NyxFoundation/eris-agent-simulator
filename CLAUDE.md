@@ -654,7 +654,17 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   USDC-in 120 対 WBTC-in 93 で買い側が先に枯れている）。導出後は 900,000 で 75 = 75、補充間隔も 17 → 36 に伸びる。
   **適用は `<venue>:informed` の財布だけ** — uninformed の USDC は #79/#112 の較正ノブで、買い側を厚くするのは
   別の市場を作ることであって修正ではない。fair が要るので whale endowment と同じ場所（`openingFair` 確定後）で
-  差分を配り、`flow_informed_quote_funded` に記録する。**GMX の flow は自分の建玉を cap の一定割合までに抑える**（`flow.gmxOiTargetFrac`、
+  差分を配り、`flow_informed_quote_funded` に記録する。
+  **base 側は公式レジームが宣言する最悪の下向きギャップで決める**（`funding.informedFlowWethWei` 400 WETH /
+  `informedFlowBase` 20 WBTC、`informedBaseTargets`。flow の額が下限）。ギャップは戻らない（ADR 0029 Amendment 1）ので、
+  下向きの後にプールを fair まで売り下げるのは informed 脚だけで、150 WETH（fair 周りの揺れ用）では crash#125 の 2 本目の後に
+  尽き、WETH のプールが fair より 300〜1,037bps 高いまま終わった。最悪は crash の 22% × 2 本 = −39.2% で、1,000 WETH の
+  venue を動かすのに定積の式で 282 WETH、deployer の Curve twocrypto で実測 290 WETH（上向き 48.8% は 660k / 実測 690k USDC）。
+  これに乱歩の 3σ（ADR 0029 のエポック終端 sd 4.4%）を重ねた −47.2% / +68.5% で、Curve の 1.05 倍込み 395 WETH → 400。
+  額は全 run 同じ（規約 §3.3）で、quote 側はここから導出されて 2.4M（450k の 5.3 倍）。`test/flowInformedBudget.test.ts` が
+  レジームファイルから最悪の上下を読み、プールの深さに対して両側を検査する。**期間の再開で変えてよいキー**
+  （`MUTABLE_CONFIG_KEYS`。新しい SimConfig キーは既定で世界の一部になり、キーの無い時に保存した期間は再開を拒否 = 採掘が止まる）で、
+  再開は誰にも配らないので練習期間には補充で届く（補充間隔は 36 → 99 ブロック）。**GMX の flow は自分の建玉を cap の一定割合までに抑える**（`flow.gmxOiTargetFrac`、
   既定 0.4、0 = 閉じない旧 flow。期間中も変更可）。以前は開くだけで、2026-10-08 開始の練習期間では WETH 市場の
   両側が reserve 上限（プール価値 × 0.5）まで flow の建玉で埋まり、参加者はどちら向きにも開けなかった。目標を超えた側に
   引いた注文は同じ乱数のまま close になる（担保は比例分）ので、**目標未満なら flow は乱数単位で以前と同一**。

@@ -366,6 +366,7 @@ import {
   FLOW_TELEMETRY_BLOCKS,
   FlowGuardLog,
   flowBudgetShortfall,
+  informedBaseTargets,
   flowSolventRounds,
   informedQuoteNotionals,
   informedQuoteTarget,
@@ -1488,6 +1489,8 @@ export async function runRealtimeSimulation(
   // prices are read, then the sum of what the base legs can buy in a round (informedQuoteTarget);
   // the top-up below restores the same number, so the derived level is the one that persists.
   let informedQuoteUnits = config.flowUsdcUnits;
+  // Their base side: funding.informedFlow*, never below what the other flow wallets hold.
+  const informedBase = informedBaseTargets(config);
 
   // Resolved before wallet funding, not at the start of the block loop: the whale wallet has to be
   // endowed with enough inventory to place the largest order the seed drew, and that is only knowable
@@ -1814,14 +1817,22 @@ export async function runRealtimeSimulation(
       const isAaveActor = t.key?.startsWith("aave:actor") ?? false;
       // Give flow wallets base inventory of flowWethWei / flowBaseAmounts so they can also "sell" under USDC-only
       // (agents stay at initial* = USDC-only/no-β unchanged).
+      // The gap-closing wallets hold the base side of the largest price gap the regimes declare
+      // (funding.informedFlow*), the same in every run: a gap that does not recover is closed by
+      // nobody else, and a wallet sized to the regime would name it at block 0.
+      const isInformed = t.key !== undefined && isInformedFlowKey(t.key);
       const wethWei = isAaveActor
         ? config.aaveFlowMaxWethWei * 6n
+        : isInformed
+          ? informedBase.wethWei
+          : isFlow
+            ? config.flowWethWei
+            : config.initialWethWei;
+      const baseAmounts = isInformed
+        ? informedBase.bases
         : isFlow
-          ? config.flowWethWei
-          : config.initialWethWei;
-      const baseAmounts = isFlow
-        ? config.flowBaseAmounts
-        : config.initialBaseAmounts;
+          ? config.flowBaseAmounts
+          : config.initialBaseAmounts;
       // Agents are scored, so `funding.ethWei` is their whole native balance: the default gas buffer
       // would be unchosen β in the live-marked interval series (ADR 0019 §6). Flow wallets keep it --
       // they are machinery, and a dry flow bot removes market activity from everyone.
@@ -1983,8 +1994,8 @@ export async function runRealtimeSimulation(
     // deeper uninformed buy side is a different market rather than a fix to this one.
     {
       const perBase = informedQuoteNotionals(
-        config.flowWethWei,
-        config.flowBaseAmounts,
+        informedBase.wethWei,
+        informedBase.bases,
         (amount, symbol) => {
           const price = openingFair[symbol];
           return price ? toQuoteUnits(amount, symbol, price) : null;
@@ -3459,11 +3470,13 @@ export async function runRealtimeSimulation(
       const targetFor = (key: string) => ({
         // fundAddress restores native ETH to flowEthWei + its gas buffer whenever it runs.
         ethWei: config.flowEthWei + GAS_BUFFER_WEI,
-        wethWei: config.flowWethWei,
-        usdcUnits: isInformedFlowKey(key)
-          ? informedQuoteUnits
-          : config.flowUsdcUnits,
-        bases: config.flowBaseAmounts,
+        ...(isInformedFlowKey(key)
+          ? { usdcUnits: informedQuoteUnits, ...informedBase }
+          : {
+              usdcUnits: config.flowUsdcUnits,
+              wethWei: config.flowWethWei,
+              bases: config.flowBaseAmounts,
+            }),
       });
       for (const [key, w] of tradingFlowWallets) {
         const plan = planFlowTopUp(holdings.get(key)!, targetFor(key));
@@ -4037,12 +4050,12 @@ export async function runRealtimeSimulation(
         for (const [symbol, cap] of Object.entries(bases))
           if (cap > (worst.bases[symbol] ?? 0n)) worst.bases[symbol] = cap;
       }
+      // The gap-closing wallets' levels, not the flow amounts: the worst drain is theirs, and this
+      // is what they hold.
       const targets = {
         ethWei: config.flowEthWei,
-        wethWei: config.flowWethWei,
-        // The gap-closing wallets' derived level, not the config's floor: that is what they hold.
         usdcUnits: informedQuoteUnits,
-        bases: config.flowBaseAmounts,
+        ...informedBase,
       };
       const derived = flowTopUpIntervalBlocks(
         config.flowTopUpEveryBlocks,

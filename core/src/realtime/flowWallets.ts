@@ -179,6 +179,52 @@ export function informedQuoteTarget(
 }
 
 /**
+ * The gap-closing wallets' base side: `funding.informedFlow*`, floored at what the other flow
+ * wallets hold.
+ *
+ * A price gap in the official regimes does not recover (ADR 0029 Amendment 1), so after a down gap
+ * the pools sit above fair until something sells base into them -- and the informed leg is the only
+ * part of the environment that does. It used to hold what every flow wallet holds (150 WETH, sized
+ * for the noise around fair), sold out after the second down gap of a crash epoch, and the WETH pools
+ * ended 300-1,037bps above fair. The amount is the same in every run (rules §3.3), so it is set for
+ * the largest gap any official regime declares, compounded with 3 sd of the epoch's walk;
+ * `test/flowInformedBudget.test.ts` derives that from the regime files and the pool depth.
+ *
+ * Only the AMM informed wallets: the uninformed wallets' inventory is a calibration knob (#112).
+ */
+export function informedBaseTargets(config: {
+  flowWethWei: bigint;
+  flowBaseAmounts: Record<string, bigint>;
+  informedFlowWethWei: bigint;
+  informedFlowBaseAmounts: Record<string, bigint>;
+}): { wethWei: bigint; bases: Record<string, bigint> } {
+  const max = (a: bigint, b: bigint): bigint => (a > b ? a : b);
+  const bases: Record<string, bigint> = { ...config.flowBaseAmounts };
+  for (const [symbol, amount] of Object.entries(config.informedFlowBaseAmounts))
+    bases[symbol] = max(bases[symbol] ?? 0n, amount);
+  return {
+    wethWei: max(config.flowWethWei, config.informedFlowWethWei),
+    bases,
+  };
+}
+
+/**
+ * The base a constant-product pool takes to move its price down by `downFrac`, starting from
+ * `reserveBase` of base: x' = x / sqrt(1 - d). Uniswap's full-range position and Balancer's 50/50
+ * pool are both this curve; fees are left out, which only makes the number smaller than the truth by
+ * the fee on the input.
+ */
+export function constantProductBaseToMoveDown(
+  reserveBase: bigint,
+  downFrac: number,
+): bigint {
+  if (!(downFrac > 0) || downFrac >= 1) throw new Error(`downFrac ${downFrac}`);
+  const scale = 1_000_000n;
+  const mult = BigInt(Math.ceil((1 / Math.sqrt(1 - downFrac) - 1) * 1e6));
+  return (reserveBase * mult + scale - 1n) / scale;
+}
+
+/**
  * Each base leg's inventory as quote units, which is what `informedQuoteTarget` sums.
  *
  * WETH comes from `funding.flowWethWei` and never from `flowBaseAmounts`: the resolved config
