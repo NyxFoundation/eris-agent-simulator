@@ -97,5 +97,10 @@ test("the next segment starts on the period's daily grid", () => {
     nextSegmentStart(period, 24, Date.parse("2026-10-03T02:17:00Z")).toISOString(),
     "2026-10-03T09:13:09.294Z",
   );
+  // A period whose name was taken gets a suffix (core/src/logger.ts claimRunDir); same start time.
+  assert.equal(
+    nextSegmentStart(`${period}-2`, 24, Date.parse("2026-10-03T02:17:00Z")).toISOString(),
+    "2026-10-03T09:13:09.294Z",
+  );
   assert.equal(nextSegmentStart("not-a-period", 24), null);
 });
