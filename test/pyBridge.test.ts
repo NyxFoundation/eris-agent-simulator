@@ -200,8 +200,10 @@ test("Python revisions compile without execution, reject cheatcodes, persist, re
   });
   const loaded = store.load();
   assert.ok(loaded.ok === true);
-  assert.equal(loaded.state.versions[0].language, "python");
-  const resumed = await runner.prepareSource(loaded.state.versions[0].source);
+  const persisted = loaded.state.versions[0];
+  assert.equal(persisted.language, "python");
+  assert.ok(persisted.source !== undefined);
+  const resumed = await runner.prepareSource(persisted.source);
   assert.ok(resumed.ok);
   runner.setSource(resumed.source);
   assert.deepEqual((await runner.decide(pythonObservation(2))).action, {
