@@ -136,5 +136,12 @@ no `matrix.json` to resume; the next start opens a new matrix and moves the half
 ## During the week
 
 The daily and per-epoch checks are in [CHECKLIST.md §6](../devnet/CHECKLIST.md#6-ライブ週). Back up
-after every epoch (or hourly): the matrix directory, `<state root>/.snapshots/`, `runs/inference-live/`
-and `runs/rpc-gateway-live/` (rsync with a date; `matrix.json` is written atomically, #262).
+after every epoch (or hourly): the matrix directory, the epochs' run directories,
+`<state root>/.snapshots/`, `runs/inference-live/` and `runs/rpc-gateway-live/` (rsync with a date;
+`matrix.json` is written atomically, #262).
+
+The run directories are not inside the matrix directory. Each epoch writes `runs/<runId>/` beside it
+(`run.runDirRoot`, `./runs`), and the decision logs (`agents/<id>.jsonl`), `blocks.csv`, `events.jsonl`
+and `summary.json` exist nowhere else. Take every run directory created after the matrix, not only the
+ones `matrix.json` names: it names each epoch's last attempt, so a voided attempt or one that stopped
+mid-epoch stays on disk only, and it is evidence too. CHECKLIST §6.1 has the command that lists them.

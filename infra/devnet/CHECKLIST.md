@@ -589,8 +589,16 @@ N=$(node --import tsx scripts/liveWeek.ts images "$SEC/field.yaml" | wc -l)   # 
 - [ ] **ディスク**: `df -h . "$(cat $SEC/state-root)" /var/lib/docker` の空きが減り続けていないか、
   `du -sh "$MD" runs/inference-live runs/rpc-gateway-live "$(cat $SEC/state-root)"`、
   `du -sh ~/.foundry/anvil/tmp`（anvil が 1 ブロックごとの state を書く版がある。動いている anvil の分は消さない）
-- [ ] **バックアップ**: `$MD`、`<state root>/.snapshots/`、`runs/inference-live/`、`runs/rpc-gateway-live/` を
-  日付付きで box の外へ（matrix.json は原子的に書かれる、#262）
+- [ ] **バックアップ**: `$MD`、各エポックの run ディレクトリ、`<state root>/.snapshots/`、`runs/inference-live/`、
+  `runs/rpc-gateway-live/` を日付付きで box の外へ（matrix.json は原子的に書かれる、#262）。
+  run ディレクトリは `$MD` の中ではなく、その横の `runs/<runId>/` にある（`run.runDirRoot` の既定 `./runs`）。
+  判断ログ（`agents/<id>.jsonl`）、`blocks.csv`、`events.jsonl`、`summary.json` はここにしか無い。
+  matrix.json の `runDir` が名指すのは各エポックの最後の試行だけで、無効にした試行（`void`）や途中で止まった
+  試行の run はディスクにだけ残る。これも証拠なので、matrix より後に作られた run を全部取る:
+  ```sh
+  T=$(basename "$MD"); T=${T#matrix-}          # runId と同じ ISO 時刻の形なので、文字列で比べられる
+  ls -d runs/20* | awk -v t="$T" '{ n = $0; sub(/^runs\//, "", n); if (n > t) print }'
+  ```
 
 ### 6.2 毎日
 
