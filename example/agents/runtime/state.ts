@@ -18,7 +18,9 @@
  *      behavior of every epoch before this feature existed.
  *   2. **A persisted strategy is untrusted input.** It compiled last epoch under a check that has
  *      since been tightened, or it was written by a model, or the file was edited. It goes through
- *      the cheatcode static check and the vm compile again at load, every time.
+ *      the cheatcode static check and the vm compile again at load, every time. A revert to
+ *      version 0 is not a strategy of its own: it is persisted as a marker and rebuilt from
+ *      agent.ts, which is all the marker can select.
  *   3. **Atomic writes.** The epoch can be killed at any block. A half-written versions.json that
  *      is then loaded as the starting strategy is the one failure mode worse than losing the file.
  */
@@ -83,15 +85,19 @@ export function capBytesFromEnv(raw: string | undefined): number {
 /// `epochId` is what makes the history readable across the boundary: the model can see that a
 /// version has now lost two epochs in a row, which is the case `revertTo` exists for and which is
 /// invisible if the versions all look like they were installed in one run.
+///
+/// A version that runs the shipped strategy (a revert to version 0, or to another such revert) is
+/// written as `shipped: true` with no source. Its source would be the whole of agent.ts, which is not
+/// a decide body and could not be compiled on resume; the resume rebuilds it from the agent.ts the
+/// epoch has (versionResume.ts), so it also survives agent.ts being edited between epochs.
 export type PersistedVersion = {
   language?: "typescript" | "python";
   version: number;
-  source: string;
   notes: string;
   installedAtBlock: number;
   valueAtInstall: number | null;
   epochId: string;
-};
+} & ({ source: string; shipped?: undefined } | { shipped: true; source?: undefined });
 
 export type PersistedState = {
   schema: 1;
@@ -146,12 +152,11 @@ function parseState(raw: string): PersistedState | null {
     // Integers, and only integers. `parseRevision` holds `revertTo` to that standard and this file
     // is the same numbering: a persisted `1.5` would make the next version 2.5, and every version
     // number in the log and the context fractional from then on.
-    if (
-      !Number.isInteger(r.version) ||
-      (r.version as number) < 0 ||
-      typeof r.source !== "string"
-    )
-      return null;
+    if (!Number.isInteger(r.version) || (r.version as number) < 0) return null;
+    // A version that runs the shipped strategy carries no source; every other one must.
+    if (r.shipped !== undefined && r.shipped !== true) return null;
+    const shipped = r.shipped === true;
+    if (!shipped && typeof r.source !== "string") return null;
     // Always written by this runtime, so its absence means the file did not come from here. Coercing
     // it to "unknown" would degrade the cross-epoch history to the state this feature exists to fix,
     // silently -- the model would see every version as belonging to no epoch and nothing would say
@@ -161,7 +166,7 @@ function parseState(raw: string): PersistedState | null {
     versions.push({
       ...(r.language !== undefined ? { language: r.language } : {}),
       version: r.version as number,
-      source: r.source,
+      ...(shipped ? { shipped: true as const } : { source: r.source as string }),
       notes: typeof r.notes === "string" ? r.notes : "",
       installedAtBlock:
         typeof r.installedAtBlock === "number" ? r.installedAtBlock : 0,

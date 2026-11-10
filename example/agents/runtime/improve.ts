@@ -107,6 +107,10 @@ export type StrategyVersion = {
   // version looked like before agent state survived an epoch. With it, "this version has now lost
   // two epochs in a row" is visible rather than inferred.
   epochId?: string;
+  // Runs the shipped strategy: version 0, and every revert to it (directly or through another such
+  // revert). `revertTo` copies the target, so a revert inherits this. It is what the epoch boundary
+  // keeps of such a version instead of its source (state.ts, versionResume.ts).
+  shipped?: true;
 };
 
 export type RevisionOutcome =

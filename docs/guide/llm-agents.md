@@ -253,7 +253,14 @@ The reference runtime (`runtime/state.ts`) writes that file atomically on every 
 and on start it:
 
 1. loads it, and **re-runs the static checks (cheatcodes, import calls) and the vm compile on
-   every carried version**. A strategy that compiled last epoch is untrusted input this epoch;
+   every carried version**. A strategy that compiled last epoch is untrusted input this epoch.
+   The exception is a version that runs the shipped strategy — a `revertTo: 0`, or a revert to
+   such a version: it is saved as `"shipped": true` with no source and rebuilt from the
+   `agent.ts` / `strategy.py` the epoch starts with, so it carries over even if you edited that
+   file between epochs. (State saved before this marker held such a version as a copy of
+   `agent.ts`, which failed the compile and dropped out of the history; it is now recognised after
+   the compile fails, by matching the current file or by the runtime's `reverted to vN:` note, and
+   logged as `revision_resume_as_shipped`.);
 2. starts from the newest version that survived re-validation, or from `agent.ts` if the newest did
    not — logging `revision_resume_failed` with the reason, because an agent that silently forgot
    everything looks exactly like one that had nothing to remember;

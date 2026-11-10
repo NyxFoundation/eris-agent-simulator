@@ -90,6 +90,7 @@ import {
 import { createMempoolLog, type MempoolLog, Sender } from "./send.js";
 import { checkRevisedRawTx, rawTxAllowlist } from "./rawTxGuard.js";
 import { AgentStateStore, capBytesFromEnv, STATE_DIR_ENV } from "./state.js";
+import { persistedVersion, resumeVersions, revertNotes } from "./versionResume.js";
 import { preflightChain } from "./preflight.js";
 import { Reader } from "./read.js";
 import { type AccountMark, AccountValue } from "./accountValue.js";
@@ -871,6 +872,7 @@ async function main(): Promise<void> {
       installedAtBlock: 0,
       valueAtInstall: null,
       executor: shippedSource,
+      shipped: true,
     };
     const versions: LiveVersion[] = [shipped];
     // The version the trading loop is actually running. Not `versions[last]`: a resume whose newest
@@ -910,13 +912,11 @@ async function main(): Promise<void> {
         epochs,
         // Version 0's `source` is the whole of agent.ts, not a decide body -- it is there so the
         // model can read what it was shipped, and it is not something the resume could compile.
-        // Every epoch reconstructs it from the file it already has.
+        // Every epoch reconstructs it from the file it already has, and so every revert to it:
+        // those are written as a marker without the source (versionResume.ts).
         versions: versions
           .filter((v) => v.version > 0)
-          .map(({ executor: _executor, ...v }) => ({
-            ...v,
-            epochId: v.epochId ?? epochId,
-          })),
+          .map(({ executor: _executor, ...v }) => persistedVersion(v, epochId)),
         ...(memory ? { memory } : {}),
       });
     };
@@ -936,25 +936,44 @@ async function main(): Promise<void> {
       memory = loaded.state.memory ?? null;
       const persistedVersions = loaded.state.versions;
       const newest = persistedVersions[persistedVersions.length - 1];
-      for (const v of persistedVersions) {
-        // Untrusted input, every epoch. It compiled last epoch under a check that may since have
-        // been tightened, and "it was fine yesterday" is not a property of generated code.
-        const compiled = (v.language ?? "typescript") === language
-          ? await prepareSource(v.source)
-          : { ok: false as const, reason: `persisted language ${v.language ?? "typescript"} does not match ${language}` };
-        if (!compiled.ok) {
+      const resumedVersions = await resumeVersions(persistedVersions, {
+        shippedSource: shipped.source,
+        language,
+        prepare: prepareSource,
+      });
+      for (const r of resumedVersions) {
+        const v = r.version;
+        if (r.kind === "refused") {
           resumeFailures += 1;
           agentLog({
             reason: "revision_resume_failed",
             state: {
               version: v.version,
               epochId: v.epochId,
-              error: compiled.reason,
+              error: r.reason,
             },
           });
           continue;
         }
-        versions.push({ ...v, language, executor: compiled.source });
+        if (r.kind === "shipped") {
+          // State written before the marker: said, because it is the runtime reading a version
+          // as the shipped strategy on evidence other than the marker.
+          if (r.via !== "marker")
+            agentLog({
+              reason: "revision_resume_as_shipped",
+              state: { version: v.version, epochId: v.epochId, via: r.via },
+            });
+          const { source: _source, shipped: _shipped, ...meta } = v;
+          versions.push({
+            ...meta,
+            language,
+            source: shipped.source,
+            shipped: true,
+            executor: shippedSource,
+          });
+          continue;
+        }
+        versions.push({ ...r.version, language, executor: r.executor });
       }
       // Version numbering continues across the boundary even for versions that did not survive
       // re-validation, so a number in the log means one thing for the life of the agent.
@@ -1193,7 +1212,7 @@ async function main(): Promise<void> {
           const reinstalled = {
             ...target,
             version: highestVersion,
-            notes: `reverted to v${target.version}: ${parsed.revision.notes}`,
+            notes: revertNotes(target.version, parsed.revision.notes),
             installedAtBlock: block,
             valueAtInstall: value,
             epochId,
