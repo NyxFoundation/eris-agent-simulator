@@ -105,6 +105,34 @@ parse/validation, nonce allocation, signing, preflight and transaction logging. 
 therefore produce the same `bad_action`/`rejected` records as TypeScript. SDK constructors may also
 reject invalid fields earlier with a Python validation exception.
 
+Venue and token addresses come from `eris.constants`, which reads the same table TypeScript's
+`@eris/sdk/constants.js` overlays (`sdk/src/constants.local.ts`):
+
+```python
+from eris.constants import local_deployment, stable_market_legs, token_address
+
+weth = token_address("WETH")                 # also "USDC", "WBTC", "DAI", "EUSD"
+d = local_deployment()                       # the whole table, with the TypeScript keys
+uni_wbtc = d["MARKET_LEGS"]["uniswap"]["WBTC"]["pool"]
+eusd_pool = stable_market_legs()["EUSD"]["pool"]
+```
+
+The functions are the TypeScript ones in snake_case: `token_address`, `token_decimals`,
+`symbol_for_address`, `stable_market_legs` (`STABLE_MARKET_LEGS`), `require_lst`, `require_liquity`,
+`require_redemption_helper`, `require_eusd_market`. `local_deployment()["TOKENS"]` includes `EUSD`,
+as TypeScript's `TOKENS` does. A test checks that every one returns what `@eris/sdk/constants.js`
+returns for the same file.
+
+In the live week's agent image this file is regenerated from the production state dump, so the same
+code reads the practice/local addresses at home and the live addresses (the ones on
+[ascon.dev/scope](https://ascon.dev/scope) §5) in the competition. It requires `ERIS_LOCAL_DEPLOY=1`
+(every competition environment sets it; TypeScript ignores the table without it) and raises
+`ConstantsError` instead of returning a partial table when the file is missing or unreadable.
+Sections a deployment lacks (`LST`, `LIQUITY`, `WBTC`) are absent. Contracts deployed per epoch are
+not in the table; read them from `ERIS_PRICE_FEED_ADDRESS`, `ERIS_MARKET_REGISTRY_ADDRESS` and
+`ERIS_LENDING_ADDRESS`. Run outside the host with a `pip install`ed copy, pass
+`local_deployment(path="…/sdk/src/constants.local.ts")`.
+
 ## Resident process and protocol
 
 The host runs `python3 -u strategy.py` (or `ERIS_PYTHON`) once and communicates over JSONL.
