@@ -19,8 +19,8 @@ TypeScript's registry does. The functions mirror ``constants.ts`` under snake_ca
 ``require_lst``, ``require_liquity``, ``require_redemption_helper``, ``require_eusd_market``); a
 ``require_*`` that finds nothing raises :class:`ConstantsError` where TypeScript throws. Sections a
 deployment does not have (``LST``, ``LIQUITY``, the ``WBTC`` entries) are absent, not empty. Per-run contracts -- PriceFeed,
-MarketRegistry, the lending singleton -- are not here; they arrive in the environment
-(``ERIS_PRICE_FEED_ADDRESS``, ``ERIS_MARKET_REGISTRY_ADDRESS``, ``ERIS_LENDING_ADDRESS``).
+MarketRegistry -- are not here; they arrive in the environment (``ERIS_PRICE_FEED_ADDRESS``,
+``ERIS_MARKET_REGISTRY_ADDRESS``).
 
 Anything that keeps the table from being read raises :class:`ConstantsError` rather than returning
 an empty or partial table: an agent trading against a guessed address is worse than one that stops.

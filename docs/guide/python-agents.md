@@ -129,8 +129,8 @@ code reads the practice/local addresses at home and the live addresses (the ones
 (every competition environment sets it; TypeScript ignores the table without it) and raises
 `ConstantsError` instead of returning a partial table when the file is missing or unreadable.
 Sections a deployment lacks (`LST`, `LIQUITY`, `WBTC`) are absent. Contracts deployed per epoch are
-not in the table; read them from `ERIS_PRICE_FEED_ADDRESS`, `ERIS_MARKET_REGISTRY_ADDRESS` and
-`ERIS_LENDING_ADDRESS`. Run outside the host with a `pip install`ed copy, pass
+not in the table; read them from `ERIS_PRICE_FEED_ADDRESS` and `ERIS_MARKET_REGISTRY_ADDRESS` in
+`os.environ` (the host passes both to the Python process). Run outside the host with a `pip install`ed copy, pass
 `local_deployment(path="…/sdk/src/constants.local.ts")`.
 
 ## Resident process and protocol
