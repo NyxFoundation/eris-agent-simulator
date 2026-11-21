@@ -68,6 +68,14 @@ and confirm the chain is actually moving, which is the only claim that matters:
 cast block-number --rpc-url http://127.0.0.1:8545   # twice, a few seconds apart
 ```
 
+`cast block-number` and `cast balance` are plain reads. **Do not run `cast call` against the
+running chain**: cast sends `anvil_nodeInfo` with it (measured on cast 1.8.3, the box's build: two `anvil_nodeInfo` and two `anvil_metadata` a
+call; `cast balance`, `cast block-number`, `cast estimate` and `cast rpc` send neither), and on anvil
+1.8.3 an `anvil_nodeInfo` that arrives while a block is being mined deadlocks the node -- every
+thread parked, the gateway answering 504, the chain stopped until anvil is restarted from its last
+dump (2026-11-21: `register.sh`'s balance report did this; it now reads with plain `eth_call`). For
+a contract read use `cast rpc eth_call '{"to":"0x…","data":"0x…"}' latest` or curl.
+
 That is the minimum. Before a period is handed to participants -- and every day it runs -- go through
 [CHECKLIST.md](CHECKLIST.md): a 26-hour rehearsal on a private copy, a one-hour check after the
 production start, and the daily and weekly routine. `block-gaps.mjs` (cadence and dump stalls) and
