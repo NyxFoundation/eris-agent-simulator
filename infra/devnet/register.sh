@@ -115,16 +115,30 @@ for l in sys.stdin:
     e = json.loads(l)
     print(" ", e["type"], e.get("agentId", "") or e.get("id", ""), e.get("address", ""), e.get("reason", "") or e.get("error", ""))'
 
-R=http://127.0.0.1:8545
+# Plain eth_getBalance / eth_call over JSON-RPC, not `cast call`. cast asks the node for
+# anvil_nodeInfo and anvil_metadata around every call, and on anvil 1.8.3 an anvil_nodeInfo that
+# lands while a block is being mined deadlocks the node (it re-takes a read lock the miner is
+# queued to write). That halted the practice chain on 2026-11-21: this report was the only
+# caller of either method. Nothing sent here is outside what the gateway lets participants send.
 tok() { grep -A3 "^\s*$1: {" sdk/src/constants.local.ts | grep -o "0x[0-9a-fA-F]\{40\}" | head -1; }
-while read -r ID A; do
-  [ -n "$ID" ] || continue
-  line="$ID: ETH $(cast from-wei "$(cast balance "$A" --rpc-url $R)" | sed 's/\.0*$//')"
-  for s in WETH WBTC USDC; do
-    t=$(tok $s); d=$(cast call "$t" "decimals()(uint8)" --rpc-url $R)
-    b=$(cast call "$t" "balanceOf(address)(uint256)" "$A" --rpc-url $R | cut -d' ' -f1)
-    line="$line / $s $(python3 -c "print($b/10**$d)")"
-  done
-  echo "$line"
-done <<< "$NEW"
+python3 -c '
+import json, sys, urllib.request
+from decimal import Decimal
+rpc, tokens = sys.argv[1], [t.split("=") for t in sys.argv[2:5]]
+def call(method, *params):
+    req = urllib.request.Request(rpc, json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}).encode(), {"content-type": "application/json"})
+    r = json.load(urllib.request.urlopen(req, timeout=10))
+    if "error" in r: raise RuntimeError(method + ": " + json.dumps(r["error"]))
+    return r["result"]
+def units(raw, decimals):
+    return format((Decimal(int(raw, 16)) / (Decimal(10) ** decimals)).normalize(), "f")
+decimals = {s: int(call("eth_call", {"to": t, "data": "0x313ce567"}, "latest"), 16) for s, t in tokens}
+for l in sys.argv[5].splitlines():
+    if not l.strip(): continue
+    i, a = l.split()
+    line = i + ": ETH " + units(call("eth_getBalance", a, "latest"), 18)
+    for s, t in tokens:
+        data = "0x70a08231" + a[2:].lower().rjust(64, "0")
+        line += " / " + s + " " + units(call("eth_call", {"to": t, "data": data}, "latest"), decimals[s])
+    print(line)' http://127.0.0.1:8545 "WETH=$(tok WETH)" "WBTC=$(tok WBTC)" "USDC=$(tok USDC)" "$NEW"
 REMOTE
