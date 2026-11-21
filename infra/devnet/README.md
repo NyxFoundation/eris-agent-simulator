@@ -68,8 +68,9 @@ and confirm the chain is actually moving, which is the only claim that matters:
 cast block-number --rpc-url http://127.0.0.1:8545   # twice, a few seconds apart
 ```
 
-`cast block-number` and `cast balance` are plain reads. **Do not run `cast call` (or `cast send`,
-`cast estimate`) against the running chain**: cast sends `anvil_nodeInfo` with them, and on anvil
+`cast block-number` and `cast balance` are plain reads. **Do not run `cast call` against the
+running chain**: cast sends `anvil_nodeInfo` with it (measured on cast 1.7.1; `cast balance`,
+`cast estimate`, `cast send` and `cast rpc` do not), and on anvil
 1.8.3 an `anvil_nodeInfo` that arrives while a block is being mined deadlocks the node -- every
 thread parked, the gateway answering 504, the chain stopped until anvil is restarted from its last
 dump (2026-11-21: `register.sh`'s balance report did this; it now reads with plain `eth_call`). For
