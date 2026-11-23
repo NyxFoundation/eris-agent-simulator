@@ -323,12 +323,22 @@ export class Sender {
           );
           const buffered = (estimated * bufferBps + 9_999n) / 10_000n;
           gas = buffered > estimated + 50_000n ? buffered : estimated + 50_000n;
-        } catch {
-          // A failure with nothing of ours pending is the transaction's own: leave gas unset and let
-          // viem/anvil surface the simulation failure below (nothing is sent, no nonce is spent). With
-          // our own transactions still in the pool, the failure may only be that latest has not seen
-          // them yet, which a pending-state estimate used to hide -- send with the fixed limit.
-          if (await this.hasOwnPending()) gas = DEPENDENT_TX_GAS;
+        } catch (error) {
+          // With our own transactions still in the pool, the failure may only be that latest has not
+          // seen them yet, which a pending-state estimate used to hide -- send with the fixed limit.
+          // A failure with nothing of ours pending is the transaction's own: report it and send
+          // nothing (no nonce is spent). This used to leave gas unset and let viem surface the
+          // failure, but viem does that by estimating again, without a block -- the pending-block
+          // estimate this file avoids, once per reverting action.
+          if (!(await this.hasOwnPending())) {
+            this.logMempool({
+              event: "submit_failed",
+              error: error instanceof Error ? error.message : String(error),
+              ...meta,
+            });
+            return;
+          }
+          gas = DEPENDENT_TX_GAS;
         }
       }
       if (gas !== undefined && gas > MAX_TX_GAS) {
