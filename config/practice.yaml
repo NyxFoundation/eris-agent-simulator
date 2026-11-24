@@ -49,9 +49,17 @@ run:
   # the run's length (ADR 0009). For a short smoke run of this file, `--blocks N` replaces the date.
   endsAt: "2026-11-30T23:59:59+09:00"
   # A ceiling, not the stop condition — a run with episodes ends on the block count so the time
-  # limit cannot cut in before a window opens (ADR 0009 §4). Generous (42 days), so a chain running
-  # behind cadence is not truncated.
-  seconds: 3628800
+  # limit cannot cut in before a window opens (ADR 0009 §4). Generous, so a chain running behind
+  # cadence is not truncated.
+  #
+  # The coordinator ignores it, but the manifest publishes it as `period.seconds`, and a self-hosted
+  # runtime counts `blocksRemaining` to whichever of `startBlock + blocks` and `startedAt + seconds`
+  # comes first (example/agents/runtime/runClock.ts). It has to reach past `endsAt` from the
+  # period's start: 42 days was enough for the 10/31 end, and when the period was extended to 11/30
+  # it was left behind, so every self-hosted agent read `blocksRemaining: 0` from 11/19 (the period
+  # started 2026-10-08T12:41Z). 55 days covers 11/30 from a start as early as 10/6. Extending a
+  # period again means raising this too.
+  seconds: 4752000
   blockTimeSec: 2
   # 規約 §2.6 の確定値（docs/18 §12）。指定しないとコーディネータが既定の 30M でチェーンを
   # 上書きするので、anvil 側で 320M にしてあっても効かない。試行と本番でガス上限が違うと、
