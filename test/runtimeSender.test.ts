@@ -207,6 +207,78 @@ test("local gas rejection and an RPC failure do not consume the next successful 
 // The fee rule (sdk/src/feeRule.ts): the node orders on maxFeePerGas and the tx pays
 // min(maxFeePerGas, baseFee + tip), so the runtime must never sign maxFeePerGas above the tip. It
 // used to sign baseFee * 2 + tip -- equal to the tip at base fee 0, a free position boost anywhere else.
+test("the runtime estimates gas against the latest block, not anvil's default pending block", async () => {
+  // Directly connected (a coordinator-launched agent has no gateway in front of it), an estimate that
+  // omits the block makes anvil build a pending block and walk the whole state: seconds a call on a
+  // chain with millions of slots (test/estimateGasBlockTag.test.ts).
+  const estimates: Array<Record<string, unknown>> = [];
+  const sent: number[] = [];
+  const ctx = {
+    config: loadConfig(),
+    publicClient: {
+      getBlock: async () => ({ baseFeePerGas: 0n }),
+      getTransactionCount: async () => 3,
+      estimateGas: async (args: Record<string, unknown>) => {
+        estimates.push(args);
+        return 21_000n;
+      },
+    },
+    walletClient: {
+      sendTransaction: async ({ nonce }: { nonce: number }) => {
+        sent.push(nonce);
+        return `0x${"2".repeat(64)}`;
+      },
+    },
+  } as unknown as SimContext;
+  const sender = new Sender({ ctx, adapters: [], privateKey: generatePrivateKey(), logMempool: () => {} });
+  sender.submit(
+    { type: "rawTx", tx: { to: sender.address, data: "0x" } },
+    { round: 1, limits: { defaultPriorityFeePerGasWei: "1", maxPriorityFeePerGasWei: "2" } } as AgentObservation,
+    {} as BalanceSnapshot,
+    new Map(),
+  );
+  await until(() => sent.length === 1);
+  assert.equal(estimates.length, 1);
+  assert.equal(estimates[0].blockTag, "latest");
+});
+
+test("a failed estimate with nothing of the agent's pending is reported and nothing is sent", async () => {
+  // The runtime used to pass the transaction on with no gas so that viem would surface the failure.
+  // viem does that by estimating again, with no block -- on anvil the pending-block estimate the
+  // test above is about, once for every reverting action.
+  let estimates = 0;
+  let sends = 0;
+  const ctx = {
+    config: loadConfig(),
+    publicClient: {
+      getBlock: async () => ({ baseFeePerGas: 0n }),
+      getTransactionCount: async () => 3, // pending == latest: nothing of ours in the pool
+      estimateGas: async () => {
+        estimates++;
+        throw new Error("execution reverted: nope");
+      },
+    },
+    walletClient: {
+      sendTransaction: async () => {
+        sends++;
+        return `0x${"3".repeat(64)}`;
+      },
+    },
+  } as unknown as SimContext;
+  const events: Record<string, unknown>[] = [];
+  const sender = new Sender({ ctx, adapters: [], privateKey: generatePrivateKey(), logMempool: (e) => events.push(e) });
+  sender.submit(
+    { type: "rawTx", tx: { to: sender.address, data: "0x" } },
+    { round: 1, limits: { defaultPriorityFeePerGasWei: "1", maxPriorityFeePerGasWei: "2" } } as AgentObservation,
+    {} as BalanceSnapshot,
+    new Map(),
+  );
+  await until(() => events.some((e) => e.event === "submit_failed"));
+  assert.equal(estimates, 1);
+  assert.equal(sends, 0);
+  assert.match(String(events.find((e) => e.event === "submit_failed")?.error), /execution reverted: nope/);
+});
+
 test("the runtime signs maxFeePerGas equal to the tip, and no action field can raise it", async () => {
   const signed: { maxFeePerGas?: bigint; maxPriorityFeePerGas?: bigint }[] = [];
   let baseFee = 0n;
