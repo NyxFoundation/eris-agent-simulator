@@ -225,7 +225,10 @@ while a period was running):
    date, and writes `stress.windowBaseBlocks` (the length the period was first converted to, which
    `windowFrac` is a fraction of from now on, so the appended values run past 1). The new days are
    placed from the checkpoint's block and time, not from the period's start: the chain is behind the
-   wall clock by every hour it was stopped.
+   wall clock by every hour it was stopped. Raise `run.seconds` too, so that the period's
+   `startedAt` plus it reaches past the new date: the coordinator ignores it, but the manifest
+   publishes it and a self-hosted runtime ends `blocksRemaining` at whichever comes first (the 11/30
+   extension left it at 42 days, and self-hosted agents read 0 from 11/19).
 3. Merge, move the box's pin to it, restart. The coordinator compares the saved world with the
    config (`checkPeriodExtension`), converts the new date the way the first start did — the blocks
    the period has had, plus what is left from now at the cadence — then builds the schedule both
