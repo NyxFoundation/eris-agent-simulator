@@ -77,16 +77,9 @@ const MAX_AGENT_BLOCK_GAS = BigInt(
 // needs is still pending -- so the leg goes out with this fixed limit instead of being dropped. It is
 // inside both budgets (per-tx and per-block 10M) and counts against the per-block one like any other
 // limit; unused gas is not charged. Adapters that know their cost set `gas` themselves (GMX).
-//
-// The runtime asks for "latest" itself as well (ESTIMATE_BLOCK_TAG below), because an agent the
-// coordinator launches talks to the node directly, not through the gateway. Left to anvil's default
-// the estimate builds a pending block and computes a state root over every storage slot on the chain:
-// measured on anvil 1.8.3, 0.63 s per million slots, and 1.5-3 s a call on the practice chain once
-// GMX's DataStore had gathered 15.8M (mostly cleared) slots. Against "latest" it is ~1 ms.
 const DEPENDENT_TX_GAS = BigInt(
   process.env.ERIS_DEPENDENT_TX_GAS ?? "2000000",
 );
-export const ESTIMATE_BLOCK_TAG = "latest" as const;
 
 // ---- the environment's own calls in the competition signal ----
 //
@@ -316,29 +309,18 @@ export class Sender {
             data: tx.data,
             value: tx.value ?? 0n,
             ...fees,
-            blockTag: ESTIMATE_BLOCK_TAG,
           });
           const bufferBps = BigInt(
             process.env.ERIS_DIRECT_GAS_BUFFER_BPS ?? "13000",
           );
           const buffered = (estimated * bufferBps + 9_999n) / 10_000n;
           gas = buffered > estimated + 50_000n ? buffered : estimated + 50_000n;
-        } catch (error) {
-          // With our own transactions still in the pool, the failure may only be that latest has not
-          // seen them yet, which a pending-state estimate used to hide -- send with the fixed limit.
-          // A failure with nothing of ours pending is the transaction's own: report it and send
-          // nothing (no nonce is spent). This used to leave gas unset and let viem surface the
-          // failure, but viem does that by estimating again, without a block -- the pending-block
-          // estimate this file avoids, once per reverting action.
-          if (!(await this.hasOwnPending())) {
-            this.logMempool({
-              event: "submit_failed",
-              error: error instanceof Error ? error.message : String(error),
-              ...meta,
-            });
-            return;
-          }
-          gas = DEPENDENT_TX_GAS;
+        } catch {
+          // A failure with nothing of ours pending is the transaction's own: leave gas unset and let
+          // viem/anvil surface the simulation failure below (nothing is sent, no nonce is spent). With
+          // our own transactions still in the pool, the failure may only be that latest has not seen
+          // them yet, which a pending-state estimate used to hide -- send with the fixed limit.
+          if (await this.hasOwnPending()) gas = DEPENDENT_TX_GAS;
         }
       }
       if (gas !== undefined && gas > MAX_TX_GAS) {

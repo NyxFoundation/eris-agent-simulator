@@ -330,17 +330,11 @@ export async function submitIntent(
     // guarantees landing; it fits comfortably within the block gas limit).
     let gas: bigint;
     try {
-      // Against "latest", stated: anvil's default for an estimate is the pending block, and building
-      // that computes a state root over every storage slot on the chain -- 1.5-3 s a call on the
-      // practice chain at 15.8M slots, ~1 ms against latest (example/agents/runtime/send.ts). An
-      // estimate that fails because latest has not seen this wallet's earlier transaction takes the
-      // fixed limit below, as a failed estimate always did.
       const est = await ctx.publicClient.estimateGas({
         account,
         to: tx.to,
         data: tx.data,
         value: tx.value ?? 0n,
-        blockTag: "latest",
       });
       gas = est * 2n;
     } catch {
