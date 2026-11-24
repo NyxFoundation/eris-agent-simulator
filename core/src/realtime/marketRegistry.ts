@@ -785,6 +785,18 @@ export async function sweepMarkets(
     logDropped(logger, "publish", backlog.dropped, toBlock);
 }
 
+// The gas limit of one `register` write. Stated, because a send that leaves gas out makes viem
+// estimate it without a block, which anvil runs against the pending block: a state root over every
+// storage slot on the chain (test/estimateGasBlockTag.test.ts). The cost depends only on the number
+// of entries, each of which writes the same fresh slots. Measured on anvil 1.7.1: 277,240 for the
+// first entry ever written, 260,152 for a later single entry, 1,894,180 for 8, 7,496,845 for 32
+// (~237,000 an entry).
+const REGISTER_GAS_BASE = 100_000n;
+const REGISTER_GAS_PER_ENTRY = 300_000n;
+export function registerGas(entries: number): bigint {
+  return REGISTER_GAS_BASE + REGISTER_GAS_PER_ENTRY * BigInt(entries);
+}
+
 // Publish up to the per-block cap. Returns the transaction hash when something was written.
 //
 // The cap exists because the write is paid by the environment while the deploy is paid by the agent
@@ -825,7 +837,7 @@ export async function registerPending(
     ctx.walletClient,
     ctx.chain,
     runtime.registrarPk,
-    { to: runtime.address, data },
+    { to: runtime.address, data, gas: registerGas(batch.length) },
     priorityFeeWei,
   );
   runtime.pending = runtime.pending.slice(batch.length);
