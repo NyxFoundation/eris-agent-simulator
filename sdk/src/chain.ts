@@ -952,15 +952,16 @@ export async function sendAndMine(
 // For real-time mode: just drop the tx into the mempool (no mine, no receipt wait).
 // You can specify priorityFee so --order fees includes it in the next block under interval mining.
 // Since we want the oracle update ahead of the agents (txIndex 0), the caller passes a fee above the
-// agent cap. Setting tx.gas explicitly skips viem's eth_estimateGas (= EVM execution). Set it for
-// routine per-block txs like oracle writes so they are not held up when anvil's execution queue backs
-// up under agent load.
+// agent cap. tx.gas is required: left out, viem estimates it with an eth_estimateGas that names no
+// block, and anvil runs that against the pending block -- a state root over every storage slot on the
+// chain, 1.5-3 s a call on the practice chain at 15.8M slots (test/estimateGasBlockTag.test.ts).
+// Everything sent through here is a routine per-block write, so every caller states its limit.
 export async function sendNoMine(
   publicClient: PublicClient,
   walletClient: WalletClient,
   chain: ReturnType<typeof makeChain>,
   privateKey: Hex,
-  tx: { to: Address; data?: Hex; value?: bigint; gas?: bigint },
+  tx: { to: Address; data?: Hex; value?: bigint; gas: bigint },
   priorityFeeWei: bigint,
 ): Promise<Hex> {
   const account = privateKeyToAccount(privateKey);
