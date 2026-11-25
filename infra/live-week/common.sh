@@ -13,9 +13,12 @@ STATE_DIR="$REPO/backtest/state"
 DUMP="$STATE_DIR/venues-state.json"
 MANIFEST="$STATE_DIR/manifest.json"
 OVERLAY="$REPO/sdk/src/constants.local.ts"
-# The production dump was made with anvil 1.7.1, and versions have behaved differently (issue #135).
+# The week runs the anvil the practice chain runs (infra/monitoring: foundry v1.8.3), so participants
+# meet the node they tuned against. The production dump was made with 1.7.1; 1.8.3 loads it, and on
+# Linux it writes no per-block state to ~/.foundry/anvil/tmp (measured on the production box, 1,500
+# blocks with the backtest's flags). Versions have behaved differently (issue #135): pin, don't float.
 # Set ERIS_LIVE_ANVIL_VERSION= (empty) to skip the check.
-ANVIL_VERSION="${ERIS_LIVE_ANVIL_VERSION-1.7.1}"
+ANVIL_VERSION="${ERIS_LIVE_ANVIL_VERSION-1.8.3}"
 # The week's coordinator and scorer run on the host's Node (npm run backtest), the agents, gateway and
 # inference proxy on node:24.22.1-bookworm-slim, and CI tests 24.22.1. A host left on another major
 # would run the scorer on a Node nothing tested (issue #330 was a 22 -> 24 difference), and nothing
@@ -101,7 +104,7 @@ check_anvil_version() {
   [ -z "$ANVIL_VERSION" ] && { warn "anvil version not checked (ERIS_LIVE_ANVIL_VERSION is empty)"; return; }
   local v
   v=$(anvil --version 2>/dev/null | head -1)
-  echo "$v" | grep -qF "$ANVIL_VERSION" || die "anvil is '$v', the dump was made with $ANVIL_VERSION (foundryup -i v$ANVIL_VERSION)"
+  echo "$v" | grep -qF "$ANVIL_VERSION" || die "anvil is '$v', the live week runs $ANVIL_VERSION (foundryup -i v$ANVIL_VERSION)"
   ok "anvil $ANVIL_VERSION"
 }
 

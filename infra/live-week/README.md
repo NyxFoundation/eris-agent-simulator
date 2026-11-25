@@ -48,7 +48,12 @@ plan, keys and the matrix pointer are what a restart on another machine would ne
   intend to freeze, with the production dump in its `backtest/state/` (ascon-ops#49, 10/18 note). The
   overlay step regenerates `sdk/src/constants.local.ts`, and the practice coordinator would read that
   file on its next restart. All paths below are relative to that checkout; `ERIS_REPO` overrides it.
-- anvil **1.7.1** (the dump's version; `foundryup -i v1.7.1`), node 24, docker + `docker-buildx`,
+- anvil **1.8.3** (`foundryup -i v1.8.3`), the version the practice chain runs, so the week behaves like
+  the node participants tuned against. The production dump was made with 1.7.1 and loads on 1.8.3; on
+  Linux, 1.8.3 writes no per-block state to `~/.foundry/anvil/tmp` with the backtest's flags, so the
+  backtest anvil still runs without `--prune-history` (ADR 0006: the post-epoch sweep reads history).
+  Never `cast call` the week's chain: cast sends `anvil_nodeInfo`, and on 1.8.3 one that arrives while a
+  block is being mined deadlocks the node (../devnet/README.md). Node 24, docker + `docker-buildx`,
   `zip`/`unzip`, `tmux`.
 - `/etc/docker/daemon.json` with wide `default-address-pools` (`{ "base": "10.64.0.0/10", "size": 24 }`;
   docker's built-in pools stop at the 28th agent network). Restart docker.

@@ -553,6 +553,11 @@ LOG=~/run-week-live.log
 N=$(node --import tsx scripts/liveWeek.ts images "$SEC/field.yaml" | wc -l)   # 起動する agent 数（noop 込み）
 ```
 
+**ライブ週のチェーンに `cast call` を使わない。** cast は `anvil_nodeInfo` を一緒に送り、anvil 1.8.3 は
+ブロックを作っている最中にこれが届くと止まる（[README.md](README.md)。2026-11-21 に練習チェーンで実際に起きた）。
+コントラクトを読むときは `cast rpc eth_call '{"to":"0x…","data":"0x…"}' latest` か curl を使う。参加者の
+`anvil_nodeInfo` / `anvil_metadata` はゲートウェイが拒否する（`ALLOWED_METHODS` に無い）。
+
 ### 6.1 エポックごと
 
 - [ ] **posture 行がエポックごとに 1 回出ている**: `grep -c '\[live-week\] posture checked' $LOG` が、
