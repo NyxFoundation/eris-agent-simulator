@@ -26,7 +26,7 @@
 #   --lottery <file>        plan: default <secrets>/lottery-seed.yaml
 #   --from <step>           all: start at this step
 # Env: ERIS_LIVE_SECRETS (default ~/live-secrets), ERIS_LIVE_STATE_ROOT, ERIS_REPO,
-#   ERIS_LIVE_MIN_FREE_GB (default 50), ERIS_LIVE_ANVIL_VERSION (default 1.7.1),
+#   ERIS_LIVE_MIN_FREE_GB (default 50), ERIS_LIVE_ANVIL_VERSION (default 1.8.3),
 #   ERIS_LIVE_K / ERIS_LIVE_STARTS_AT / ERIS_LIVE_ENDS_AT (plan; defaults are the live week's).
 set -euo pipefail
 LW_NAME=cutover
