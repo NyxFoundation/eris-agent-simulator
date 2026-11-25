@@ -186,6 +186,9 @@ export const CONSTRAINTS = {
 };
 
 // ---- inference (rules §2.5 and Appendix A; published 2026-10-18, effective 2026-11-01) ----
+// 2026-11-26 (docs/updates/2026-11-26.md): added claude-fable-5-2, gpt-6.2-astra, gpt-6.2-sol,
+// gpt-6.1-terra, kimi-k3.1-pro; removed minimax-m2.7 and mistral-large-3 (Ollama retired them on
+// 2026-11-09) and OpenAI's gpt-oss-120b (no Chat Completions on OpenAI's API, 0 RPM on every tier).
 
 /**
  * The designated inference services and the models a submission may name (rules Appendix A). The
@@ -196,6 +199,7 @@ export const INFERENCE_SERVICES: { name: string; models: string[] }[] = [
   {
     name: "Anthropic API",
     models: [
+      "claude-fable-5-2",
       "claude-fable-5-1",
       "claude-fable-5",
       "claude-opus-5-5",
@@ -213,9 +217,12 @@ export const INFERENCE_SERVICES: { name: string; models: string[] }[] = [
   {
     name: "OpenAI API",
     models: [
+      "gpt-6.2-astra",
+      "gpt-6.2-sol",
       "gpt-6-astra",
       "gpt-6.1-sol",
       "gpt-6-sol",
+      "gpt-6.1-terra",
       "gpt-6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
@@ -240,7 +247,6 @@ export const INFERENCE_SERVICES: { name: string; models: string[] }[] = [
       "gpt-4.1-mini",
       "gpt-4o",
       "gpt-4o-mini",
-      "gpt-oss-120b",
       "gpt-oss-20b",
     ],
   },
@@ -253,13 +259,12 @@ export const INFERENCE_SERVICES: { name: string; models: string[] }[] = [
       "glm-5.2",
       "deepseek-v4-pro",
       "deepseek-v4.1-flash",
+      "kimi-k3.1-pro",
       "kimi-k3",
       "kimi-k2.7-code",
       "kimi-k2.6",
       "minimax-m3",
-      "minimax-m2.7",
       "mistral-large-4",
-      "mistral-large-3",
       "nemotron-3-ultra",
       "nemotron-3-super",
       "nemotron-3-nano",
