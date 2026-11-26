@@ -7,7 +7,7 @@ checkout **read-only** and serves two directories out of it:
 | what it serves | from |
 |---|---|
 | the bundle | `dashboard/dist` (`ERIS_DASHBOARD_DIST=/eris/dashboard/dist`) |
-| the run artifacts | `runs/` (`ERIS_RUNS_DIR=/eris/runs`) |
+| the run artifacts | `runs/` (`ERIS_RUNS_DIR=/eris/runs`), or the directory `ERIS_DASHBOARD_RUNS` names in `infra/monitoring/.env` (the live week's, [`infra/live-week/README.md`](../live-week/README.md#the-dashboard)) |
 
 So a deploy is a **build**, not a release. `dashboard/server/serve.ts` opens both directories per
 request and holds no state, which means a rebuilt `dist` is live on the next page load and a run

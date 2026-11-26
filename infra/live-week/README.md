@@ -98,9 +98,56 @@ regenerated only until the week has opened its matrix).
 keep their own times. A slot is 168 min and an epoch takes ~12 min plus setup and the agents-ready
 wait, so s=1 can start up to ~2.5 h late and still end before s=2's slot.
 
-After the start: add the matrix id (`cat ~/live-secrets/matrix-dir`) to the dashboard's
-`ERIS_DASHBOARD_COMPETITIONS`, check it shows standings in audience mode, and go through the live-week
-checks in [../devnet/CHECKLIST.md](../devnet/CHECKLIST.md#6-ライブ週).
+After the start: point the dashboard at this checkout's `runs/` ([The dashboard](#the-dashboard)),
+check it shows standings in audience mode, and go through the live-week checks in
+[../devnet/CHECKLIST.md](../devnet/CHECKLIST.md#6-ライブ週).
+
+### The dashboard
+
+The public dashboard (`ascon-dashboard`, [../dashboard/README.md](../dashboard/README.md)) keeps
+running from the **practice** checkout: its bundle, its server, its pin. Only its `runs/` changes. The
+week writes `runs/matrix-<id>` and each epoch's run directory beside it under **this** checkout's
+`runs/`, which the container does not mount, and a symlink from the practice `runs/` is refused (the
+runs API serves only paths whose realpath stays inside `runs/`). So the container mounts this
+checkout's `runs/` in place of the practice one (`ERIS_DASHBOARD_RUNS`), and the practice periods are
+copied in so their standings stay up. Once the practice period is stopped (11/30 24:00):
+
+```sh
+P=~/workspace/eris-agent-simulator          # the practice checkout (the dashboard's ERIS_ROOT)
+L=~/workspace/eris-live                     # this checkout
+grep '^ERIS_DASHBOARD_COMPETITIONS=' $P/infra/monitoring/.env      # the practice periods now listed
+for c in $(grep '^ERIS_DASHBOARD_COMPETITIONS=' $P/infra/monitoring/.env | cut -d= -f2- | tr ',' ' '); do
+  find "$P/runs/$c" -type l -lname '/*'     # an absolute link would point outside the new runs/: fix it first
+  du -sh "$P/runs/$c"
+done
+df -h "$L/runs"
+for c in $(grep '^ERIS_DASHBOARD_COMPETITIONS=' $P/infra/monitoring/.env | cut -d= -f2- | tr ',' ' '); do
+  cp -a "$P/runs/$c" "$L/runs/"
+done
+```
+
+The matrix directory appears with `run-week.sh`'s first start, and its `matrix.json` once epoch 1 has
+ended; until then the dashboard has nothing of the week to show. Then, in `$P/infra/monitoring/.env`:
+
+```sh
+ERIS_DASHBOARD_RUNS=/home/ascon/workspace/eris-live/runs
+ERIS_DASHBOARD_COMPETITIONS=<the practice periods, as before>,<basename of $(cat ~/live-secrets/matrix-dir)>
+```
+
+and recreate the container (a few seconds without the dashboard; the other services are untouched):
+
+```sh
+(cd $P/infra/monitoring && docker compose up -d dashboard)
+docker inspect ascon-dashboard --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
+#   /home/ascon/workspace/eris-agent-simulator -> /eris
+#   /home/ascon/workspace/eris-live/runs -> /eris/runs
+curl -s 127.0.0.1:5174/runs/index.json | head -c 600; echo   # the matrix and the practice periods
+```
+
+Only what `ERIS_DASHBOARD_COMPETITIONS` lists, and the runs those competitions name, is served, so
+`runs/inference-live/` and `runs/rpc-gateway-live/` beside them stay private. The sponsor view's
+`ERIS_DASHBOARD_INFERENCE_DIR` is a container path under `/eris/runs`: for the week it would be
+`/eris/runs/inference-live`. Back to the practice runs: remove `ERIS_DASHBOARD_RUNS` and recreate.
 
 ## Restart
 
