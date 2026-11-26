@@ -109,8 +109,15 @@ running from the **practice** checkout: its bundle, its server, its pin. Only it
 week writes `runs/matrix-<id>` and each epoch's run directory beside it under **this** checkout's
 `runs/`, which the container does not mount, and a symlink from the practice `runs/` is refused (the
 runs API serves only paths whose realpath stays inside `runs/`). So the container mounts this
-checkout's `runs/` in place of the practice one (`ERIS_DASHBOARD_RUNS`), and the practice periods are
-copied in so their standings stay up. Once the practice period is stopped (11/30 24:00):
+checkout's `runs/` in place of the practice one (`ERIS_DASHBOARD_RUNS`).
+
+The public view has no competition picker: it shows the newest competition the server offers, by the
+mtime of its `matrix.json` (`dashboard/src/data/competitionSelection.ts`). The week's `matrix.json` is
+written when epoch 1 ends and rewritten after every epoch, so from then on the week is what is on
+screen, and the practice periods are no longer reachable from the public view. Until then the
+newest practice period is, which is why the listed practice periods are copied in: from the switch
+to the end of epoch 1 the page shows the practice standings rather than nothing. Once the practice
+period is stopped (11/30 24:00):
 
 ```sh
 P=~/workspace/eris-agent-simulator          # the practice checkout (the dashboard's ERIS_ROOT)
@@ -126,8 +133,8 @@ for c in $(grep '^ERIS_DASHBOARD_COMPETITIONS=' $P/infra/monitoring/.env | cut -
 done
 ```
 
-The matrix directory appears with `run-week.sh`'s first start, and its `matrix.json` once epoch 1 has
-ended; until then the dashboard has nothing of the week to show. Then, in `$P/infra/monitoring/.env`:
+The matrix directory appears with `run-week.sh`'s first start (its id is then known), and its
+`matrix.json` once epoch 1 has ended. Then, in `$P/infra/monitoring/.env`:
 
 ```sh
 ERIS_DASHBOARD_RUNS=/home/ascon/workspace/eris-live/runs
@@ -141,8 +148,14 @@ and recreate the container (a few seconds without the dashboard; the other servi
 docker inspect ascon-dashboard --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
 #   /home/ascon/workspace/eris-agent-simulator -> /eris
 #   /home/ascon/workspace/eris-live/runs -> /eris/runs
-curl -s 127.0.0.1:5174/runs/index.json | head -c 600; echo   # the matrix and the practice periods
+curl -s 127.0.0.1:5174/runs/index.json | python3 -c "import json,sys; [print(r['id'], r.get('kind','')) for r in json.load(sys.stdin) if r.get('kind')]"
+#   the matrix first (newest), then the practice periods
 ```
+
+Tried on the box on 2026-11-26 with a throwaway server on 127.0.0.1:5175 (ascon-ops#49): an old
+12-epoch matrix and the four practice periods served this way, `regime` "hidden" and `seed` null in
+`matrix.json` and `standings.json`, an epoch's `summary.json` 200 and its `agents/<id>.jsonl` 404, and
+nothing outside the list in `index.json`.
 
 Only what `ERIS_DASHBOARD_COMPETITIONS` lists, and the runs those competitions name, is served, so
 `runs/inference-live/` and `runs/rpc-gateway-live/` beside them stay private. The sponsor view's
