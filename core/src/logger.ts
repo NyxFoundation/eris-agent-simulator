@@ -119,6 +119,52 @@ export function txFeeColumns(
   };
 }
 
+/** How many names claimRunDir tries (the bare id, then `-2` .. `-<n>`) before it gives up. */
+export const RUN_DIR_CLAIM_ATTEMPTS = 100;
+
+/**
+ * Claim the directory for a run that starts now, and return the id it ended up with.
+ *
+ * Run ids are the start time to the millisecond, and RunLogger opens its directory with a recursive
+ * mkdir, which succeeds on a directory that is already there. So two runs started in the same
+ * millisecond under one runs/ shared a directory and neither noticed. Observed 2026-10-22: two
+ * backtests side by side on one host, each with its own --state and port, named a run the same; both
+ * wrote into one runs/<runId>/, agent-view/<agent>/run-start.json included, and one run's agents
+ * counted their blocks from the other run's start and sat idle for the last 122 of 360 blocks. Nothing
+ * failed, and the matrix came out complete.
+ *
+ * The claim is a non-recursive mkdir, which the OS either performs or refuses with EEXIST: of two
+ * processes asking for one name exactly one gets it, with no check-then-create gap to lose in. A name
+ * that is taken is tried again with a suffix (`<id>-2`, `<id>-3`, ...). The bare id stays the common
+ * case and the suffix goes after it, so whatever reads a run id as a date (agentState's snapshot
+ * pruning, the dashboard's display name) still finds the date at the front. Any other error is not
+ * "taken" and is thrown as it is.
+ *
+ * Only for a run that starts fresh. A run that resumes (a practice period after a restart,
+ * realtime/periodResume.ts) reopens the directory it already has with `append` and does not come
+ * through here.
+ */
+export function claimRunDir(
+  root: string,
+  baseId: string,
+  attempts: number = RUN_DIR_CLAIM_ATTEMPTS,
+): string {
+  // The root is shared and may not exist yet. Creating it is not the claim; creating the child is.
+  mkdirSync(root, { recursive: true });
+  for (let n = 1; n <= attempts; n++) {
+    const id = n === 1 ? baseId : `${baseId}-${n}`;
+    try {
+      mkdirSync(join(root, id));
+      return id;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
+  throw new Error(
+    `no free run directory under ${root}: ${baseId} and its suffixes up to -${attempts} are all taken`,
+  );
+}
+
 export class RunLogger implements RunArtifactWriter {
   readonly runDir: string;
 

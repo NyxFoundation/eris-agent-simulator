@@ -120,10 +120,11 @@ export function formatUnits(value, decimals) {
 /**
  * When the next segment starts, which is when a mid-day registration starts being scored. Segments
  * are cut every `segmentHours` from the period's start, and the period's directory is named for it
- * (2026-09-28T09-13-09-294Z).
+ * (2026-09-28T09-13-09-294Z, or 2026-09-28T09-13-09-294Z-2 when another directory already had that
+ * name: core/src/logger.ts claimRunDir).
  */
 export function nextSegmentStart(period, segmentHours, now = Date.now()) {
-  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/.exec(period);
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z(?:-\d+)?$/.exec(period);
   if (!m) return null;
   const start = Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`);
   const step = segmentHours * 3_600_000;
