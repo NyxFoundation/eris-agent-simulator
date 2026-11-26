@@ -380,6 +380,12 @@ services:
       - /tmp
     volumes:
       - ${ERIS_ROOT:?set ERIS_ROOT in infra/monitoring/.env}:/eris:ro
+      # runs/ on its own, so the live week's can be served instead of this checkout's. The live week
+      # runs from a second checkout (~/workspace/eris-live, infra/live-week/README.md) and writes its
+      # matrix and every epoch's run under *that* checkout's runs/, which the mount above never sees
+      # (and a symlink out of runs/ is refused by the runs API's realpath check). Unset = this
+      # checkout's runs/, i.e. what was served before. Changing it needs the container recreated.
+      - ${ERIS_DASHBOARD_RUNS:-${ERIS_ROOT}/runs}:/eris/runs:ro
       # Writable: the sponsor access record is appended here (the checkout above is read-only).
       - ${ASCON_LOGS:?set ASCON_LOGS in infra/monitoring/.env}/dashboard-sponsor:/var/lib/eris-sponsor
 
