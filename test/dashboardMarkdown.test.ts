@@ -161,7 +161,9 @@ for (const { dir, name } of entryFiles()) {
     }
     if (current.length > 0) paragraphs.push(current.join(" "));
 
-    assert.ok(paragraphs.length > 5, "the fixture should have prose to check");
+    // At least one: a short dated entry (a title, a few tables and a handful of sentences) is a
+    // legitimate document, and what this guards is the filter above dropping every line, not length.
+    assert.ok(paragraphs.length > 0, "the fixture should have prose to check");
     for (const para of paragraphs.slice(0, 30)) {
       const stripped = plain(parseInline(para));
       assert.ok(out.includes(stripped), `missing from the page: ${stripped.slice(0, 60)}`);
