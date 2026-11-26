@@ -266,3 +266,19 @@ export function writeFileAtomic(path: string, text: string): void {
   renameSync(tmp, path);
 }
 
+// The effective regime a backtest hands the coordinator (--config). The name carries a hash of the
+// contents: two backtests side by side on one state directory with the same regime and seed but a
+// different roster or override used to write the same `.effective-<regime>-<seed>.yaml`, and a
+// coordinator could start from the other run's roster. Identical contents share a file, which is
+// harmless, and the write is atomic so a coordinator never reads half of one.
+export function writeEffectiveRegime(
+  stateDir: string,
+  regime: string,
+  seed: number,
+  text: string,
+): string {
+  const digest = createHash("sha256").update(text).digest("hex").slice(0, 16);
+  const path = join(stateDir, `.effective-${regime}-${seed}-${digest}.yaml`);
+  writeFileAtomic(path, text);
+  return path;
+}

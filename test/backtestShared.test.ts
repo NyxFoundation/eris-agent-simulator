@@ -15,6 +15,7 @@ import {
   STATE_FILE_NAME,
   validateStateManifest,
   type StateManifest,
+  writeEffectiveRegime,
   writeFileAtomic,
 } from "../core/src/backtest/shared.js";
 
@@ -226,3 +227,26 @@ describe("writeFileAtomic", () => {
   });
 });
 
+// Two backtests on one state directory with the same regime and seed but different rosters used to
+// share `.effective-<regime>-<seed>.yaml`, so a coordinator could start from the other run's roster.
+describe("writeEffectiveRegime", () => {
+  it("gives different contents for the same regime and seed different files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eris-effective-"));
+    const quiet = writeEffectiveRegime(dir, "calm", 101, "agents:\n  - id: noop\n");
+    const busy = writeEffectiveRegime(dir, "calm", 101, "agents:\n  - id: noop\n  - id: multi-arb\n");
+    assert.notEqual(quiet, busy);
+    assert.equal(readFileSync(quiet, "utf8"), "agents:\n  - id: noop\n");
+    assert.equal(readFileSync(busy, "utf8"), "agents:\n  - id: noop\n  - id: multi-arb\n");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("names the file after the regime and seed, and reuses it for identical contents", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eris-effective-"));
+    const first = writeEffectiveRegime(dir, "crash", 202, "run: {}\n");
+    const again = writeEffectiveRegime(dir, "crash", 202, "run: {}\n");
+    assert.equal(first, again);
+    assert.match(first, /\/\.effective-crash-202-[0-9a-f]{16}\.yaml$/);
+    assert.deepEqual(readdirSync(dir), [first.slice(dir.length + 1)]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
